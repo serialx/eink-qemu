@@ -134,7 +134,8 @@ static void gui_setup_refresh(DisplayState *ds)
     }
 
     if (need_timer && ds->gui_timer == NULL) {
-        ds->gui_timer = timer_new_ms(QEMU_CLOCK_REALTIME, gui_update, ds);
+        ds->gui_timer = timer_new_full(NULL, QEMU_CLOCK_REALTIME, SCALE_MS,
+                                      QEMU_TIMER_ATTR_HOST_UI, gui_update, ds);
         timer_mod(ds->gui_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
     }
     if (!need_timer && ds->gui_timer != NULL) {
