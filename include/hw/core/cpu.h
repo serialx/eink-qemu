@@ -225,6 +225,13 @@ struct CPUTLBEntryFull {
     MemoryRegionSection *section;
 
     /*
+     * One validated side-effect-free word read, with the same RCU/TLB
+     * lifetime as @section. Only consulted after a normal load lookup.
+     */
+    MemoryRegion *readonly_word_mr;
+    vaddr readonly_word_addr;
+
+    /*
      * @phys_addr contains the physical address in the address space
      * given by cpu_asidx_from_attrs(cpu, @attrs).
      */

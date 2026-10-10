@@ -2486,6 +2486,49 @@ void memory_region_enable_lockless_io(MemoryRegion *mr)
     mr->disable_reentrancy_guard = true;
 }
 
+void memory_region_set_readonly_word(MemoryRegion *mr, hwaddr offset,
+                                    const uint32_t *word)
+{
+    assert(!mr->container && !mr->mapped_via_alias && !mr->readonly_word);
+    assert(mr->lockless_io && mr->disable_reentrancy_guard);
+    assert(mr->ops && mr->ops->read);
+    assert(!mr->ram && !mr->rom_device && !mr->alias && !mr->subpage);
+    assert(!mr->is_iommu && !mr->flush_coalesced_mmio);
+    assert(!mr->ops->valid.accepts);
+    assert(mr->ops->endianness == DEVICE_LITTLE_ENDIAN);
+    assert(mr->ops->impl.min_access_size <= 4);
+    assert(!mr->ops->impl.max_access_size ||
+           mr->ops->impl.max_access_size >= 4);
+    assert(word && !((uintptr_t)word & 3) && !(offset & 3));
+    assert(int128_le(int128_add(int128_make64(offset), int128_make64(4)),
+                     mr->size));
+    assert(memory_region_access_valid(mr, offset, 4, false,
+                                      MEMTXATTRS_UNSPECIFIED));
+    mr->readonly_word_offset = offset;
+    mr->readonly_word = word;
+}
+
+bool memory_region_readonly_word_enabled(MemoryRegion *mr)
+{
+    return mr->lockless_io && mr->disable_reentrancy_guard &&
+        !mr->flush_coalesced_mmio &&
+        !trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_READ);
+}
+
+const uint32_t *memory_region_get_readonly_word(MemoryRegion *mr, hwaddr offset,
+                                              MemTxAttrs attrs)
+{
+    if (!mr->readonly_word || offset != mr->readonly_word_offset ||
+        attrs.memory || attrs.debug ||
+        !memory_region_readonly_word_enabled(mr)) {
+        return NULL;
+    }
+    if (!memory_region_access_valid(mr, offset, 4, false, attrs)) {
+        return NULL;
+    }
+    return mr->readonly_word;
+}
+
 void memory_region_add_eventfd(MemoryRegion *mr,
                                hwaddr addr,
                                unsigned size,
