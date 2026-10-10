@@ -57,20 +57,25 @@ typedef enum {
  * QEMU Timer attributes:
  *
  * An individual timer may be given one or multiple attributes when initialized.
- * Each attribute corresponds to one bit. Attributes modify the processing
- * of timers when they fire.
+ * Each attribute corresponds to one bit. Attributes modify timer processing
+ * and deadline calculations.
  *
  * The following attributes are available:
  *
  * QEMU_TIMER_ATTR_EXTERNAL: drives external subsystem
+ * QEMU_TIMER_ATTR_HOST_UI: services host display and input
  * QEMU_TIMER_ATTR_ALL: mask for all existing attributes
  *
- * Timers with this attribute do not recorded in rr mode, therefore it could be
- * used for the subsystems that operate outside the guest core. Applicable only
- * with virtual clock type.
+ * EXTERNAL timers are not recorded in rr mode and can be used for subsystems
+ * that operate outside the guest core. Applicable only to the virtual clock.
+ *
+ * HOST_UI applies only to realtime timers. These deadlines do not limit icount
+ * execution: the host main loop wakes for them and can interrupt a vCPU when
+ * waiting for the BQL. Do not use it for guest device or virtual-time deadlines.
  */
 
 #define QEMU_TIMER_ATTR_EXTERNAL ((int)BIT(0))
+#define QEMU_TIMER_ATTR_HOST_UI  ((int)BIT(1))
 #define QEMU_TIMER_ATTR_ALL      0xffffffff
 
 typedef struct QEMUTimerList QEMUTimerList;

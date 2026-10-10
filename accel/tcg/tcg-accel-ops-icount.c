@@ -39,16 +39,16 @@ static int64_t icount_get_limit(void)
     int64_t deadline;
 
     if (replay_mode != REPLAY_MODE_PLAY) {
-        /*
-         * Include all the timers, because they may need an attention.
-         * Too long CPU execution may create unnecessary delay in UI.
-         */
+        /* Every guest virtual deadline must limit execution. */
         deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
                                               QEMU_TIMER_ATTR_ALL);
-        /* Check realtime timers, because they help with input processing */
+        /*
+         * The host main loop services GUI timers and interrupts a vCPU if it
+         * needs the BQL. Other realtime deadlines still limit this budget.
+         */
         deadline = qemu_soonest_timeout(deadline,
                 qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
-                                           QEMU_TIMER_ATTR_ALL));
+                                           ~QEMU_TIMER_ATTR_HOST_UI));
 
         /*
          * Maintain prior (possibly buggy) behaviour where if no deadline

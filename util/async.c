@@ -577,6 +577,10 @@ AioContext *aio_context_new(Error **errp)
         goto fail;
     }
 
+#ifdef __EMSCRIPTEN__
+    event_notifier_enable_shared(&ctx->notifier);
+#endif
+
     /*
      * Resources cannot easily be freed manually after aio_context_setup(). If
      * you add any new resources to AioContext, it's probably best to acquire

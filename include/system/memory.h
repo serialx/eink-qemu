@@ -581,6 +581,9 @@ struct MemoryRegion {
 
     const MemoryRegionOps *ops;
     void *opaque;
+    /* Immutable, opt-in backing for one side-effect-free LE word read. */
+    const uint32_t *readonly_word;
+    hwaddr readonly_word_offset;
     MemoryRegion *container;
     int mapped_via_alias; /* Mapped via an alias, container might be NULL */
     Int128 size;
@@ -2036,6 +2039,32 @@ void memory_region_clear_flush_coalesced(MemoryRegion *mr);
  * @mr: the memory region to be updated.
  */
 void memory_region_enable_lockless_io(MemoryRegion *mr);
+
+/**
+ * memory_region_set_readonly_word: opt in to atomic word reads
+ * @mr: lockless I/O region, not yet mapped
+ * @offset: aligned little-endian 32-bit register offset
+ * @word: naturally aligned live value, owned by @mr's owner
+ *
+ * The ordinary read callback at this offset must have no side effects and
+ * return qatomic_read(word), independently of transaction attributes. All
+ * updates, including reset, must be atomic. The backing and capability are
+ * immutable until the region is destroyed, as are the region operations and
+ * their access constraints. Writes retain ordinary dispatch.
+ */
+void memory_region_set_readonly_word(MemoryRegion *mr, hwaddr offset,
+                                    const uint32_t *word);
+
+/* Dynamic guards for an already validated, lifetime-protected capability. */
+bool memory_region_readonly_word_enabled(MemoryRegion *mr);
+
+/*
+ * Return a capability only after validating the exact ordinary read. The
+ * caller must protect the region lifetime (e.g. the CPU RCU read section)
+ * until it has finished using the returned pointer.
+ */
+const uint32_t *memory_region_get_readonly_word(MemoryRegion *mr, hwaddr offset,
+                                              MemTxAttrs attrs);
 
 /**
  * memory_region_add_eventfd: Request an eventfd to be triggered when a word

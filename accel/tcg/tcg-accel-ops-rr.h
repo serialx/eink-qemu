@@ -15,6 +15,11 @@
 /* Kick all RR vCPUs. */
 void rr_kick_vcpu_thread(CPUState *unused);
 
+#ifdef __EMSCRIPTEN__
+/* Interrupt a possible single-vCPU retained BQL owner for a host waiter. */
+void rr_kick_bql_holder(void);
+#endif
+
 /* start the round robin vcpu thread */
 void rr_start_vcpu_thread(CPUState *cpu);
 

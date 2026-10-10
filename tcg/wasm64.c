@@ -48,9 +48,7 @@ EM_JS_PRE(void*, instantiate_wasm, (void *wasm_begin,
     const wasm = HEAP8.subarray(DEC_PTR(wasm_begin),
                                 DEC_PTR(wasm_begin) + wasm_size);
     var helper = {};
-    helper.u = () => {
-        return (Asyncify.state != Asyncify.State.Unwinding) ? 1 : 0;
-    };
+    helper.u = Module.__wasm_tb.asyncifyState;
     for (var i = 0; i < import_vec_size / 8; i++) {
         const idx = memory_v.getBigInt64(
             DEC_PTR(import_vec_begin) + i * 8, true);
@@ -791,7 +789,21 @@ static void check_gc_completion(void)
 
 EM_JS_PRE(void, init_wasm_js, (void *instance_done_gc, int table_size),
 {
+    /* Root Binaryen's state query through Emscripten's export processing. */
+    const stateExport = wasmExports['asyncify_get_state'];
+    let rawState;
+    for (const [original, wrapper] of Asyncify.funcWrappers) {
+        if (wrapper === stateExport) {
+            rawState = original;
+            break;
+        }
+    }
+    if (!rawState) {
+        throw new Error("Missing raw Asyncify state export");
+    }
     Module.__wasm_tb = {
+        /* Import the Wasm function directly into each generated TB. */
+        asyncifyState: rawState,
         table: new WebAssembly.Table({
             "element" : "anyfunc",
             "initial" : table_size,

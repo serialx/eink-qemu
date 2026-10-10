@@ -1157,6 +1157,8 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
     full->xlat_offset = iotlb - addr_page;
     full->section = section;
     full->phys_addr = paddr_page;
+    full->readonly_word_mr = NULL;
+    full->readonly_word_addr = 0;
 
     /* Now calculate the new entry */
     tn.addend = addend - addr_page;
@@ -1966,20 +1968,41 @@ static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
 
 static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
                                uint64_t ret_be, vaddr addr, int size,
-                               int mmu_idx, MMUAccessType type, uintptr_t ra)
+                               int mmu_idx, MMUAccessType type, uintptr_t ra,
+                               bool word_read)
 {
     MemoryRegionSection *section;
     MemoryRegion *mr;
     hwaddr mr_offset;
+    bool can_word = word_read && type == MMU_DATA_LOAD && !(addr & 3) &&
+        !full->attrs.memory && !full->attrs.debug &&
+        !cpu_plugin_mem_cbs_enabled(cpu);
 
     tcg_debug_assert(size > 0 && size <= 8);
 
     section = io_prepare(&mr_offset, cpu, full, addr, ra);
+    if (can_word && full->readonly_word_mr &&
+        full->readonly_word_addr == addr) {
+        mr = full->readonly_word_mr;
+        if (memory_region_readonly_word_enabled(mr)) {
+            return bswap32(qatomic_read(mr->readonly_word));
+        }
+    }
     mr = section->mr;
 
     if (mr->subpage && !full->attrs.memory && !(addr & (size - 1))) {
         /* The CPU's RCU read-side section protects the subpage FlatView. */
         mr = memory_region_resolve_subpage(mr, &mr_offset, size, true);
+    }
+    /* Only the non-crosspage, little-endian word-load caller opts in. */
+    if (can_word) {
+        const uint32_t *word = memory_region_get_readonly_word(mr, mr_offset,
+                                                              full->attrs);
+        if (word) {
+            full->readonly_word_mr = mr;
+            full->readonly_word_addr = addr;
+            return bswap32(qatomic_read(word));
+        }
     }
     g_autoptr(BQLLockAuto) lock = mr->lockless_io ? NULL :
         bql_auto_lock(__FILE__, __LINE__);
@@ -2137,7 +2160,7 @@ static uint64_t do_ld_beN(CPUState *cpu, MMULookupPageData *p,
 
     if (unlikely(p->flags & TLB_MMIO)) {
         return do_ld_mmio_beN(cpu, p->full, ret_be, p->addr, p->size,
-                              mmu_idx, type, ra);
+                              mmu_idx, type, ra, false);
     }
 
     /*
@@ -2227,7 +2250,8 @@ static uint8_t do_ld_1(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
                        MMUAccessType type, uintptr_t ra)
 {
     if (unlikely(p->flags & TLB_MMIO)) {
-        return do_ld_mmio_beN(cpu, p->full, 0, p->addr, 1, mmu_idx, type, ra);
+        return do_ld_mmio_beN(cpu, p->full, 0, p->addr, 1, mmu_idx,
+                              type, ra, false);
     } else {
         return *(uint8_t *)p->haddr;
     }
@@ -2239,7 +2263,8 @@ static uint16_t do_ld_2(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
     uint16_t ret;
 
     if (unlikely(p->flags & TLB_MMIO)) {
-        ret = do_ld_mmio_beN(cpu, p->full, 0, p->addr, 2, mmu_idx, type, ra);
+        ret = do_ld_mmio_beN(cpu, p->full, 0, p->addr, 2, mmu_idx,
+                             type, ra, false);
         if ((memop & MO_BSWAP) == MO_LE) {
             ret = bswap16(ret);
         }
@@ -2259,7 +2284,8 @@ static uint32_t do_ld_4(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
     uint32_t ret;
 
     if (unlikely(p->flags & TLB_MMIO)) {
-        ret = do_ld_mmio_beN(cpu, p->full, 0, p->addr, 4, mmu_idx, type, ra);
+        ret = do_ld_mmio_beN(cpu, p->full, 0, p->addr, 4, mmu_idx, type, ra,
+                             (memop & MO_BSWAP) == MO_LE);
         if ((memop & MO_BSWAP) == MO_LE) {
             ret = bswap32(ret);
         }
@@ -2279,7 +2305,8 @@ static uint64_t do_ld_8(CPUState *cpu, MMULookupPageData *p, int mmu_idx,
     uint64_t ret;
 
     if (unlikely(p->flags & TLB_MMIO)) {
-        ret = do_ld_mmio_beN(cpu, p->full, 0, p->addr, 8, mmu_idx, type, ra);
+        ret = do_ld_mmio_beN(cpu, p->full, 0, p->addr, 8, mmu_idx,
+                             type, ra, false);
         if ((memop & MO_BSWAP) == MO_LE) {
             ret = bswap64(ret);
         }

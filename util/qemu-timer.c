@@ -278,7 +278,7 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
         }
         qemu_mutex_lock(&timer_list->active_timers_lock);
         ts = timer_list->active_timers;
-        /* Skip all external timers */
+        /* Skip timers excluded by the requested attribute mask. */
         while (ts && (ts->attributes & ~attr_mask)) {
             ts = ts->next;
         }

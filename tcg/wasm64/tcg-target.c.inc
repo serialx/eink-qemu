@@ -1205,7 +1205,9 @@ static int64_t get_helper_idx(TCGContext *s, intptr_t helper_idx_on_qemu)
 static void tcg_wasm_out_handle_unwinding(TCGContext *s)
 {
     tcg_wasm_out_op_idx(s, OPC_CALL, CHECK_UNWINDING_IDX);
-    tcg_wasm_out_op(s, OPC_I32_EQZ);
+    /* Binaryen's raw Asyncify state is 1 while unwinding. */
+    tcg_wasm_out_op_const(s, OPC_I32_CONST, 1);
+    tcg_wasm_out_op(s, OPC_I32_EQ);
     tcg_wasm_out_op_block(s, OPC_IF, BLOCK_NORET);
     tcg_wasm_out_op_const(s, OPC_I64_CONST, 0);
     /* returns if unwinding */

@@ -220,6 +220,7 @@ static void gpspi_init(Object *obj)
      * their callbacks. DMA completes from the virtual timer under the BQL.
      */
     memory_region_enable_lockless_io(&s->iomem);
+    memory_region_set_readonly_word(&s->iomem, R_CMD, &s->regs[R_CMD / 4]);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
     s->bus = ssi_create_bus(DEVICE(obj), "spi");

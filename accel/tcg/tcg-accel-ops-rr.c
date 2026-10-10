@@ -63,6 +63,26 @@ void rr_kick_vcpu_thread(CPUState *unused)
 static QEMUTimer *rr_kick_vcpu_timer;
 static CPUState *rr_current_cpu;
 
+#ifdef __EMSCRIPTEN__
+void rr_kick_bql_holder(void)
+{
+    RCU_READ_LOCK_GUARD();
+    CPUState *cpu = qatomic_read(&rr_current_cpu);
+
+    /*
+     * The waiter has already published bql_waiters and failed trylock.
+     * Only a single icount vCPU can retain physical BQL ownership. Request
+     * an ordinary execution exit so the existing slice boundary releases
+     * it, without changing guest budgets or adding work to MMIO unlocks.
+     * A different thread may own BQL; a spurious exit is harmless.
+     */
+    if (cpu && cpu == first_cpu && !CPU_NEXT(cpu) &&
+        qatomic_read(&cpu->running)) {
+        cpu_exit(cpu);
+    }
+}
+#endif
+
 static inline int64_t rr_next_kick_time(void)
 {
     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
