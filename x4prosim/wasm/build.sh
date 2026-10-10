@@ -46,6 +46,7 @@ LINK_FLAGS+=" -sSTACK_SIZE=8388608 -sASYNCIFY_STACK_SIZE=1048576"
 LINK_FLAGS+=" -sEXIT_RUNTIME=1 -sEXPORT_ES6=0 -sENVIRONMENT=web,worker,node -sASYNCIFY_IMPORTS=ffi_call_js"
 LINK_FLAGS+=" -sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS"
 LINK_FLAGS+=" -lnodefs.js"
+LINK_FLAGS+=" --js-library $ROOT/x4prosim/wasm/clock-origin.js"
 LINK_FLAGS+=" --pre-js $ROOT/x4prosim/wasm/net.js"
 if [[ -f "$ROOT/x4prosim/wasm/node-fs.js" ]]; then
     LINK_FLAGS+=" --pre-js $ROOT/x4prosim/wasm/node-fs.js"
