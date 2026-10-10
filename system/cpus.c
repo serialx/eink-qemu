@@ -51,6 +51,12 @@
 #include "hw/core/hw-error.h"
 #include "trace.h"
 
+#ifdef __EMSCRIPTEN__
+#include "qemu/rcu.h"
+#include "system/tcg.h"
+#include "accel/tcg/tcg-accel-ops-rr.h"
+#endif
+
 #ifdef CONFIG_LINUX
 
 #include <sys/prctl.h>
@@ -591,6 +597,20 @@ void bql_lock_impl(const char *file, int line)
         return;
     }
     qatomic_inc(&bql_waiters);
+    if (!current_cpu && tcg_enabled() && icount_enabled() &&
+        current_machine && current_machine->smp.max_cpus == 1) {
+        RCU_READ_LOCK_GUARD();
+        CPUState *cpu = first_cpu;
+
+        if (cpu && !CPU_NEXT(cpu)) {
+            if (qemu_mutex_trylock(&bql) == 0) {
+                qatomic_dec(&bql_waiters);
+                return;
+            }
+            /* Do not make a host waiter wait for a guest timer deadline. */
+            rr_kick_bql_holder();
+        }
+    }
 #endif
     bql_lock_fn(&bql, file, line);
 #ifdef __EMSCRIPTEN__
