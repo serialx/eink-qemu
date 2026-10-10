@@ -16,6 +16,90 @@
 #include "qemu/event_notifier.h"
 #include "qemu/main-loop.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include "qemu/atomic.h"
+
+/*
+ * Keep a real pipe FD for GLib/AIO poll integration, but publish private
+ * notifier readiness in shared memory. The JS poll callback reads it with
+ * acquire ordering; set/clear use full-barrier exchanges. Existing AIO
+ * notify_me/notified barriers still publish work and arm/recheck the consumer.
+ *
+ * A 0->1 transition posts a one-shot asynchronous JS-main listener wake.
+ * The producer never waits for that callback and the consumer need not run
+ * its worker event loop: the callback resolves its outstanding host poll.
+ * JS readiness derivation and listener registration execute in one turn;
+ * a racing set is either observed there or its queued callback wakes the
+ * newly registered listener. Clear cannot overwrite a later concurrent set.
+ *
+ * Cleanup requires quiescent producers, as for the ordinary notifier. Tokens
+ * are not reused, so delayed callbacks cannot access a freed notifier or an
+ * unrelated descriptor after close. Unsupported runtimes retain the pipe.
+ */
+static int event_notifier_shared_init(int fd, unsigned *pending)
+{
+    return MAIN_THREAD_EM_ASM_INT({
+        const stream = FS.getStream($0);
+        if (!stream || !stream.node.addListener ||
+            !stream.node.notifyListeners || !stream.stream_ops.poll) {
+            return 0;
+        }
+        let state = Module['qemuNotifierBridge'];
+        if (!state) {
+            state = {};
+            state.next = 1;
+            state.entries = new Map();
+            Module['qemuNotifierBridge'] = state;
+        }
+        if (state.next > 2147483647) {
+            return 0;
+        }
+        const token = state.next++;
+        const index = Number($1) / 4;
+        const original = stream.stream_ops;
+        stream.stream_ops = Object.assign({}, original);
+        stream.stream_ops.poll = function(s) {
+            return original.poll(s) | (Atomics.load(HEAP32, index) ? 1 : 0);
+        };
+        const entry = {};
+        entry.stream = stream;
+        entry.original = original;
+        state.entries.set(token, entry);
+        return token;
+    }, fd, pending);
+}
+
+static void event_notifier_shared_wake(int token)
+{
+    MAIN_THREAD_ASYNC_EM_ASM({
+        const state = Module['qemuNotifierBridge'];
+        const entry = state && state.entries.get($0);
+        if (entry) {
+            entry.stream.node.notifyListeners(1);
+        }
+    }, token);
+}
+
+static void event_notifier_shared_cleanup(int token)
+{
+    MAIN_THREAD_EM_ASM({
+        const state = Module['qemuNotifierBridge'];
+        const entry = state && state.entries.get($0);
+        if (entry) {
+            entry.stream.stream_ops = entry.original;
+            state.entries.delete($0);
+        }
+    }, token);
+}
+
+void event_notifier_enable_shared(EventNotifier *e)
+{
+    assert(e->initialized && !e->shared_token);
+    e->shared_token = event_notifier_shared_init(e->rfd, &e->shared_pending);
+}
+#endif
+
 #ifdef CONFIG_EVENTFD
 #include <sys/eventfd.h>
 #endif
@@ -29,6 +113,10 @@ void event_notifier_init_fd(EventNotifier *e, int fd)
 {
     e->rfd = fd;
     e->wfd = fd;
+#ifdef __EMSCRIPTEN__
+    e->shared_pending = 0;
+    e->shared_token = 0;
+#endif
     e->initialized = true;
 }
 #endif
@@ -65,6 +153,10 @@ int event_notifier_init(EventNotifier *e, int active)
         e->rfd = fds[0];
         e->wfd = fds[1];
     }
+#ifdef __EMSCRIPTEN__
+    e->shared_pending = 0;
+    e->shared_token = 0;
+#endif
     e->initialized = true;
     if (active) {
         event_notifier_set(e);
@@ -84,6 +176,12 @@ void event_notifier_cleanup(EventNotifier *e)
         return;
     }
 
+#ifdef __EMSCRIPTEN__
+    if (e->shared_token) {
+        event_notifier_shared_cleanup(e->shared_token);
+        e->shared_token = 0;
+    }
+#endif
     if (e->rfd != e->wfd) {
         close(e->rfd);
     }
@@ -113,6 +211,14 @@ int event_notifier_set(EventNotifier *e)
         return -1;
     }
 
+#ifdef __EMSCRIPTEN__
+    if (e->shared_token) {
+        if (!qatomic_xchg(&e->shared_pending, 1)) {
+            event_notifier_shared_wake(e->shared_token);
+        }
+        return 0;
+    }
+#endif
     do {
         ret = write(e->wfd, &value, sizeof(value));
     } while (ret < 0 && errno == EINTR);
@@ -134,6 +240,11 @@ int event_notifier_test_and_clear(EventNotifier *e)
         return 0;
     }
 
+#ifdef __EMSCRIPTEN__
+    if (e->shared_token) {
+        return qatomic_xchg(&e->shared_pending, 0);
+    }
+#endif
     /* Drain the notify pipe.  For eventfd, only 8 bytes will be read.  */
     value = 0;
     do {

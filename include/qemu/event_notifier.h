@@ -25,10 +25,19 @@ struct EventNotifier {
     int rfd;
     int wfd;
     bool initialized;
+#ifdef __EMSCRIPTEN__
+    unsigned shared_pending;
+    int shared_token;
+#endif
 #endif
 };
 
 typedef void EventNotifierHandler(EventNotifier *);
+
+#ifdef __EMSCRIPTEN__
+/* Private API users only; enable after inactive init, before publishing. */
+void event_notifier_enable_shared(EventNotifier *e);
+#endif
 
 int event_notifier_init(EventNotifier *, int active);
 void event_notifier_cleanup(EventNotifier *);
