@@ -325,6 +325,7 @@ struct Esp32s3MachineState {
 };
 #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
 #define TYPE_X4PRO_MACHINE MACHINE_TYPE_NAME("x4pro")
+#define TYPE_PICCO_MACHINE MACHINE_TYPE_NAME("picco")
 
 static void esp32s3_init_openeth(Esp32s3SocState *ms)
 {
@@ -607,6 +608,7 @@ static void esp32s3_soc_add_unimp_device(MemoryRegion *dest, const char* name, h
 }
 
 static void x4pro_board_init(Esp32s3SocState *ss, DeviceState *spi2);
+static void picco_board_init(Esp32s3SocState *ss, DeviceState *spi2);
 
 static ram_addr_t esp32s3_fixup_ram_size(ram_addr_t requested_size);
 
@@ -884,7 +886,8 @@ static void esp32s3_machine_init(MachineState *machine)
     }
 
     /* RGB display realization; the X4 Pro has its own panel, keep it console 0 */
-    if (object_dynamic_cast(OBJECT(machine), TYPE_X4PRO_MACHINE)) {
+    if (object_dynamic_cast(OBJECT(machine), TYPE_X4PRO_MACHINE) ||
+        object_dynamic_cast(OBJECT(machine), TYPE_PICCO_MACHINE)) {
         object_unparent(OBJECT(&ss->rgb));
     } else {
         /* Give the internal RAM memory region to the display */
@@ -1014,6 +1017,8 @@ static void esp32s3_machine_init(MachineState *machine)
                            qdev_get_gpio_in(intmatrix_dev, ETS_SPI2_INTR_SOURCE));
         if (object_dynamic_cast(OBJECT(machine), TYPE_X4PRO_MACHINE)) {
             x4pro_board_init(ss, spi2);
+        } else if (object_dynamic_cast(OBJECT(machine), TYPE_PICCO_MACHINE)) {
+            picco_board_init(ss, spi2);
         }
     }
 
@@ -1186,6 +1191,63 @@ static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
     compat_props_add(mc->compat_props, x4pro_globals, ARRAY_SIZE(x4pro_globals));
 }
 
+/* BOOX Picco: SSD1677, SDMMC, and a shared I2C peripheral bus. */
+static void picco_board_init(Esp32s3SocState *ss, DeviceState *spi2)
+{
+    DeviceState *gpio = DEVICE(&ss->gpio);
+    SSIBus *bus = (SSIBus *)qdev_get_child_bus(spi2, "spi");
+    DeviceState *panel = qdev_new("ssd1677");
+    qdev_set_id(panel, g_strdup("panel"), &error_fatal);
+    ssi_realize_and_unref(panel, bus, &error_fatal);
+    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 18, qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
+    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 17, qdev_get_gpio_in_named(panel, "dc", 0));
+    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 16, qdev_get_gpio_in_named(panel, "rst", 0));
+    qdev_connect_gpio_out_named(panel, "busy", 0, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 15));
+    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 15), 0);
+    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 48, qdev_get_gpio_in_named(panel, "sclk", 0));
+    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 47, qdev_get_gpio_in_named(panel, "sda", 0));
+    qdev_connect_gpio_out_named(panel, "sda-out", 0, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 47));
+
+    DeviceState *keys = qdev_new("x4pro-keys");
+    object_property_add_child(qdev_get_machine(), "picco-keys", OBJECT(keys));
+    static const int key_pins[] = { 21, 9, 2 };
+    for (int k = 0; k < ARRAY_SIZE(key_pins); k++) {
+        qdev_connect_gpio_out(keys, k, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, key_pins[k]));
+    }
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(keys), &error_fatal);
+    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 5), 1);
+    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 6), 0);
+    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 38), 0);
+
+    DeviceState *i2c0 = DEVICE(object_resolve_path_component(OBJECT(ss), "i2c0"));
+    I2CBus *i2c = I2C_BUS(qdev_get_child_bus(i2c0, "i2c"));
+    x4pro_add_i2c(i2c, "bm8563", 0x51);
+    x4pro_add_i2c(i2c, "qmi8658", 0x6a);
+    x4pro_add_i2c(i2c, "sgm41562", 0x03);
+    DeviceState *touch = x4pro_add_i2c(i2c, "tma525c", 0x24);
+    qdev_connect_gpio_out_named(touch, "int", 0, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 11));
+    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 10, qdev_get_gpio_in_named(touch, "rst", 0));
+}
+
+static void picco_machine_class_init(ObjectClass *oc, const void *data)
+{
+    static GlobalProperty globals[] = {
+        { "ssi_psram", "is_octal", "true" },
+        { "tma525c", "invert-x", "true" },
+        { "tma525c", "invert-y", "true" },
+    };
+    MachineClass *mc = MACHINE_CLASS(oc);
+    mc->desc = "BOOX Picco (ESP32-S3, SSD1677 e-paper)";
+    mc->default_ram_size = 8 * MiB;
+    compat_props_add(mc->compat_props, globals, ARRAY_SIZE(globals));
+}
+
+static const TypeInfo picco_info = {
+    .name = TYPE_PICCO_MACHINE,
+    .parent = TYPE_ESP32S3_MACHINE,
+    .class_init = picco_machine_class_init,
+};
+
 static const TypeInfo x4pro_info = {
     .name = TYPE_X4PRO_MACHINE,
     .parent = TYPE_ESP32S3_MACHINE,
@@ -1214,6 +1276,7 @@ static void esp32s3_machine_type_init(void)
 {
     type_register_static(&esp32s3_info);
     type_register_static(&x4pro_info);
+    type_register_static(&picco_info);
 }
 
 type_init(esp32s3_machine_type_init);

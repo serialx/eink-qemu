@@ -1,14 +1,14 @@
 /*
  * Solomon SSD1677 e-paper controller (800x480, 1-bit RAM planes), as wired
- * on the Xteink X4: write-only SPI, DC and RST on GPIO inputs, BUSY on a
- * GPIO output (active high).
+ * on the Xteink X4 and Onyx Picco: SPI or GPIO bit banging, with a shared
+ * bidirectional SDA line for panel identification. BUSY is active high.
  *
  * Models the BW (0x24) and RED (0x26) RAM planes with the data-entry mode,
  * RAM window and address counters, auto-write fills (0x46/0x47), display
  * update control 1 (0x21) RAM options, and master activation (0x20), which
  * holds BUSY for "busy-ms" and then shows the panel on a graphic console.
- * Waveforms are not simulated: with no custom LUT the panel shows the BW
- * plane; after a LUT upload (0x32) it shows the two planes as 4 gray levels.
+ * Waveforms are not simulated: OTP and monochrome transition LUTs show the
+ * BW plane; grayscale LUTs interpret both RAM planes as four gray levels.
  * Everything else (voltages, booster, temperature, border) is accepted and
  * ignored.
  *
@@ -41,11 +41,17 @@ struct Ssd1677State {
     SSIPeripheral parent_obj;
     QemuConsole *con;
     qemu_irq busy;
+    qemu_irq sda_out;
     QEMUTimer busy_timer;
     uint32_t busy_ms;
     bool portrait;      /* turn 90 degrees clockwise, as the X4 is held */
 
     bool dc;            /* 1 = data */
+    bool sclk;
+    bool sda_in;
+    uint8_t bits;
+    uint8_t shift;
+    uint8_t read_pos;
     bool in_reset;
     bool asleep;
     uint8_t cmd;
@@ -55,7 +61,8 @@ struct Ssd1677State {
     uint8_t entry;      /* data entry mode: bit0 X inc, bit1 Y inc, bit2 Y first */
     uint16_t xs, xe, ys, ye, xc, yc;
     uint8_t ctrl1[2];
-    bool custom_lut;
+    uint8_t ctrl2;
+    bool gray_lut;
 
     uint8_t ram[2][H][WB];
     uint8_t shown[H][WB * 2];   /* last activated image as 2-bit pixels, packed */
@@ -108,9 +115,50 @@ static uint8_t ssd1677_opt(uint8_t opt, uint8_t v)
     return v;
 }
 
+static bool ssd1677_lut_is_gray(const uint8_t *lut, size_t len)
+{
+    /* The first four 10-byte rows drive WW, BW, WB, BB transitions.
+     * Full monochrome waveforms depend only on the new pixel value. */
+    if (len < 40) {
+        return true;
+    }
+    if (!memcmp(lut, lut + 20, 10) && !memcmp(lut + 10, lut + 30, 10)) {
+        return false;
+    }
+
+    /* A partial monochrome waveform holds unchanged pixels and applies
+     * opposite drives to BW/WB. Permit one compensation pulse on WW;
+     * Picco uses this to counter background drift. Each byte contains
+     * four two-bit drive phases (0=hold, 1/2=opposite polarities). */
+    unsigned compensation = 0;
+    bool transition = false;
+    for (unsigned phase = 0; phase < 40; phase++) {
+        unsigned shift = 6 - 2 * (phase % 4);
+        uint8_t ww = (lut[phase / 4] >> shift) & 3;
+        uint8_t bw = (lut[10 + phase / 4] >> shift) & 3;
+        uint8_t wb = (lut[20 + phase / 4] >> shift) & 3;
+        uint8_t bb = (lut[30 + phase / 4] >> shift) & 3;
+        if (bb || ww == 3 || (ww && ++compensation > 1)) {
+            return true;
+        }
+        if (bw || wb) {
+            if (!((bw == 1 && wb == 2) || (bw == 2 && wb == 1))) {
+                return true;
+            }
+            transition = true;
+        }
+    }
+    return !transition;
+}
+
 static void ssd1677_activate(Ssd1677State *s)
 {
     uint8_t bw_opt = s->ctrl1[0] & 0xf, red_opt = s->ctrl1[0] >> 4;
+    /* Update-control bit4 loads the controller's monochrome OTP LUT. */
+    if (s->ctrl2 & 0x10) {
+        s->gray_lut = false;
+    }
+    bool gray = s->gray_lut && (red_opt & 0xc) != 0x4;
 
     /* Gates are wired in reverse on the X4: RAM row r is screen row H-1-r. */
     for (int y = 0; y < H; y++) {
@@ -121,7 +169,7 @@ static void ssd1677_activate(Ssd1677State *s)
             uint16_t px = 0;
             for (int b = 7; b >= 0; b--) {
                 int lvl;
-                if (s->custom_lut) {
+                if (gray) {
                     lvl = (((red >> b) & 1) << 1) | ((bw >> b) & 1);
                 } else {
                     lvl = ((bw >> b) & 1) ? 3 : 0;
@@ -146,6 +194,9 @@ static void ssd1677_command_done(Ssd1677State *s)
     case 0x21:
         if (s->nargs >= 1) s->ctrl1[0] = a[0];
         if (s->nargs >= 2) s->ctrl1[1] = a[1];
+        break;
+    case 0x22:
+        if (s->nargs >= 1) s->ctrl2 = a[0];
         break;
     case 0x44:
         if (s->nargs >= 4) {
@@ -179,8 +230,12 @@ static void ssd1677_command_done(Ssd1677State *s)
 
 static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
 {
+    if (s->cmd == 0x32 && s->nargs) {
+        s->gray_lut = ssd1677_lut_is_gray(s->args, s->nargs);
+    }
     s->cmd = c;
     s->nargs = 0;
+    s->read_pos = 0;
 
     switch (c) {
     case 0x12:  /* SWRESET */
@@ -188,7 +243,8 @@ static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
         s->xs = 0; s->xe = W - 1; s->ys = 0; s->ye = H - 1;
         s->xc = 0; s->yc = 0;
         s->ctrl1[0] = s->ctrl1[1] = 0;
-        s->custom_lut = false;
+        s->ctrl2 = 0;
+        s->gray_lut = false;
         ssd1677_set_busy(s, 2);
         break;
     case 0x20:  /* master activation */
@@ -196,9 +252,23 @@ static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
         ssd1677_set_busy(s, s->busy_ms);
         break;
     case 0x32:
-        s->custom_lut = true;
+        s->gray_lut = true;
         break;
     }
+}
+
+static bool ssd1677_reading(Ssd1677State *s)
+{
+    return s->dc && !s->in_reset && !s->asleep && s->cmd == 0x2e;
+}
+
+static uint8_t ssd1677_read_byte(Ssd1677State *s)
+{
+    /* DEPG0397 controller identity, accepted by the Picco stock driver. */
+    static const uint8_t id[] = {
+        0xca, 0xfe, 0x00, 0x16, 0x77, 0x00, 0x08, 0x01, 0x00, 0x4e,
+    };
+    return s->read_pos < sizeof(id) ? id[s->read_pos] : 0xff;
 }
 
 static uint32_t ssd1677_transfer(SSIPeripheral *dev, uint32_t data)
@@ -212,6 +282,13 @@ static uint32_t ssd1677_transfer(SSIPeripheral *dev, uint32_t data)
     if (!s->dc) {
         ssd1677_command_start(s, v);
         return 0;
+    }
+    if (ssd1677_reading(s)) {
+        uint8_t value = ssd1677_read_byte(s);
+        if (s->read_pos < 10) {
+            s->read_pos++;
+        }
+        return value;
     }
     switch (s->cmd) {
     case 0x24:
@@ -229,7 +306,7 @@ static uint32_t ssd1677_transfer(SSIPeripheral *dev, uint32_t data)
         }
         /* Commands apply as soon as their argument bytes are in. */
         switch (s->cmd) {
-        case 0x11: case 0x46: case 0x47:
+        case 0x11: case 0x22: case 0x46: case 0x47:
             if (s->nargs == 1) ssd1677_command_done(s);
             break;
         case 0x21: case 0x4E: case 0x4F:
@@ -244,9 +321,66 @@ static uint32_t ssd1677_transfer(SSIPeripheral *dev, uint32_t data)
     return 0;
 }
 
+static void ssd1677_present_bit(Ssd1677State *s)
+{
+    qemu_set_irq(s->sda_out, ssd1677_reading(s) && !s->parent_obj.cs ?
+                 (ssd1677_read_byte(s) >> (7 - s->bits)) & 1 : 1);
+}
+
+static void ssd1677_set_sclk(void *opaque, int n, int level)
+{
+    Ssd1677State *s = SSD1677(opaque);
+    bool rise = level && !s->sclk;
+    bool fall = !level && s->sclk;
+
+    s->sclk = level != 0;
+    if (s->parent_obj.cs || s->in_reset || s->asleep) {
+        return;
+    }
+    if (ssd1677_reading(s)) {
+        /* Picco samples before the rising edge. Keep the bit stable through
+         * that edge, then present the next one on the falling edge. */
+        if (fall) {
+            if (++s->bits == 8) {
+                s->bits = 0;
+                if (s->read_pos < 10) {
+                    s->read_pos++;
+                }
+            }
+            ssd1677_present_bit(s);
+        }
+    } else if (rise) {
+        s->shift = (s->shift << 1) | s->sda_in;
+        if (++s->bits == 8) {
+            s->bits = 0;
+            ssd1677_transfer(&s->parent_obj, s->shift);
+        }
+    }
+}
+
+static void ssd1677_set_sda(void *opaque, int n, int level)
+{
+    SSD1677(opaque)->sda_in = level != 0;
+}
+
 static void ssd1677_set_dc(void *opaque, int n, int level)
 {
-    SSD1677(opaque)->dc = level != 0;
+    Ssd1677State *s = SSD1677(opaque);
+    if (s->dc != (level != 0)) {
+        s->bits = 0;
+    }
+    s->dc = level != 0;
+    ssd1677_present_bit(s);
+}
+
+static int ssd1677_set_cs(SSIPeripheral *dev, bool level)
+{
+    Ssd1677State *s = SSD1677(dev);
+    s->bits = 0;
+    /* SSI updates parent_obj.cs after this callback. */
+    qemu_set_irq(s->sda_out, level || !ssd1677_reading(s) ? 1 :
+                 (ssd1677_read_byte(s) >> 7) & 1);
+    return 0;
 }
 
 static void ssd1677_set_rst(void *opaque, int n, int level)
@@ -254,12 +388,17 @@ static void ssd1677_set_rst(void *opaque, int n, int level)
     Ssd1677State *s = SSD1677(opaque);
     if (!level) {
         s->in_reset = true;
+        timer_del(&s->busy_timer);
+        qemu_set_irq(s->busy, 0);
+        s->bits = 0;
+        s->read_pos = 0;
     } else if (s->in_reset) {
         s->in_reset = false;
         s->asleep = false;
         s->cmd = 0;
         s->nargs = 0;
     }
+    ssd1677_present_bit(s);
 }
 
 static bool ssd1677_update_display(void *opaque)
@@ -310,7 +449,10 @@ static void ssd1677_realize(SSIPeripheral *d, Error **errp)
     timer_init_ms(&s->busy_timer, QEMU_CLOCK_VIRTUAL, ssd1677_busy_done, s);
     qdev_init_gpio_in_named(dev, ssd1677_set_dc, "dc", 1);
     qdev_init_gpio_in_named(dev, ssd1677_set_rst, "rst", 1);
+    qdev_init_gpio_in_named(dev, ssd1677_set_sclk, "sclk", 1);
+    qdev_init_gpio_in_named(dev, ssd1677_set_sda, "sda", 1);
     qdev_init_gpio_out_named(dev, &s->busy, "busy", 1);
+    qdev_init_gpio_out_named(dev, &s->sda_out, "sda-out", 1);
 }
 
 static const Property ssd1677_properties[] = {
@@ -325,6 +467,7 @@ static void ssd1677_class_init(ObjectClass *klass, const void *data)
 
     k->realize = ssd1677_realize;
     k->transfer = ssd1677_transfer;
+    k->set_cs = ssd1677_set_cs;
     k->cs_polarity = SSI_CS_LOW;
     device_class_set_props(dc, ssd1677_properties);
 }

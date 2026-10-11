@@ -76,3 +76,17 @@ provisioning.
 Run `python3 -m unittest x4prosim.tests.test_mkflash`. The optional full-image
 comparison uses `CROSSPOINT_RELEASE_APP` and `CROSSPOINT_REFERENCE_FLASH` paths
 and skips when either input is absent.
+
+## Picco app images
+
+`--machine picco` selects `partitions-picco.csv`. Its first four records match
+Picco build 2920's OTA layout validator: NVS at `0x9000` (48 KiB), OTA metadata
+at `0x15000` (8 KiB), `safeboot` at `0x20000` (768 KiB), and OTA app at
+`0xE0000` (`0xE70000` bytes). The app is copied unchanged. A valid OTA sequence
+selects it instead of the erased recovery slot; recovery firmware is not
+included or synthesized.
+
+The firmware mounts LittleFS using the label `spiffs`. The composer provisions
+the remaining `0xB0000` bytes at `0xF50000` for it. This is a simulator choice;
+the original filesystem partition bounds are not present in the supplied app.
+Picco NVS is initially erased, and the bundled ESP32-S3 bootloader is reused.

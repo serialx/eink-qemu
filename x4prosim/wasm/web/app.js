@@ -7,7 +7,7 @@ $('ghosting').checked = params.get('ghosting') !== '0';
 $('wifi').checked = params.get('wifi') !== 'off';
 try {
     const saved = params.get('device') || localStorage.getItem('x4prosim-device');
-    if (['auto', 'x3', 'x4', 'x4pro'].includes(saved)) $('device').value = saved;
+    if (['auto', 'x3', 'x4', 'x4pro', 'picco'].includes(saved)) $('device').value = saved;
 } catch {}
 $('device').addEventListener('change', () => {
     try { localStorage.setItem('x4prosim-device', $('device').value); } catch {}
@@ -196,9 +196,9 @@ const keyHints = {Back: 'Esc', Confirm: 'Enter', Left: '←', Right: '→', Up: 
 function buttons(machine) {
     $('keys').replaceChildren();
     $('keys').dataset.machine = machine;
-    $('key-hint').textContent = machine !== 'x4pro' ? 'Keyboard: arrows · Enter · Esc · P' :
-        'Keyboard: ↑ ↓ · Home · P · touch the screen';
-    const names = machine !== 'x4pro' ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
+    $('key-hint').textContent = (machine === 'x3' || machine === 'x4') ? 'Keyboard: arrows · Enter · Esc · P' :
+        machine === 'picco' ? 'Keyboard: ↑ ↓ · P · touch the screen' : 'Keyboard: ↑ ↓ · Home · P · touch the screen';
+    const names = (machine === 'x3' || machine === 'x4') ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power'] : machine === 'picco' ? ['Up', 'Down', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
     for (const name of names) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -236,7 +236,7 @@ function saveBlob(bytes, name) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 /* Page chrome: run state, firmware chip, screenshot, theme and mobile tabs. */
-const machineNames = {x3: 'Xteink X3 · 528 × 792', x4: 'Xteink X4 · 480 × 800', x4pro: 'Xteink X4 Pro · 480 × 800'};
+const machineNames = {x3: 'Xteink X3 · 528 × 792', x4: 'Xteink X4 · 480 × 800', x4pro: 'Xteink X4 Pro · 480 × 800', picco: 'BOOX Picco · 480 × 800'};
 function setLive(machine) {
     document.querySelector('.app').classList.toggle('live', !!machine);
     $('machine').textContent = machine ? machineNames[machine] : 'No device running';
@@ -311,34 +311,14 @@ async function prepareFlash(input) {
     if (chip !== 5 && chip !== 9) {
         throw new Error(`Unsupported ESP chip ID ${chip}; expected ESP32-C3 (5) or ESP32-S3 (9).`);
     }
-    if (bytes.length > 0x640000) {
-        throw new Error('App image exceeds the CrossPoint app0 partition (6553600 bytes).');
-    }
     const machine = FlashImage.selectMachine(chip, $('device').value);
-    status(`Composing 16 MiB flash image for ${{x3: 'X3', x4: 'X4', x4pro: 'X4 Pro'}[machine]}…`);
+    const layout = FlashImage.appLayout(machine);
+    status(`Composing 16 MiB flash image for ${machineNames[machine]}…`);
     const [boot, partitions, nvs] = await Promise.all([
-        fetchImage(`bootloader-${chip === 5 ? 'esp32c3' : 'esp32s3'}.bin`),
-        fetchImage('partitions.bin'),
-        machine === 'x3' ? fetchImage('nvs-x3.bin') : null
+        fetchImage(layout.bootAsset), fetchImage(layout.partitionAsset),
+        layout.nvsAsset ? fetchImage(layout.nvsAsset) : null
     ]);
-    if (boot.byteLength < 24 || boot.byteLength > 0x8000 ||
-        new Uint8Array(boot)[0] !== 0xe9 || new Uint8Array(boot)[12] !== chip ||
-        partitions.byteLength !== 0xc00 || (nvs && nvs.byteLength !== 0x5000)) {
-        throw new Error('Invalid bundled boot assets. Run package-web.sh to regenerate the distribution.');
-    }
-    const flash = new Uint8Array(0x1000000).fill(0xff);
-    flash.set(new Uint8Array(boot), 0);
-    flash.set(new Uint8Array(partitions), 0x8000);
-    if (nvs) flash.set(new Uint8Array(nvs), 0x9000);
-    if (xota) {
-        // Stock firmware expects ota_0 to be selected and already valid.
-        // ESP-IDF OTA select entry: sequence, erased label, state, sequence CRC.
-        const view = new DataView(flash.buffer);
-        view.setUint32(0xe000, 1, true);
-        view.setUint32(0xe018, 2, true); // ESP_OTA_IMG_VALID
-        view.setUint32(0xe01c, 0x4743989a, true); // CRC32 of LE sequence 1
-    }
-    flash.set(bytes, 0x10000);
+    const flash = FlashImage.composeApp(bytes, {machine, boot, partitions, nvs, selectOta: xota});
     return {flash: flash.buffer, machine, composed: true};
 }
 
@@ -437,7 +417,7 @@ async function start() {
         if (sdLoading) await sdLoading.catch(() => {});
         if (!sdImage) await loadSD($('sd').files[0] || defaultSD());
         if (!sdImage) throw new Error('No SD image is loaded.');
-        const rom = await fetchImage(machine !== 'x4pro' ? 'esp32c3-rom.bin' : 'esp32s3_rev0_rom.bin');
+        const rom = await fetchImage((machine === 'x3' || machine === 'x4') ? 'esp32c3-rom.bin' : 'esp32s3_rev0_rom.bin');
         // The explorer waits for the runtime to own the card.
         sd.ready = false; sdSetEnabled(false); sdStatus('Starting the emulator…');
         bootData = {type: 'boot', machine, flash, sd: sdImage.buffer, rom, wifi: $('wifi').checked, turbo: $('turbo').checked, ghosting: $('ghosting').checked};
@@ -448,14 +428,14 @@ async function start() {
         frame.width = machine === 'x3' ? '528' : '480';
         frame.height = machine === 'x3' ? '792' : '800';
         frame.dataset.machine = machine;
-        frame.title = `${{x3: 'X3', x4: 'X4', x4pro: 'X4 Pro'}[machine]} display`;
+        frame.title = `${{x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco'}[machine]} display`;
         frame.src = 'runtime.html';
         // The canvas exists once the runtime page loads; size it then too.
         frame.addEventListener('load', resizeScreen);
         $('screen').replaceChildren(frame);
         setLive(machine);
         resizeScreen();
-        status(`${composition}Booting ${{x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)'}[machine]} · ${timingLabel()}…`);
+        status(`${composition}Booting ${{x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)', picco: 'BOOX Picco (ESP32-S3)'}[machine]} · ${timingLabel()}…`);
     } catch (error) { fail(error.message); }
     finally { pending = false; }
 }

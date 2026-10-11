@@ -1,3 +1,4 @@
+system_ss.add(when: 'CONFIG_SGM41562', if_true: files('sgm41562.c'))
 system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
 system_ss.add(when: 'CONFIG_CW2017', if_true: files('cw2017.c'))
 system_ss.add(when: 'CONFIG_BQ27220', if_true: files('bq27220.c'))

@@ -1,0 +1,9 @@
+# Picco build 2920: first four entries recovered from its OTA layout validator.
+# The spiffs tail is a simulator allocation; its vendor offset/size are unproven.
+# Stock mounts LittleFS using the partition label "spiffs".
+# Name,   Type, SubType, Offset,   Size, Flags
+nvs,      data, nvs,     0x9000,   0xc000,
+otadata,  data, ota,     0x15000,  0x2000,
+safeboot, app,  factory, 0x20000,  0xc0000,
+app,      app,  ota_0,   0xe0000,  0xe70000,
+spiffs,   data, spiffs,  0xf50000, 0xb0000,

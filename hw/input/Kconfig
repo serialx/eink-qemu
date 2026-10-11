@@ -5,6 +5,10 @@ config GT911
     bool
     select I2C
 
+config TMA525C
+    bool
+    select I2C
+
 config PCKBD
     bool
     select PS2

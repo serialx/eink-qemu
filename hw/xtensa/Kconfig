@@ -48,3 +48,6 @@ config XTENSA_ESP32S3
     select BM8563
     select CW2017
     select GT911
+    select QMI8658
+    select SGM41562
+    select TMA525C

@@ -133,13 +133,13 @@ static uint64_t esp32s3_cache_read(void *opaque, hwaddr addr, unsigned int size)
             r = s->dcache_enable;
             break;
         case A_EXTMEM_DCACHE_CTRL1:
-            r = s->dcache_enable;
+            r = s->regs[index];
             break;
         case A_EXTMEM_ICACHE_CTRL:
             r = s->icache_enable;
             break;
         case A_EXTMEM_ICACHE_CTRL1:
-            r = s->icache_enable;
+            r = s->regs[index];
             break;
         /* For the following registers, mark the bit as done only if the feature was enabled */
         case A_EXTMEM_DCACHE_OCCUPY_CTRL:
@@ -227,13 +227,14 @@ static void esp32s3_cache_write(void *opaque, hwaddr addr, uint64_t value,
                 s->dcache_enable = value & 1;
                 break;
             case A_EXTMEM_DCACHE_CTRL1:
-                s->dcache_enable = value & 1;
+                /* CTRL1 gates each core's bus; it does not disable cache. */
+                s->regs[index] = value & 3;
                 break;
             case A_EXTMEM_ICACHE_CTRL:
                 s->icache_enable = value & 1;
                 break;
             case A_EXTMEM_ICACHE_CTRL1:
-                s->icache_enable = value & 1;
+                s->regs[index] = value & 3;
                 break;
             case A_EXTMEM_ICACHE_FREEZE:
                 if (value & R_EXTMEM_ICACHE_FREEZE_ICACHE_FREEZE_ENA_MASK) {
@@ -277,6 +278,10 @@ static void esp32s3_cache_reset_hold(Object *obj, ResetType type)
 {
     ESP32S3CacheState *s = ESP32S3_CACHE(obj);
     memset(s->regs, 0, ESP32S3_CACHE_REG_COUNT * sizeof(*s->regs));
+    s->dcache_enable = false;
+    s->icache_enable = false;
+    s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_CTRL1)] = 3;
+    s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_ICACHE_CTRL1)] = 3;
     s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_OCCUPY_CTRL)] =
         R_EXTMEM_DCACHE_OCCUPY_CTRL_OCCUPY_DONE_MASK;
 

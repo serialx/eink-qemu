@@ -2,7 +2,7 @@
 # Boot an X4 Pro, X4 or X3 flash image in x4prosim. USB-CDC console (the firmware log) -> stdout.
 # usage: x4prosim/run.sh flash.bin [sd.img] [extra qemu args...]
 # The machine follows the image's chip (byte 12 of the bootloader header): ESP32-S3 -> x4pro,
-# ESP32-C3 -> x3. X4MACHINE=x3|x4|x4pro overrides.
+# ESP32-C3 -> x3. X4MACHINE=x3|x4|x4pro|picco overrides.
 # Wi-Fi: the fake AP "PICSimLabWifi" is bridged to a QEMU NIC.
 #   X4BR=br0: on your LAN (router DHCP); needs "allow br0" in /usr/local/etc/qemu/bridge.conf, run as root.
 #   default: QEMU NAT (10.0.2.15), host :8080 -> device :80. X4NET overrides both.

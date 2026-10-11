@@ -36,10 +36,10 @@ window.addEventListener('blur', () => homeKey(false));
 // Keep these overrides in sync with x4prosim/turbo-args.sh.
 function turboProperties(machine) {
     const properties = [
-        ...['read-access-us', 'read-seq-access-us', 'read-repeat-us', 'read-next-us',
+        ...(machine === 'picco' ? [] : ['read-access-us', 'read-seq-access-us', 'read-repeat-us', 'read-next-us',
             'write-busy-us', 'write-random-busy-us', 'write-repeat-busy-us',
             'write-block-busy-us', 'write-stop-busy-us', 'write-stop-decrement-us',
-            'write-stop-random-extra-us'].map(name => `ssi-sd.${name}=0`),
+            'write-stop-random-extra-us'].map(name => `ssi-sd.${name}=0`)),
         ...['transaction-overhead-us', 'transaction-overhead-ns', 'buffer-overhead-ns']
             .map(name => `driver=ssi.esp32s3.gpspi,property=${name},value=0`),
         'driver=ssi.esp32s3.gpspi,property=zero-wire-time,value=on',
@@ -48,7 +48,7 @@ function turboProperties(machine) {
             [...['frame-us', 'refresh-overhead-us'].map(name => `uc8279.${name}=0`),
                 ...['pon-ms', 'pof-ms', 'busy-ms'].map(name => `uc8279.${name}=1`)] :
             // Animation divides by frame-us; PON/POF remain fixed at 2 ms.
-            machine === 'x4' ? ['ssd1677.busy-ms=1'] :
+            (machine === 'x4' || machine === 'picco') ? ['ssd1677.busy-ms=1'] :
             ['uc8179.frame-us=1', 'uc8179.busy-ms=1'])
     ];
     return properties.flatMap(property => ['-global', property]);
@@ -168,8 +168,12 @@ window.addEventListener('message', async ({source, origin, data}) => {
     } else if (data.type === 'boot') {
         const {machine, flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
         machineType = machine;
-        // Keep the default pacing; allow deterministic benchmark runs to opt out.
-        const sleep = turbo || new URLSearchParams(parent.location.search).get('sleep') === 'off' ? 'off' : 'on';
+        // Picco distinguishes taps from long presses in guest time. Keep its
+        // interactive clock paced even with faster peripheral timings, or an
+        // ordinary host click can become a multi-second guest long press.
+        // Explicit benchmark runs can still opt out with ?sleep=off.
+        const sleep = (turbo && machine !== 'picco') ||
+            new URLSearchParams(parent.location.search).get('sleep') === 'off' ? 'off' : 'on';
         let browserNetwork = null;
         try {
             if (wifi) browserNetwork = await (await import('./browser-network.mjs')).createBrowserNetwork({log: output});
@@ -184,9 +188,9 @@ window.addEventListener('message', async ({source, origin, data}) => {
             canvas,
             arguments: ['-L', '/', '-machine', machine,
                 '-accel', 'tcg,tb-size=64',
-                '-icount', `shift=${machine !== 'x4pro' ? 0 : 2},sleep=${sleep}`,
+                '-icount', `shift=${(machine === 'x3' || machine === 'x4') ? 0 : 2},sleep=${sleep}`,
                 ...(turbo ? turboProperties(machine) : []),
-                ...(machine === 'x4' ? [] : ['-global', `${machine === 'x3' ? 'uc8279' : 'uc8179'}.ghosting=${ghosting ? 'on' : 'off'}`]),
+                ...((machine === 'x4' || machine === 'picco') ? [] : ['-global', `${machine === 'x3' ? 'uc8279' : 'uc8179'}.ghosting=${ghosting ? 'on' : 'off'}`]),
                 '-drive', 'file=/flash.bin,if=mtd,format=raw,cache.direct=off',
                 '-drive', 'file=/sd.img,if=sd,format=raw,cache.direct=off',
                 '-chardev', 'stdio,id=cdc', '-serial', 'null', '-parallel', 'none',
@@ -201,7 +205,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
                 monitorDevice(Module.FS);
                 Module.FS.writeFile('/flash.bin', new Uint8Array(flash), {canOwn: true});
                 Module.FS.writeFile('/sd.img', new Uint8Array(sd), {canOwn: true});
-                Module.FS.writeFile(machine !== 'x4pro' ? '/esp32c3-rom.bin' : '/esp32s3_rev0_rom.bin', new Uint8Array(rom));
+                Module.FS.writeFile((machine === 'x3' || machine === 'x4') ? '/esp32c3-rom.bin' : '/esp32s3_rev0_rom.bin', new Uint8Array(rom));
             }],
             onRuntimeInitialized: () => {
                 // Nothing is typed into the firmware's serial port: keep stdin quiet.
@@ -213,7 +217,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
             }
         };
         const script = document.createElement('script');
-        script.src = `qemu-system-${machine !== 'x4pro' ? 'riscv32' : 'xtensa'}.js`;
+        script.src = `qemu-system-${(machine === 'x3' || machine === 'x4') ? 'riscv32' : 'xtensa'}.js`;
         script.onerror = () => send('error', {message: 'Could not load the emulator. Run package-web.sh first.'});
         document.body.append(script);
     }

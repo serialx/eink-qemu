@@ -70,6 +70,49 @@ class MkflashTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'conflicts'):
             mkflash.detect_chip(self.app(9), 'x4')
 
+    def test_picco_composition_selects_ota_app_and_preserves_payload(self):
+        app = self.app(9) + bytes(0x640000)
+        flash = mkflash.make_flash(self.write('picco.bin', app), 'picco')
+        table = flash[0x8000:0x8c00]
+        self.assertEqual(mkflash.read_partitions(table), [
+            (1, 2, 0x9000, 0xc000), (1, 0, 0x15000, 0x2000),
+            (0, 0, 0x20000, 0xc0000), (0, 0x10, 0xe0000, 0xe70000),
+            (1, 0x82, 0xf50000, 0xb0000),
+        ])
+        labels = [mkflash.ENTRY.unpack_from(table, pos)[5].rstrip(b'\0')
+                  for pos in range(0, 5 * 32, 32)]
+        self.assertEqual(labels, [b'nvs', b'otadata', b'safeboot', b'app', b'spiffs'])
+        self.assertEqual(flash[0xe0000:0xe0000 + len(app)], app)
+        self.assertEqual(flash[0x20000:0xe0000], b'\xff' * 0xc0000)
+        self.assertEqual(flash[0x9000:0x15000], b'\xff' * 0xc000)
+        self.assertEqual(flash[0xf50000:], b'\xff' * 0xb0000)
+        # Valid ESP-IDF OTA record selects ota_0 even with a factory slot present.
+        self.assertEqual(struct.unpack_from('<I', flash, 0x15000)[0], 1)
+        self.assertEqual(flash[0x15004:0x15018], b'\xff' * 20)
+        self.assertEqual(struct.unpack_from('<II', flash, 0x15018), (2, 0x4743989a))
+        self.assertEqual(flash[0x15020:0x17000], b'\xff' * (0x2000 - 32))
+
+    def test_picco_rejects_wrong_chip_oversize_and_wrong_build_layout(self):
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            mkflash.make_flash(self.write('c3.bin', self.app()), 'picco')
+        table = mkflash.partition_table(mkflash.BOOT_DIR / 'partitions-picco.csv')
+        with self.assertRaisesRegex(ValueError, 'partition size'):
+            mkflash.compose(self.app(9) + bytes(0xe70000), self.app(9), table, 'picco')
+        with self.assertRaisesRegex(ValueError, '0xe0000'):
+            mkflash.compose(self.app(9), self.app(9), self.table, 'picco')
+
+    def test_picco_merged_dump_keeps_boot_selection_and_all_data(self):
+        app = self.app(9)
+        flash = bytearray(mkflash.make_flash(self.write('picco.bin', app), 'picco'))
+        flash[0x15000:0x17000] = b'\xff' * 0x2000
+        flash[0x20000:0x20000 + len(app)] = app
+        flash[0xf50000:0xf50004] = b'FS!!'
+        self.assertEqual(mkflash.make_flash(self.write('dump.bin', flash), 'picco'), flash)
+        merged = flash[:0xf50004]
+        expanded = mkflash.make_flash(self.write('merged.bin', merged), 'picco')
+        self.assertEqual(expanded[:len(merged)], merged)
+        self.assertEqual(expanded[len(merged):], b'\xff' * (mkflash.FLASH_SIZE - len(merged)))
+
     def test_pass_through(self):
         data = bytes(range(256)) * (mkflash.FLASH_SIZE // 256)
         self.assertEqual(mkflash.make_flash(self.write('flash.bin', data)), data)

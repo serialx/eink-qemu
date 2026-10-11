@@ -173,9 +173,11 @@ static void esp32s3_i2c_run(ESP32S3I2CState *s)
             return;
         }
         if (nacked) {
-            /* The controller sends STOP itself after an unexpected ACK level */
+            /* ACK mismatch generates an automatic STOP (S3 TRM 27.4.9).
+             * STOP detection also raises TRANS_COMPLETE (27.6), allowing
+             * the driver to finish receive bookkeeping before the next job. */
             esp32s3_i2c_release(s);
-            s->regs[R_INT_RAW] |= R_INT_NACK_MASK;
+            s->regs[R_INT_RAW] |= R_INT_NACK_MASK | R_INT_TRANS_COMPLETE_MASK;
             return;
         }
     }

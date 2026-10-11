@@ -41,6 +41,7 @@ provenance = (mkflash.BOOT_DIR / 'README.md').read_text()
 (out / 'boot-provenance.md').write_text(provenance.replace('(LICENSE)', '(bootloader.LICENSE.txt)')
                                        .replace('(LICENSE.partitions)', '(partitions.LICENSE.txt)'))
 (out / 'partitions.bin').write_bytes(mkflash.partition_table())
+(out / 'partitions-picco.bin').write_bytes(mkflash.partition_table(mkflash.BOOT_DIR / 'partitions-picco.csv'))
 (out / 'nvs-x3.bin').write_bytes(mknvs.image(0x5000, 'cphw', {'dev_det': 2}))
 PYBOOT
 if [ ! -f "$DEST/blank-sd.img" ]; then

@@ -19,6 +19,7 @@ FLASH_SIZE = 0x1000000
 TABLE_OFFSET = 0x8000
 TABLE_SIZE = 0xC00
 APP_OFFSET = 0x10000
+PICCO_APP_OFFSET = 0xE0000
 BOOT_DIR = Path(__file__).resolve().parent / "boot"
 CHIPS = {5: ("x3", "esp32c3"), 9: ("x4pro", "esp32s3")}
 ENTRY = struct.Struct("<2sBBII16sI")
@@ -30,15 +31,15 @@ def detect_chip(data, machine=None):
     chip = struct.unpack_from("<H", data, 12)[0]
     if chip not in CHIPS:
         raise ValueError(f"unsupported ESP chip ID {chip}; expected 5 (C3) or 9 (S3)")
-    if machine and {"x3": 5, "x4": 5, "x4pro": 9}.get(machine) != chip:
+    if machine and {"x3": 5, "x4": 5, "x4pro": 9, "picco": 9}.get(machine) != chip:
         raise ValueError(f"--machine {machine} conflicts with {CHIPS[chip][1]} image")
     return chip
 
 
 def partition_table(path=BOOT_DIR / "partitions.csv"):
-    """Encode the explicit-offset CrossPoint CSV in ESP-IDF partition format."""
+    """Encode an explicit-offset CSV in ESP-IDF partition format."""
     types = {"app": 0, "data": 1}
-    subtypes = {"ota_0": 0x10, "ota_1": 0x11, "nvs": 2, "ota": 0,
+    subtypes = {"factory": 0, "ota_0": 0x10, "ota_1": 0x11, "nvs": 2, "ota": 0,
                 "spiffs": 0x82, "coredump": 3}
     result = bytearray()
     with Path(path).open(newline="") as source:
@@ -89,15 +90,23 @@ def compose(app, boot, table, machine=None):
     if len(boot) > TABLE_OFFSET:
         raise ValueError("bootloader overlaps partition table")
     entries = read_partitions(table)
-    apps = [p for p in entries if p[0] == 0 and p[2] == APP_OFFSET]
+    app_offset = PICCO_APP_OFFSET if machine == "picco" else APP_OFFSET
+    apps = [p for p in entries if p[0] == 0 and p[2] == app_offset]
     if len(apps) != 1:
-        raise ValueError("build must have an app partition at 0x10000")
+        raise ValueError(f"build must have an app partition at {app_offset:#x}")
     if len(app) > apps[0][3]:
         raise ValueError(f"app exceeds app0 partition size ({apps[0][3]:#x})")
     flash = bytearray(b"\xff" * FLASH_SIZE)
     flash[:len(boot)] = boot
     flash[TABLE_OFFSET:TABLE_OFFSET + len(table)] = table
-    flash[APP_OFFSET:APP_OFFSET + len(app)] = app
+    flash[app_offset:app_offset + len(app)] = app
+    if machine == "picco":
+        if apps[0][1] != 0x10 or (1, 0, 0x15000, 0x2000) not in entries:
+            raise ValueError("Picco requires ota_0 app and OTA metadata at 0x15000")
+        # Select ota_0 explicitly: the factory safeboot slot is intentionally blank.
+        # ESP-IDF select entry: sequence 1, erased label, VALID state, sequence CRC.
+        struct.pack_into("<I", flash, 0x15000, 1)
+        struct.pack_into("<II", flash, 0x15018, 2, 0x4743989A)
     if chip == 5 and machine != "x4":
         # Same cached X3 device detection as mkflash.sh; S3 remains erased.
         if (1, 2, 0x9000, 0x5000) not in entries:
@@ -149,14 +158,16 @@ def make_flash(source, machine=None):
         # Preserve the bundled bootloader, partition layout, and all app/data bytes.
         return data.ljust(FLASH_SIZE, b'\xff')
     boot = (BOOT_DIR / f"bootloader-{CHIPS[chip][1]}.bin").read_bytes()
-    return compose(data, boot, partition_table(), machine)
+    table_name = "partitions-picco.csv" if machine == "picco" else "partitions.csv"
+    return compose(data, boot, partition_table(BOOT_DIR / table_name), machine)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="app or merged .bin, build directory, or 16 MiB image")
     parser.add_argument("output", type=Path)
-    parser.add_argument("--machine", choices=("x3", "x4", "x4pro"), help="check the detected chip matches this machine")
+    parser.add_argument("--machine", choices=("x3", "x4", "x4pro", "picco"),
+                        help="select the board's app layout and check the detected chip")
     args = parser.parse_args()
     try:
         image = make_flash(args.source, args.machine)

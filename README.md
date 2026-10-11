@@ -1,7 +1,7 @@
 # x4prosim
 
 An emulator for the **Xteink X4 Pro** e-reader (ESP32-S3R8, 16 MB flash, 8 MB
-octal PSRAM) and the **Xteink X3/X4** (ESP32-C3). It runs **unmodified firmware**,
+octal PSRAM), the **BOOX Picco** (ESP32-S3), and the **Xteink X3/X4** (ESP32-C3). It runs **unmodified firmware**,
 whether that's the stock firmware, CrossInk, CrossDink, CrossPoint, or a bare
 ESP-IDF/Arduino app. The screen, SD card, keys, touch, clock, battery gauge and
 Wi-Fi all behave like the board, so you can develop firmware without the device.
@@ -36,6 +36,37 @@ BUSY. Refresh timing is simplified and ghosting is not modeled. The console
 uses the device's 480×800 portrait orientation; TRMNL draws its setup interface
 in landscape.
 
+## BOOX Picco
+
+Select **BOOX Picco** before loading a Picco app `.bin` in the browser, or use
+`?device=picco`. ESP32-S3 chip detection alone defaults to X4 Pro, so Picco
+requires an explicit board selection.
+
+```sh
+python3 x4prosim/mkflash.py --machine picco picco1.0.2920.bin flash-picco.bin
+X4MACHINE=picco x4prosim/run.sh flash-picco.bin sd.img
+X4MACHINE=picco x4prosim/wasm/run-node.sh flash-picco.bin sd.img
+```
+
+The composer places the unchanged app at `0xE0000` using Picco's NVS, OTA,
+recovery-slot and app layout. The recovery slot stays erased because an app
+update does not contain recovery firmware. The remaining flash provides an
+empty `spiffs` partition for LittleFS; this allocation is for the simulator.
+Merged flash images retain their original layout and contents.
+
+The board includes the SSD1677 display, Up/Down/Power keys, TMA525C touch,
+SGM41562 charger, BM8563 RTC, QMI8658 motion sensor and SDMMC card. Display
+waveforms and charging are simplified; frontlight brightness, multitouch and
+touch-controller firmware updates are not simulated.
+
+Host pointer taps last at least 100 ms of guest time so slower emulation does
+not collapse a click between UI polls. Set `-global tma525c.host-touch-ms=0`
+to disable this input timing adjustment; scripted QOM `touch` events remain
+immediate.
+The browser also keeps Picco's guest clock paced in Turbo mode so ordinary
+clicks do not become long presses; display and bus timing still use the Turbo
+settings. `?sleep=off` permits unpaced benchmarks.
+
 ## Porting layers
 
 See [x4prosim/porting/README.md](x4prosim/porting/README.md) for the QEMU 11.1.2
@@ -44,7 +75,7 @@ porting branches, layer ownership, build command and commit rules.
 ## Downloads
 
 CI builds every push for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and
-Windows, one archive per emulator (`xtensa-softmmu` = X4 Pro,
+Windows, one archive per emulator (`xtensa-softmmu` = X4 Pro/Picco,
 `riscv32-softmmu` = X3/X4). Get them from the latest run under
 [Actions](../../actions) (artifacts `dist-qemu-*`), or from
 [Releases](../../releases) for tagged versions. Each archive has `bin/`, the

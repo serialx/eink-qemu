@@ -29,10 +29,10 @@ firmware starts the emulator (Start reruns it after Stop). Release assets:
   X4 Pro: crosspoint-<ver>-x4pro.bin
   https://github.com/crosspoint-reader/crosspoint-reader/releases
 The browser composes release apps into 16 MiB flash using bundled C3/S3
-bootloaders, the CrossPoint partition table and the X3-only NVS device seed.
+bootloaders, the selected board's partition table and the X3-only NVS device seed.
 App bytes stay unchanged. No esptool or PlatformIO is needed. Boot asset
 provenance and licenses are in x4prosim/boot/README.md (boot-provenance.md in
-the package). Unsupported chips, invalid headers and apps over 0x640000 bytes
+the package). Unsupported chips, invalid headers and apps exceeding the selected board partition
 are rejected. Full 16 MiB images pass through unchanged.
 The hosted copy is https://serialx.github.io/x4prosim/ (no firmware included).
 Ghosting starts ticked. Untick it before Start or use ?ghosting=0 for clean,
@@ -51,7 +51,7 @@ Alternatively put copies of your images in web-dist and open:
 Query images must be same-origin or provide appropriate CORS/CORP headers.
 Device remembers your choice between visits. Auto selects X4 Pro for ESP32-S3;
 ESP32-C3 requires an explicit X3 or X4 choice because both use the same chip.
-Use ?device=x3, ?device=x4 or ?device=x4pro to select a board in a link.
+Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to select a board in a link.
 A device/chip mismatch is rejected before boot.
 
 For TRMNL FW1.8.17.bin, choose X4 and load the merged .bin directly. Its
@@ -59,6 +59,15 @@ bootloader, partitions and firmware bytes are preserved. The SSD1677 panel
 shows the setup QR code and Wi-Fi instructions. X4 has simplified refresh
 timing and no ghosting simulation. The display stays in physical portrait
 orientation; firmware such as TRMNL may draw its interface in landscape.
+
+For BOOX Picco, select BOOX Picco before loading picco1.0.2920.bin, or use
+?device=picco. Its app is copied unchanged to 0xE0000 using Picco partitions;
+the app limit is 0xE70000 bytes. The recovery slot stays erased. Controls are
+Up, Down, Power and touch. Frontlight brightness and touch firmware updates
+are not simulated.
+Picco keeps its guest clock paced even in Turbo mode so clicks retain their
+duration. Turbo still speeds up peripheral timing; ?sleep=off disables pacing
+for benchmarks.
 
 The server sets COOP and COEP for SharedArrayBuffer and pthreads. For a remote
 host use HTTPS and the same headers; plain HTTP works only on localhost. A
@@ -79,7 +88,7 @@ is disabled because Emscripten SDL has one canvas. Wi-Fi networking is disabled 
 Node wasm launcher.
 
 The canvas and runtime iframe retain the native panel resolution: 528x792 for
-X3 and 480x800 for X4/X4 Pro. The page scales the iframe in whole physical-pixel
+X3 and 480x800 for X4/X4 Pro/Picco. The page scales the iframe in whole physical-pixel
 multiples, adapting to browser zoom, monitor pixel density, and available width.
 On a 2x Retina display at 100% zoom, each panel pixel occupies a 2x2 block.
 If a narrow window cannot fit even one physical pixel per panel pixel, the

@@ -5,7 +5,7 @@ usage: drive.py flash.bin sd.img log.txt STEP...
 steps:  wait:SECONDS     press:KEY[:MS]     shot:FILE.png
         hmp:COMMAND      (any monitor command, output printed)
 KEY: up|down|power on the X4 Pro; back|confirm|left|right|up|down|power on the X3/X4.
-The machine follows the image's chip (X4MACHINE=x3|x4|x4pro overrides).
+The machine follows the image's chip (X4MACHINE=x3|x4|x4pro|picco overrides).
 The firmware log (USB-CDC) goes to log.txt."""
 import os, socket, subprocess, sys, time
 
@@ -17,7 +17,7 @@ machine = os.environ.get("X4MACHINE") or ("x3" if chip == 5 else "x4pro")
 qemu = os.path.join(here, "..", "build", "qemu-system-riscv32" if machine in ("x3", "x4") else "qemu-system-xtensa")
 if not os.path.exists(qemu):    # release archives have the binaries in bin/
     qemu = os.path.join(here, "..", "bin", os.path.basename(qemu))
-keys = "x3-keys" if machine in ("x3", "x4") else "x4pro-keys"
+keys = "x3-keys" if machine in ("x3", "x4") else "picco-keys" if machine == "picco" else "x4pro-keys"
 sock = f"/tmp/x4prosim-{os.getpid()}.sock"
 if not os.path.exists(sd):
     subprocess.run([sys.executable, os.path.join(here, "mksd.py"), sd], check=True)
