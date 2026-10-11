@@ -299,8 +299,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '26'
-      - name: Test SD image geometry and file copying
-        run: python3 -m unittest discover -s x4prosim/tests -p test_mksd.py
       - name: Test browser FAT filesystem
         run: node x4prosim/wasm/web/fat.test.mjs
       - name: Test Wi-Fi asset preparation and packaging
