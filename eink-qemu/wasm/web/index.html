@@ -8,6 +8,8 @@
     // Apply a saved theme before the first paint.
     try { const theme = localStorage.getItem('eink-qemu-theme'); if (theme) document.documentElement.dataset.theme = theme; } catch {}
   </script>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="stylesheet" href="style.css">
   <script src="coi-serviceworker.js"></script>
 </head>
@@ -38,7 +40,7 @@
   <div class="app" data-tab="sd">
     <header class="topbar">
       <div class="brandbar">
-        <h1 class="brand">x4pro<span>sim</span></h1>
+        <h1 class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">eink-<span>qemu</span></span></h1>
         <button id="theme" class="icon-button" type="button" aria-label="Switch to dark mode">
           <svg class="icon"><use href="#i-moon"/></svg>
         </button>

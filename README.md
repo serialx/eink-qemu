@@ -1,4 +1,9 @@
-# eink-qemu
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="eink-qemu/logo/eink-qemu-dark.svg">
+    <img src="eink-qemu/logo/eink-qemu-light.svg" width="260" alt="eink-qemu">
+  </picture>
+</h1>
 
 An emulator for **ESP32-based e-ink readers**: the **Xteink X4 Pro** (ESP32-S3R8,
 16 MB flash, 8 MB octal PSRAM), the **BOOX Picco** (ESP32-S3), and the
@@ -12,6 +17,11 @@ Wi-Fi all behave like the board, so you can develop firmware without the device.
 Built on upstream **QEMU 11.1.2**, with the Espressif SoC models ported over.
 The rule is that no firmware is ever changed to make it boot here: the hardware is modeled from datasheets and
 from the real board instead.
+
+eink-qemu started as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
+by prokrypt, which first brought the Xteink X4 Pro up in QEMU: the board and its
+peripherals, and the e-ink panel with its refresh and ghosting model. This
+project builds on that work.
 
 ## Xteink X4 / TRMNL
 
@@ -255,7 +265,9 @@ the form `eink-qemu: <what>`. Read the workflow section of
 
 ## License and credits
 
-- This project began as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim).
+- This project began as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
+  by prokrypt: the X4 Pro machine, its peripherals and the UC8179 panel model.
+- The cow logo is in [eink-qemu/logo](eink-qemu/logo).
 - QEMU is GPL-2.0; see [COPYING](COPYING) and [LICENSE](LICENSE). The original
   QEMU README is [README.rst](README.rst).
 - The ESP32 SoC models come from Espressif's QEMU fork.
