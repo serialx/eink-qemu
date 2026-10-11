@@ -55,6 +55,8 @@ await new Promise((resolve, reject) => {
     ws.addEventListener('error', reject, {once: true});
 });
 let sequence = 0, expectedDialog = null, observerScript;
+let pageLoaded = false;
+const observedErrors = [];
 const calls = new Map(), errors = [];
 function call(method, params = {}) {
     return new Promise((resolve, reject) => {
@@ -190,11 +192,16 @@ async function stop() {
     await waitFor('!document.querySelector("iframe") && !document.querySelector("#start").disabled');
 }
 async function freshPage() {
+    // The page observer is recreated on navigation. Keep each page's error
+    // history in the driver so later reloads cannot erase the rename collision
+    // (or hide an unexpected SD error) before the final assertion.
+    if (pageLoaded) observedErrors.push(...await evaluate('window.explorerErrors || []'));
     await call('Page.navigate', {url: url.href});
     errors.length = 0;
     await waitFor('crossOriginIsolated && document.querySelector("#sd-refresh") && !document.querySelector("#sd-refresh").disabled');
     assert.equal(await evaluate('!!document.querySelector("iframe")'), false, 'Picker page must not auto-start');
     assert.equal(await evaluate('document.querySelector("#turbo").checked'), measurements.turbo);
+    pageLoaded = true;
 }
 try {
     await call('Runtime.enable'); await call('Page.enable'); await call('DOM.enable');
@@ -319,10 +326,10 @@ try {
     await listing('restarted', [renamed, folder]);
     await screenshot('explorer-restarted', '.sd');
     await screenshot('device-restarted-home', 'iframe');
-    const observedErrors = await evaluate('window.explorerErrors');
+    observedErrors.push(...await evaluate('window.explorerErrors'));
+    measurements.observed_errors = observedErrors;
     assert.equal(observedErrors.length, 1, `Only the intentional collision may set #sd-error: ${observedErrors}`);
     assert.match(observedErrors[0], /exist/i);
-    measurements.observed_errors = observedErrors;
     await stop();
     assert.equal(errors.length, 0, JSON.stringify(errors));
     measurements.total_s = (Date.now() - started) / 1000;

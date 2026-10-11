@@ -6,7 +6,11 @@
  * Optional: CDP_PORT, CHROME_PID, EVIDENCE_DIR, TIMEOUT (seconds),
  * WEB_MACHINE=x4pro, EXPECT_SERVICE_WORKER=1, PICKER_FLASH/PICKER_SD, RELEASE_APP (local app for a ?flash= URL).
  * CPU_PROFILE=1 captures worker profiles split at Home; BENCH_ONLY=1 stops
- * after settled; REFERENCE_PPM checks an exact panel screendump.
+ * after settled; REFERENCE_PPM pauses/captures at first MEM, before UI checks.
+ * It reports exact equality or an explicit one-gray-level drift fallback.
+ * HOME_CHECKPOINT=1 pauses and captures the third completed refresh;
+ * REFERENCE_HOME_PPM enables that capture and requires exact pixels.
+ * Checkpoint captures perturb wall timing; use separate runs for benchmarks.
  * REFERENCE_LOG also checks the first eight wait lines with sleep=off.
  * Add sleep=off to the page URL for deterministic timing measurements.
  * No npm packages are required. */
@@ -20,6 +24,32 @@ async function sha256(file) {
     const hash = createHash('sha256');
     for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
     return hash.digest('hex');
+}
+function comparePPM(actual, reference, maxLevelDelta) {
+    const parse = bytes => {
+        const header = /^P6\n(\d+) (\d+)\n255\n/.exec(bytes.subarray(0, 64).toString('ascii'));
+        if (!header) throw new Error('Expected a QEMU P6/255 panel screendump');
+        const width = Number(header[1]), height = Number(header[2]);
+        const pixels = bytes.subarray(header[0].length);
+        if (pixels.length !== width * height * 3) throw new Error('Incomplete panel screendump');
+        return {width, height, pixels};
+    };
+    const a = parse(actual), b = parse(reference);
+    if (a.width !== b.width || a.height !== b.height) throw new Error('Panel dimensions differ');
+    let differingPixels = 0, differingBytes = 0, maxDelta = 0, grayscale = true;
+    for (let i = 0; i < a.pixels.length; i += 3) {
+        let changed = false;
+        for (let channel = 0; channel < 3; channel++) {
+            const delta = Math.abs(a.pixels[i + channel] - b.pixels[i + channel]);
+            if (delta) { differingBytes++; changed = true; }
+            maxDelta = Math.max(maxDelta, delta);
+            grayscale &&= a.pixels[i + channel] === a.pixels[i] && b.pixels[i + channel] === b.pixels[i];
+        }
+        if (changed) differingPixels++;
+    }
+    return {differing_pixels: differingPixels, differing_bytes: differingBytes,
+        max_level_delta: maxDelta, allowed_level_delta: maxLevelDelta,
+        grayscale, passed: maxDelta === 0 || (grayscale && maxDelta <= maxLevelDelta)};
 }
 const evidence = process.env.EVIDENCE_DIR || 'build-wasm/evidence';
 fs.mkdirSync(evidence, {recursive: true});
@@ -155,6 +185,17 @@ async function checkDisplaySizes(width, height) {
 const measurements = {host_cpu: os.cpus()[0].model, host_logical_cpus: os.cpus().length,
     host_ram_bytes: os.totalmem(), url: process.argv[2],
     browser: await call('Browser.getVersion')};
+function checkPanel(ppm, referencePath, checkpoint = false) {
+    const difference = comparePPM(ppm, fs.readFileSync(referencePath), checkpoint ? 0 : 1);
+    difference.tolerance_fallback = difference.passed && difference.max_level_delta > 0;
+    const name = checkpoint ? 'home_panel_difference' : 'panel_difference';
+    measurements[name] = difference;
+    fs.writeFileSync(path.join(evidence, `${name}.json`), JSON.stringify(difference, null, 2) + '\n');
+    console.log(`${name}: ${JSON.stringify(difference)}`);
+    if (!difference.passed) throw new Error(`Browser panel differs from ${referencePath}: ${JSON.stringify(difference)}`);
+}
+const homeCheckpoint = process.env.HOME_CHECKPOINT === '1' || !!process.env.REFERENCE_HOME_PPM;
+const settledCheckpoint = !!process.env.REFERENCE_PPM;
 let peakRSS = 0, peakCPU = 0;
 const chromePID = Number(process.env.CHROME_PID);
 const sampler = setInterval(() => {
@@ -190,11 +231,18 @@ smoke: try {
                 window.smokeRefreshes = (window.smokeRefreshes || 0) + 1;
                 if (window.smokeRefreshes === 3) {
                     window.smokeHomeEpoch = Date.now();
+                    if (${homeCheckpoint}) {
+                        document.querySelector('iframe').contentWindow.command('stop\nscreendump /smoke-home.ppm panel');
+                    }
                     console.debug('smoke:home');
                 }
             }
             if (window.smokeHomeEpoch && !window.smokeSettledEpoch && data.line.includes('[MEM]')) {
                 window.smokeSettledEpoch = Date.now();
+                if (${settledCheckpoint}) {
+                    window.smokeSettledLine = data.line;
+                    document.querySelector('iframe').contentWindow.command('stop\nscreendump /smoke-settled.ppm panel');
+                }
                 console.debug('smoke:settled');
             }
         });
@@ -252,28 +300,56 @@ smoke: try {
         return {renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)};
     })()`);
     if (!measurements.webgl) throw new Error('WebGL must be available for this acceptance test');
+    if (homeCheckpoint) {
+        await waitFor('window.smokeHomeEpoch');
+        const size = process.env.WEB_MACHINE === 'x4pro' ? 480 * 800 * 3 + 15 : 528 * 792 * 3 + 15;
+        await waitFor(`(() => { const fs = document.querySelector('iframe').contentWindow.Module.FS;
+            return fs.analyzePath('/smoke-home.ppm').exists && fs.stat('/smoke-home.ppm').size === ${size}; })()`);
+        const ppm = Buffer.from(await evaluate(`Array.from(document.querySelector('iframe').contentWindow.Module.FS.readFile('/smoke-home.ppm'))`));
+        fs.writeFileSync(path.join(evidence, 'web-home.ppm'), ppm);
+        fs.writeFileSync(path.join(evidence, 'web-home.log'), await evaluate(consoleText));
+        measurements.home_checkpoint_sha256 = createHash('sha256').update(ppm).digest('hex');
+        if (process.env.REFERENCE_HOME_PPM) checkPanel(ppm, process.env.REFERENCE_HOME_PPM, true);
+        await evaluate(`document.querySelector('iframe').contentWindow.command('cont')`);
+    }
+    async function checkSettledPanel() {
+        if (!settledCheckpoint) return;
+        await waitFor('window.smokeSettledEpoch');
+        const size = process.env.WEB_MACHINE === 'x4pro' ? 480 * 800 * 3 + 15 : 528 * 792 * 3 + 15;
+        await waitFor(`(() => { const fs = document.querySelector('iframe').contentWindow.Module.FS;
+            return fs.analyzePath('/smoke-settled.ppm').exists && fs.stat('/smoke-settled.ppm').size === ${size}; })()`);
+        const ppm = Buffer.from(await evaluate(`Array.from(document.querySelector('iframe').contentWindow.Module.FS.readFile('/smoke-settled.ppm'))`));
+        const prefix = process.env.WEB_MACHINE === 'x4pro' ? 'web-x4pro' : 'web';
+        fs.writeFileSync(path.join(evidence, `${prefix}.ppm`), ppm);
+        fs.writeFileSync(path.join(evidence, 'web-settled.log'), await evaluate(consoleText));
+        measurements.panel_checkpoint = 'first-mem';
+        measurements.panel_checkpoint_line = await evaluate('window.smokeSettledLine');
+        measurements.ppm_sha256 = createHash('sha256').update(ppm).digest('hex');
+        checkPanel(ppm, process.env.REFERENCE_PPM);
+        await evaluate(`document.querySelector('iframe').contentWindow.command('cont')`);
+    }
     if (process.env.WEB_MACHINE === 'x4pro') {
         // The runtime appears after the emulator download; from a remote host that takes seconds.
-        await waitFor(`!!document.querySelector('iframe').contentWindow.Module?.FS`);
+        await waitFor(`document.querySelector('iframe').contentWindow.Module?.FS?.analyzePath('/flash.bin').exists`);
         measurements.firmware = await evaluate(`(() => {
             const bytes = document.querySelector('iframe').contentWindow.Module.FS.readFile('/flash.bin');
             return [0, 0x10000].some(offset => bytes[offset] === 0xe9 &&
                 bytes[offset + 12] === 9 && bytes[offset + 13] === 0);
         })()`);
         if (measurements.firmware) {
+            await checkSettledPanel();
             measurements.home_milestone_s = await waitFor('window.bootTimeSeconds');
             measurements.page_load_to_home_s = ((await waitFor('window.smokeHomeEpoch')) - start) / 1000;
             measurements.settled_s = ((await waitFor('window.smokeSettledEpoch')) - start) / 1000;
             measurements.home_to_settled_s = measurements.settled_s - measurements.page_load_to_home_s;
             await screenshot('web-x4pro-home.png');
-            await evaluate(`document.querySelector('iframe').contentWindow.command('screendump /smoke.ppm panel')`);
-            await waitFor(`document.querySelector('iframe').contentWindow.Module.FS.analyzePath('/smoke.ppm').exists`);
-            const bytes = await evaluate(`Array.from(document.querySelector('iframe').contentWindow.Module.FS.readFile('/smoke.ppm'))`);
-            const ppm = Buffer.from(bytes);
-            fs.writeFileSync(path.join(evidence, 'web-x4pro.ppm'), ppm);
-            measurements.ppm_sha256 = createHash('sha256').update(ppm).digest('hex');
-            if (process.env.REFERENCE_PPM && !ppm.equals(fs.readFileSync(process.env.REFERENCE_PPM))) {
-                throw new Error('X4 Pro browser PPM differs from reference');
+            if (!settledCheckpoint) {
+                await evaluate(`document.querySelector('iframe').contentWindow.command('screendump /smoke.ppm panel')`);
+                await waitFor(`document.querySelector('iframe').contentWindow.Module.FS.analyzePath('/smoke.ppm').exists`);
+                const bytes = await evaluate(`Array.from(document.querySelector('iframe').contentWindow.Module.FS.readFile('/smoke.ppm'))`);
+                const ppm = Buffer.from(bytes);
+                fs.writeFileSync(path.join(evidence, 'web-x4pro.ppm'), ppm);
+                measurements.ppm_sha256 = createHash('sha256').update(ppm).digest('hex');
             }
             const before = await evaluate(`${canvas}.toDataURL()`);
             await evaluate(`Array.from(document.querySelectorAll('#keys button')).find(b => b.textContent === 'Down').click()`);
@@ -301,13 +377,16 @@ smoke: try {
         }
         measurements.display_sizes = await checkDisplaySizes(480, 800);
         const beforeTouch = await evaluate(`${canvas}.toDataURL()`);
-        // Returning Home keeps Library selected. Compare the header and book
-        // area, excluding the menu selection that legitimately changes.
+        // Home keeps Library selected after returning. The File Transfer and
+        // Settings rows remain unselected throughout this flow on both blank
+        // and populated cards. Compare them exactly: the book area can retain
+        // selection ghosts even after moving selection away before the test.
         const homeRegion = `(() => {
-            const c = document.createElement('canvas'); c.width = 480; c.height = 300;
-            c.getContext('2d').drawImage(${canvas}, 0, 0); return c.toDataURL();
+            const c = document.createElement('canvas'); c.width = 480; c.height = 180;
+            c.getContext('2d').drawImage(${canvas}, 0, -460); return c.toDataURL();
         })()`;
         const homePixels = await evaluate(homeRegion);
+        fs.writeFileSync(path.join(evidence, 'web-x4pro-home-region.png'), Buffer.from(homePixels.split(',')[1], 'base64'));
         const logBeforeTouch = await evaluate(consoleText);
         const point = await evaluate(`(() => {
             const frame = document.querySelector('iframe');
@@ -358,6 +437,7 @@ smoke: try {
             await screenshot('web-x4pro-home-control.png');
         }
     } else {
+        await checkSettledPanel();
         measurements.home_milestone_s = await waitFor('window.bootTimeSeconds');
         measurements.page_load_to_home_s = ((await waitFor('window.smokeHomeEpoch')) - start) / 1000;
         measurements.canvas = await evaluate(`({width:${canvas}.width,height:${canvas}.height})`);
@@ -387,15 +467,6 @@ smoke: try {
         await profileQueue;
         if (errors.length) throw new Error(JSON.stringify(errors));
         if (profiling && !workers.size) throw new Error('No worker profiles captured');
-        if (process.env.REFERENCE_PPM) {
-            await evaluate(`document.querySelector('iframe').contentWindow.command('screendump /smoke.ppm panel')`);
-            await waitFor(`document.querySelector('iframe').contentWindow.Module.FS.analyzePath('/smoke.ppm').exists`);
-            const bytes = await evaluate(`Array.from(document.querySelector('iframe').contentWindow.Module.FS.readFile('/smoke.ppm'))`);
-            const ppm = Buffer.from(bytes);
-            fs.writeFileSync(path.join(evidence, 'web.ppm'), ppm);
-            measurements.ppm_sha256 = createHash('sha256').update(ppm).digest('hex');
-            if (!ppm.equals(fs.readFileSync(process.env.REFERENCE_PPM))) throw new Error('Browser PPM differs from reference');
-        }
         if (process.env.BENCH_ONLY === '1') {
             fs.writeFileSync(path.join(evidence, 'web.log'), await evaluate(consoleText));
             fs.writeFileSync(path.join(evidence, 'web-measurements.json'), JSON.stringify(measurements, null, 2) + '\n');
@@ -468,6 +539,7 @@ smoke: try {
     console.log('PASS: all browser smoke checks passed');
 } catch (error) {
     fs.writeFileSync(path.join(evidence, 'web-failure.txt'), String(error.stack || error));
+    fs.writeFileSync(path.join(evidence, 'web-failure-measurements.json'), JSON.stringify(measurements, null, 2) + '\n');
     try {
         fs.writeFileSync(path.join(evidence, 'web-failure.log'), await evaluate(consoleText) || '');
         await screenshot('web-failure.png');

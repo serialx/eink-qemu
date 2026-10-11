@@ -70,6 +70,10 @@ def run(args, variant, number):
                 '-mon', 'chardev=cdc,mode=readline', '-display', 'none', '-nic', 'none']
     if wasm:
         command += ['-accel', 'tcg,tb-size=64']
+    if args.mode == 'turbo':
+        command += subprocess.check_output(
+            ['sh', str(ROOT / 'x4prosim/turbo-args.sh'), 'x3'],
+            text=True).splitlines()
     env = {**os.environ, 'WASM_JIT_STATS': '1', 'TURBO_PROFILE_DIR': str(out)}
     start = time.monotonic()
     p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -79,7 +83,7 @@ def run(args, variant, number):
     samples = sampler(p.pid, out / 'native-home.sample') if args.profile == 'native' and not wasm and args.stop_at == 'home' else None
     pending_samples = []
     data = bytearray()
-    row = {'variant': variant, 'pid': p.pid, 'argv': command, 'sleep': args.sleep,
+    row = {'variant': variant, 'mode': args.mode, 'pid': p.pid, 'argv': command, 'sleep': args.sleep,
            'start_us': start * 1e6, 'wall_offset_us': time.time() * 1e6 - time.monotonic() * 1e6, 'profile': args.profile, 'stop_at': args.stop_at}
     shot = out / 'x3.ppm'
     try:
@@ -166,11 +170,22 @@ def main():
     parser.add_argument('--variants', nargs='+', choices=['native', 'wasm'], default=['native', 'wasm'])
     parser.add_argument('--runs', type=int, default=3)
     parser.add_argument('--sleep', choices=['on', 'off'], default='off')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--turbo', dest='mode', action='store_const', const='turbo',
+                      help='apply canonical X3 turbo settings (forces sleep=off)')
+    mode.add_argument('--accurate', dest='mode', action='store_const', const='accurate',
+                      help='use accurate timing, overriding TURBO=1')
     parser.add_argument('--profile', choices=['none', 'node', 'native'], default='none')
     parser.add_argument('--stop-at', choices=['home', 'settled'], default='settled')
     parser.add_argument('--timeout', type=float, default=1200)
     parser.add_argument('--output', type=Path, default=ROOT / 'build-wasm/evidence/profile/timing')
     args = parser.parse_args()
+    if args.mode is None:
+        if os.environ.get('TURBO', '0') not in ('0', '1'):
+            parser.error('TURBO must be 0 or 1')
+        args.mode = 'turbo' if os.environ.get('TURBO') == '1' else 'accurate'
+    if args.mode == 'turbo':
+        args.sleep = 'off'
     if args.runs < 1 or args.timeout <= 0:
         parser.error('--runs and --timeout must be positive')
     if args.profile != 'none':
@@ -182,16 +197,22 @@ def main():
     for name in ('flash', 'sd', 'native_bin', 'wasm_build', 'output'):
         setattr(args, name, getattr(args, name).expanduser().resolve())
     args.output.mkdir(parents=True, exist_ok=True)
+    for previous in args.output.glob('*/run.json'):
+        # Older harness versions always ran accurate mode, even with TURBO=1.
+        if json.loads(previous.read_text()).get('mode', 'accurate') != args.mode:
+            parser.error(f'refusing to mix {args.mode} with another mode in {previous}')
     rows = []
     for number in range(1, args.runs + 1):
         for variant in args.variants:  # interleave variants on shared hosts
             row = run(args, variant, number)
             rows.append(row)
+            if row['mode'] != rows[0]['mode']:
+                raise RuntimeError('refusing to compare runs of different modes')
             if args.stop_at != 'home':
                 assert row['ppm_sha256'] == rows[0]['ppm_sha256'], 'native/variant screenshot differs'
-                if args.sleep == 'off':
+                if args.sleep == 'off' and args.mode == 'accurate':
                     assert row['wait_lines'] == rows[0]['wait_lines'], 'guest timestamps differ'
-            result = {'runs': rows, 'medians': {}}
+            result = {'mode': args.mode, 'runs': rows, 'medians': {}}
             for name in args.variants:
                 subset = [r for r in rows if r['variant'] == name]
                 if subset:
