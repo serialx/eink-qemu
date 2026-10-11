@@ -99,6 +99,8 @@ struct Uc8179State {
     qemu_irq sda_out;
     QEMUTimer busy_timer;
     QEMUTimer anim_timer;
+    QEMUTimer drift_timer;
+    int64_t drift_deadline;
     uint32_t busy_ms;       /* fixed DRF BUSY time; 0 = the frames' duration */
     bool animate;
     int anim_f, anim_n;     /* next frame to run, frames in the refresh */
@@ -303,6 +305,23 @@ static void uc8179_relax(Uc8179State *s, double now, bool leak)
     s->t_drift = now;
 }
 
+/*
+ * Use fixed virtual-time steps, never host display callbacks.  The existing
+ * first-order pull is not composable, so its step boundaries are part of the
+ * optical model.  Restart the one-second cadence when a refresh finishes.
+ * Use the scheduled deadline even if the main loop dispatches us late.
+ */
+static void uc8179_drift_tick(void *opaque)
+{
+    Uc8179State *s = opaque;
+    int64_t deadline = s->drift_deadline;
+
+    uc8179_relax(s, deadline / 1e9, false);
+    s->redraw = true;
+    s->drift_deadline = deadline + 1000000000;
+    timer_mod(&s->drift_timer, s->drift_deadline);
+}
+
 /* Runs refresh frame f over the whole panel. */
 static void uc8179_run_frame(Uc8179State *s, int f)
 {
@@ -357,6 +376,10 @@ static void uc8179_run_frames(Uc8179State *s, double now)
     if (s->anim_f == s->anim_n) {
         timer_del(&s->anim_timer);
         s->t_refresh = s->t_drift = s->anim_t0 + s->anim_n * dt;
+        if (s->drift && s->drift_s) {
+            s->drift_deadline = ceil((s->t_drift + 1) * 1e9);
+            timer_mod(&s->drift_timer, s->drift_deadline);
+        }
     } else {
         /* Rounding down can rearm an expired timer before a frame is due. */
         int64_t deadline = ceil((s->anim_t0 + (s->anim_f + 1) * dt) * 1e9);
@@ -377,7 +400,11 @@ static uint32_t uc8179_refresh(Uc8179State *s)
 {
     double now = uc8179_now();
 
-    uc8179_run_frames(s, -1);       /* a refresh still playing finishes first */
+    /* Finish an active refresh without rewinding already-applied drift. */
+    if (s->anim_f < s->anim_n) {
+        uc8179_run_frames(s, -1);
+    }
+    timer_del(&s->drift_timer);
     uc8179_relax(s, now, now > s->t_refresh);
     /* Apply the controller's gate-scan and source-shift directions. */
     for (int y = 0; y < H; y++) {
@@ -583,7 +610,17 @@ static void uc8179_set_rst(void *opaque, int n, int level)
     Uc8179State *s = UC8179(opaque);
     if (!level) {
         s->in_reset = true;
-        /* the panel stops being driven mid-refresh */
+        /* The panel stops being driven mid-refresh; idle drift resumes. */
+        if (s->anim_f < s->anim_n) {
+            double dt = s->frame_us / 1e6;
+
+            /* Charge is integrated through the last completed frame. */
+            s->t_refresh = s->t_drift = s->anim_t0 + s->anim_f * dt;
+            if (s->drift && s->drift_s) {
+                s->drift_deadline = ceil((s->t_drift + 1) * 1e9);
+                timer_mod(&s->drift_timer, s->drift_deadline);
+            }
+        }
         timer_del(&s->anim_timer);
         s->anim_n = s->anim_f;
     } else if (s->in_reset) {
@@ -600,12 +637,7 @@ static bool uc8179_update_display(void *opaque)
 {
     Uc8179State *s = opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
-    double now = uc8179_now();
 
-    if (s->drift && s->drift_s && now - s->t_drift >= 1.0) {
-        uc8179_relax(s, now, false);
-        s->redraw = true;
-    }
     if (!s->redraw) {
         return true;
     }
@@ -673,6 +705,12 @@ static void uc8179_realize(SSIPeripheral *d, Error **errp)
     qemu_console_resize(s->con, s->portrait ? H : W, s->portrait ? W : H);
     timer_init_ms(&s->busy_timer, QEMU_CLOCK_VIRTUAL, uc8179_busy_done, s);
     timer_init_ns(&s->anim_timer, QEMU_CLOCK_VIRTUAL, uc8179_anim_tick, s);
+    timer_init_ns(&s->drift_timer, QEMU_CLOCK_VIRTUAL, uc8179_drift_tick, s);
+    if (s->drift && s->drift_s) {
+        s->drift_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                            1000000000;
+        timer_mod(&s->drift_timer, s->drift_deadline);
+    }
     qdev_init_gpio_in_named(dev, uc8179_set_dc, "dc", 1);
     qdev_init_gpio_in_named(dev, uc8179_set_rst, "rst", 1);
     qdev_init_gpio_in_named(dev, uc8179_set_sclk, "sclk", 1);

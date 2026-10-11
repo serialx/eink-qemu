@@ -85,6 +85,8 @@ struct Uc8279State {
     qemu_irq sda_out;
     QEMUTimer busy_timer;
     QEMUTimer anim_timer;
+    QEMUTimer drift_timer;
+    int64_t drift_deadline;
     bool animate;
     int anim_f, anim_n;
     double anim_t0;
@@ -347,6 +349,23 @@ static void uc8279_relax(Uc8279State *s, double now, bool leak)
     s->t_drift = now;
 }
 
+/*
+ * Use fixed virtual-time steps, never host display callbacks.  The existing
+ * first-order pull is not composable, so its step boundaries are part of the
+ * optical model.  Restart the one-second cadence when a refresh finishes.
+ * Use the scheduled deadline even if the main loop dispatches us late.
+ */
+static void uc8279_drift_tick(void *opaque)
+{
+    Uc8279State *s = opaque;
+    int64_t deadline = s->drift_deadline;
+
+    uc8279_relax(s, deadline / 1e9, false);
+    s->redraw = true;
+    s->drift_deadline = deadline + 1000000000;
+    timer_mod(&s->drift_timer, s->drift_deadline);
+}
+
 /* Runs refresh frame f over the whole panel. */
 static void uc8279_run_frame(Uc8279State *s, int f)
 {
@@ -404,6 +423,10 @@ static void uc8279_run_frames(Uc8279State *s, double now)
     if (s->anim_f == s->anim_n) {
         timer_del(&s->anim_timer);
         s->t_refresh = s->t_drift = s->anim_t0 + s->anim_n * dt;
+        if (s->drift && s->drift_s) {
+            s->drift_deadline = ceil((s->t_drift + 1) * 1e9);
+            timer_mod(&s->drift_timer, s->drift_deadline);
+        }
     } else {
         /* Rounding down can rearm an expired timer before a frame is due. */
         int64_t deadline = ceil((s->anim_t0 + (s->anim_f + 1) * dt) * 1e9);
@@ -425,7 +448,11 @@ static int uc8279_refresh(Uc8279State *s, int row_frames[LUT_ROWS])
     double now = uc8279_now();
     int frames;
 
-    uc8279_run_frames(s, -1);
+    /* Finish an active refresh without rewinding already-applied drift. */
+    if (s->anim_f < s->anim_n) {
+        uc8279_run_frames(s, -1);
+    }
+    timer_del(&s->drift_timer);
     uc8279_relax(s, now, now > s->t_refresh);
     for (int y = 0; y < H; y++) {
         int r = H - 1 - y;
@@ -707,12 +734,7 @@ static bool uc8279_update_display(void *opaque)
 {
     Uc8279State *s = opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
-    double now = uc8279_now();
 
-    if (s->drift && s->drift_s && now - s->t_drift >= 1.0) {
-        uc8279_relax(s, now, false);
-        s->redraw = true;
-    }
     if (!s->redraw) {
         return true;
     }
@@ -772,6 +794,12 @@ static void uc8279_realize(SSIPeripheral *d, Error **errp)
     qemu_console_resize(s->con, s->portrait ? H : W, s->portrait ? W : H);
     timer_init_us(&s->busy_timer, QEMU_CLOCK_VIRTUAL, uc8279_busy_done, s);
     timer_init_ns(&s->anim_timer, QEMU_CLOCK_VIRTUAL, uc8279_anim_tick, s);
+    timer_init_ns(&s->drift_timer, QEMU_CLOCK_VIRTUAL, uc8279_drift_tick, s);
+    if (s->drift && s->drift_s) {
+        s->drift_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                            1000000000;
+        timer_mod(&s->drift_timer, s->drift_deadline);
+    }
     qdev_init_gpio_in_named(dev, uc8279_set_dc, "dc", 1);
     qdev_init_gpio_in_named(dev, uc8279_set_rst, "rst", 1);
     qdev_init_gpio_in_named(dev, uc8279_set_sclk, "sclk", 1);
