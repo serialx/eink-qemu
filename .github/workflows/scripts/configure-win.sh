@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
-# x4prosim: no -Werror on Windows: newer MinGW GCC warns in upstream test code (libqtest.c)
+# eink-qemu: no -Werror on Windows: newer MinGW GCC warns in upstream test code (libqtest.c)
 
 TARGET=${TARGET:-xtensa-softmmu}
 VERSION=${VERSION:-dev}

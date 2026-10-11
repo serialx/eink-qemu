@@ -327,7 +327,7 @@ dispatch:
         DPRINTF("End of command\n");
         s->mode = SSI_SD_CMD;
         /*
-         * x4prosim: this byte already belongs to the host's next transfer. A
+         * eink-qemu: this byte already belongs to the host's next transfer. A
          * write's data token may follow the R1 response without a fill byte
          * (SdFat does that), so take it as a command/token, not as a dummy.
          */

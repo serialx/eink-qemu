@@ -83,7 +83,7 @@ struct Esp32C3MachineState {
     DeviceState *eth; /* Ethernet controller */
     ESP32C3IntMatrixState intmatrix;
     ESP32C3UARTState uart[ESP32C3_UART_COUNT];
-    ESP32S3GPIOState gpio;      /* x4prosim: the S3 model, same register map, real pins */
+    ESP32S3GPIOState gpio;      /* eink-qemu: the S3 model, same register map, real pins */
     ESP32C3CacheState cache;
     ESP32C3EfuseState efuse;
     ESP32C3ClockState clock;
@@ -98,7 +98,7 @@ struct Esp32C3MachineState {
     ESP32C3SysTimerState systimer;
     ESP32C3SpiState spi1;
     ESP32C3RtcCntlState rtccntl;
-    DeviceState *jtag;          /* x4prosim: the S3 model, a CDC console on a chardev */
+    DeviceState *jtag;          /* eink-qemu: the S3 model, a CDC console on a chardev */
     DeviceState *spi2;
     DeviceState *i2c0;
     DeviceState *saradc;
@@ -546,7 +546,7 @@ static void esp32c3_machine_init(MachineState *machine)
                                     qdev_get_gpio_in_named(DEVICE(&ms->rtccntl), ESP32C3_RTC_GPIO_WAKE, 0));
     }
 
-    /* x4prosim: GPSPI2, I2C0 and the SAR ADC (the S3 models fit the C3's register maps) */
+    /* eink-qemu: GPSPI2, I2C0 and the SAR ADC (the S3 models fit the C3's register maps) */
     {
         ms->spi2 = qdev_new("ssi.esp32s3.gpspi");
         if (object_dynamic_cast(OBJECT(machine), TYPE_X3_MACHINE)) {
@@ -753,7 +753,7 @@ static void esp32c3_machine_init(MachineState *machine)
                        qdev_get_gpio_in(DEVICE(&ms->intmatrix), ETS_TWAI_INTR_SOURCE));
 
     /*
-     * x4prosim: radio, as on the S3 machine (the models came from an ESP32-C3
+     * eink-qemu: radio, as on the S3 machine (the models came from an ESP32-C3
      * port, so the register bases are the C3's). SYSCON's clock/reset enables
      * read back (the PHY asserts on them; the stub stops before the RNG
      * register at 0xB0 and the "QEMU" origin register); the Wi-Fi MAC status
@@ -852,7 +852,7 @@ static void x3_board_init(Esp32C3MachineState *ms)
     }
     if (!x4 &&
         object_property_get_bool(OBJECT(panel), "uc8253", &error_fatal)) {
-        /* Measured UC8253 X3; see x4prosim/sdcal/panel.md. */
+        /* Measured UC8253 X3; see eink-qemu/sdcal/panel.md. */
         if (!qdev_find_global_prop(OBJECT(panel), "frame-us")) {
             qdev_prop_set_uint32(panel, "frame-us", 12850);
         }
@@ -883,7 +883,7 @@ static void x3_board_init(Esp32C3MachineState *ms)
     }
 
     DeviceState *sd = qdev_new("ssi-sd");
-    /* X3 card probe medians: see x4prosim/sdcal/cpu.md. */
+    /* X3 card probe medians: see eink-qemu/sdcal/cpu.md. */
     const struct {
         const char *name;
         int32_t us;

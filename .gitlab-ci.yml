@@ -46,7 +46,7 @@ generate_version:
     - ninja -C build install
 
     - find ./install/qemu/share/qemu -maxdepth 1 -mindepth 1 -not -name 'esp*.bin' -exec rm -rfv {} \;
-    - cp -R x4prosim README.md X4PROSIM.md install/qemu/
+    - cp -R eink-qemu README.md EINK-QEMU.md install/qemu/
     - DIST_DIR=${PWD}/dist
     - mkdir -p ${DIST_DIR}
     - cd ./install

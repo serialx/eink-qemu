@@ -61,7 +61,7 @@ typedef struct ESP32C3RtcCntlState {
     qemu_irq cpu_reset;
     qemu_irq irq;
 
-    /* x4prosim: RTC timer and sleep */
+    /* eink-qemu: RTC timer and sleep */
     uint32_t slp_timer[2];
     uint32_t state0;
     uint32_t wakeup_state;

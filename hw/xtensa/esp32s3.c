@@ -898,7 +898,7 @@ static void esp32s3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, esp32s3_memmap[ESP32S3_MEMREGION_FRAMEBUF].base, &ss->rgb.vram, 0);
     }
 
-    /* x4prosim: register models for peripherals the X4 Pro firmware polls */
+    /* eink-qemu: register models for peripherals the X4 Pro firmware polls */
     {
         DeviceState *sens = qdev_new("misc.esp32s3.sens");
         object_property_add_child(OBJECT(ss), "sens", OBJECT(sens));
@@ -908,7 +908,7 @@ static void esp32s3_machine_init(MachineState *machine)
     }
 
     /*
-     * x4prosim: radio/analog blocks the Wi-Fi/PHY init reads back or polls.
+     * eink-qemu: radio/analog blocks the Wi-Fi/PHY init reads back or polls.
      * The radio isn't emulated; these only let esp_wifi_start() return.
      */
     {
@@ -946,7 +946,7 @@ static void esp32s3_machine_init(MachineState *machine)
     }
 
     /*
-     * x4prosim: radio. ana (regi2c master, sets the channel) and fe answer the
+     * eink-qemu: radio. ana (regi2c master, sets the channel) and fe answer the
      * PHY calibration polls. With -nic user,model=esp32_wifi the MAC is emulated
      * with a fake AP ("PICSimLabWifi", open) bridged to that NIC, over the stub.
      */
@@ -988,7 +988,7 @@ static void esp32s3_machine_init(MachineState *machine)
         }
     }
 
-    /* x4prosim: I2C0/I2C1 masters; board devices attach in x4pro_board_init */
+    /* eink-qemu: I2C0/I2C1 masters; board devices attach in x4pro_board_init */
     {
         static const hwaddr i2c_base[] = { DR_REG_I2C_EXT_BASE, DR_REG_I2C1_EXT_BASE };
 
