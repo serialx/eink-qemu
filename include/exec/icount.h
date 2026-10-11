@@ -73,4 +73,8 @@ void icount_start_warp_timer(void);
 void icount_account_warp_timer(void);
 void icount_notify_exit(void);
 
+/* Nestable scope for a synchronous block operation which polls host AIO. */
+void icount_begin_block_poll(void);
+void icount_end_block_poll(void);
+
 #endif /* EXEC_ICOUNT_H */

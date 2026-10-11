@@ -30,3 +30,12 @@ void icount_notify_exit(void)
 {
     abort();
 }
+
+void icount_begin_block_poll(void)
+{
+    abort();
+}
+void icount_end_block_poll(void)
+{
+    abort();
+}
