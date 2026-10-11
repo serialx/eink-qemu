@@ -95,8 +95,9 @@ binary) on `x3`.
 
 A flash dump of a real device works too, as long as it doesn't use flash
 encryption: `esptool.py --chip esp32s3 read_flash 0 0x1000000 flash.bin`.
-`sd.img` is created on first run (1 GB FAT32); `x4prosim/mksd.py sd.img 1024 books/`
-copies a folder of books in.
+`sd.img` is created on first run (2050 MiB FAT32, 32 KiB clusters).
+`x4prosim/mksd.py sd.img 2050 books/` creates an image populated from a folder.
+See [SD image geometry](#sd-image-geometry) before comparing hardware timings.
 
 **Controls:** arrow keys are Up/Down and `P` is Power. Click in the window to
 touch. On the X3, Left/Right, Enter (Confirm) and Backspace (Back) are keys too.
@@ -107,6 +108,39 @@ Monitor: `socat - unix:/tmp/x4prosim-mon.sock`.
 x4prosim/drive.py flash.bin sd.img log.txt wait:30 press:down shot:home.png \
   "hmp:qom-set /machine/gt911 tap 240,529" wait:5 shot:settings.png
 ```
+
+## SD image geometry
+
+```sh
+python3 x4prosim/mksd.py sd.img [size_mb] [dir_to_copy] [--cluster-size BYTES]
+```
+
+The default is a 2050 MiB image with an MBR, a FAT32 partition starting at
+1 MiB, and **32 KiB clusters** (64 sectors of 512 bytes). This cluster size
+matches the stock SD card supplied with the Xteink X3 that was measured on
+hardware. Sizes are in MiB despite the `size_mb` argument name. The image is
+sparse on supporting host filesystems; copying or loading it into memory can
+still consume its full logical size. Existing images are not converted.
+
+For hardware timing comparisons, match the card's filesystem geometry as
+well as its book, font and settings files. Small clusters require more FAT
+chain traversal when firmware seeks within large font files. A 128 MiB image
+with automatically chosen 512-byte clusters made font prewarming slower in
+simulated time than on the stock card. Check geometry before tuning CPU or
+SD latency parameters; identical file contents alone are insufficient.
+
+FAT32 needs at least 65,525 data clusters. With 32 KiB clusters this helper
+requires at least 2050 MiB and rejects smaller requests before writing the
+image. Compact functional-test images must opt into another cluster size:
+
+```sh
+python3 x4prosim/mksd.py compact-sd.img 64 --cluster-size 512
+```
+
+The browser's bundled 64 MiB card and ROM/filesystem smoke fixtures use this
+explicit exception to keep their memory and download sizes small. They do
+**not** represent the stock X3 card's filesystem timing. Use a suitable image
+for timing measurements, and record its filesystem type and cluster size.
 
 ## What's emulated
 

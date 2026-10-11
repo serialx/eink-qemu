@@ -34,9 +34,13 @@ Other lines to compare (grep the tag in both logs):
 
 ```sh
 rm -f sd.img
-x4prosim/mksd.py sd.img 1024 x4prosim/testdata/sdcard   # add your books folder the same way
+x4prosim/mksd.py sd.img 2050 x4prosim/testdata/sdcard   # add your books folder the same way
 x4prosim/run.sh flash.bin sd.img
 ```
+
+The image uses 32 KiB clusters, matching the measured stock X3 card. See
+[SD image geometry](../../README.md#sd-image-geometry) for timing comparisons
+and explicit compact-image overrides.
 
 The firmware finds `/debug/logs/battery.csv` and appends to it (log line
 `[BAT] Flushed N bytes to /debug/logs/battery.csv`). Open Goodies > Battery &

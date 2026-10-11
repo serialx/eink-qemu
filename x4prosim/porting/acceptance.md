@@ -46,7 +46,12 @@ Each run received a fresh 512 MiB FAT32 card made with `mksd.py`. `drive.py`
 creates another `.run` flash copy for guest writes. The reference `sd.img` was
 not used or modified. The old and new `drive.py` files are identical.
 
-From the worktree root:
+The commands below used the `mksd.py` revision from this historical acceptance,
+which chose cluster size automatically. Current `mksd.py` defaults to stock-X3
+32 KiB clusters and requires a larger image; see
+[SD image geometry](../../README.md#sd-image-geometry) for new comparisons.
+
+From the worktree root at the recorded revision:
 
 ```sh
 ninja -C build qemu-system-xtensa qemu-system-riscv32

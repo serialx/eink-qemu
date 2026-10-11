@@ -22,7 +22,7 @@ function command(binary, args) {
   return result.stdout;
 }
 const blankPath = join(work, 'blank.img');
-command('python3', [fileURLToPath(new URL('../../mksd.py', import.meta.url)), blankPath, '64']);
+command('python3', [fileURLToPath(new URL('../../mksd.py', import.meta.url)), blankPath, '64', '--cluster-size', '512']);
 const blank = readFileSync(blankPath);
 const partitionBase = blank.readUInt32LE(454) * 512;
 let fixtureNumber = 0;

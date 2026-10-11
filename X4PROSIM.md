@@ -91,7 +91,10 @@ x4prosim/run.sh flash.bin sd.img          # firmware log (USB-CDC) on stdout, SD
 x4prosim/drive.py flash.bin sd.img log.txt wait:30 shot:home.png   # headless
 ```
 
-`run.sh`/`drive.py` create a 1 GB MBR+FAT32 `sd.img` if it doesn't exist (`x4prosim/mksd.py sd.img 1024 books/` copies a folder in). Keep
+`run.sh`/`drive.py` create a 2050 MiB MBR+FAT32 `sd.img` with 32 KiB clusters
+if it doesn't exist. `x4prosim/mksd.py sd.img 2050 books/` creates an image
+populated from a folder. This matches the measured stock X3 card's cluster size;
+see [SD image geometry](README.md#sd-image-geometry) before timing comparisons.
 
 ### CrossDink build gotchas (PlatformIO, pioarduino 6.1.19)
 
@@ -112,7 +115,7 @@ x4prosim/drive.py flash.bin sd.img log.txt wait:30 shot:home.png   # headless
 - CI artifacts carry `firmware.bin` only. You need a local build for
   `firmware.elf` (symbols), `bootloader.bin` and `partitions.bin`.
 
-`firmware.elf` beside you for symbols. To find a hang: run with `-s -S`, attach
+Keep `firmware.elf` beside you for symbols. To find a hang: run with `-s -S`, attach
 `xtensa-esp32s3-elf-gdb firmware.elf` (`target remote :1234`), let it run, Ctrl-C,
 `bt`. Or `info registers -a` on the HMP socket `/tmp/x4prosim-mon.sock` and
 `xtensa-esp32s3-elf-addr2line -pfiaC -e firmware.elf <PC>`.

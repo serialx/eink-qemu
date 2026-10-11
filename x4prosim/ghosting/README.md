@@ -427,7 +427,7 @@ QEMU_EXTRA="-global uc8179.bloom=30" x4prosim/drive.py ...   # sweep a parameter
   | Keyboard | backspace | 433,693 |
   | Keyboard | OK | 433,757 |
   | Any | back arrow | 26,55 |
-- **Books:** `x4prosim/mksd.py sd.img 256 <folder>` needs `mcopy` (mtools).
+- **Books:** `x4prosim/mksd.py sd.img 2050 <folder>` needs `mcopy` (mtools) and uses stock-X3 32 KiB clusters; see [SD image geometry](../../README.md#sd-image-geometry).
   Test EPUBs are in CrossDink `test/epubs/`.
 - `tools/hist.py` prints the top gray levels and the off-white/off-black
   pixel counts of screenshots.
