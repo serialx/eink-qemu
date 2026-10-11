@@ -139,7 +139,7 @@ function monitorDevice(FS) {
             return n;
         },
         write(stream, buffer, offset, length) {
-            monitorOutput += monitorDecoder.decode(buffer.subarray(offset, offset + length), {stream: true});
+            monitorOutput += monitorDecoder.decode(buffer.slice(offset, offset + length), {stream: true});
             const lines = monitorOutput.split('\n');
             monitorOutput = lines.pop();
             lines.forEach(monitorLine);
