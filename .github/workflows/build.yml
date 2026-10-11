@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  WASM_PAGES_BRANCH: serialx/wasm-jit
+  WASM_PAGES_BRANCH: main
 
 jobs:
 
@@ -338,14 +338,14 @@ jobs:
           path: build-wasm/evidence/smoke
           if-no-files-found: warn
       - name: Upload Pages artifact
-        if: github.ref == format('refs/heads/{0}', env.WASM_PAGES_BRANCH) && github.event_name == 'push' && github.repository == 'serialx/x4prosim'
+        if: github.ref == format('refs/heads/{0}', env.WASM_PAGES_BRANCH) && github.event_name == 'push' && github.repository == 'serialx/eink-qemu'
         uses: actions/upload-pages-artifact@v4
         with:
           path: build-wasm-32limit/web-dist
 
   deploy-wasm:
     needs: wasm
-    if: github.ref == format('refs/heads/{0}', needs.wasm.outputs.pages_branch) && github.event_name == 'push' && github.repository == 'serialx/x4prosim'
+    if: github.ref == format('refs/heads/{0}', needs.wasm.outputs.pages_branch) && github.event_name == 'push' && github.repository == 'serialx/eink-qemu'
     runs-on: ubuntu-latest
     permissions:
       pages: write
