@@ -1,8 +1,8 @@
 #!/bin/sh
-# Boot an X4 Pro or X3 flash image in x4prosim. USB-CDC console (the firmware log) -> stdout.
+# Boot an X4 Pro, X4 or X3 flash image in x4prosim. USB-CDC console (the firmware log) -> stdout.
 # usage: x4prosim/run.sh flash.bin [sd.img] [extra qemu args...]
 # The machine follows the image's chip (byte 12 of the bootloader header): ESP32-S3 -> x4pro,
-# ESP32-C3 -> x3. X4MACHINE=x3|x4pro overrides.
+# ESP32-C3 -> x3. X4MACHINE=x3|x4|x4pro overrides.
 # Wi-Fi: the fake AP "PICSimLabWifi" is bridged to a QEMU NIC.
 #   X4BR=br0: on your LAN (router DHCP); needs "allow br0" in /usr/local/etc/qemu/bridge.conf, run as root.
 #   default: QEMU NAT (10.0.2.15), host :8080 -> device :80. X4NET overrides both.
@@ -15,10 +15,10 @@ img=$1; sd=${2:-sd.img}; shift; [ $# -gt 0 ] && shift
 cp "$img" "$img.run"
 chip=$(od -An -tu1 -j12 -N1 "$img" | tr -d ' ')
 : "${X4MACHINE:=$([ "$chip" = 5 ] && echo x3 || echo x4pro)}"
-if [ "$X4MACHINE" = x3 ]; then
+if [ "$X4MACHINE" = x3 ] || [ "$X4MACHINE" = x4 ]; then
   qemu=$here/build/qemu-system-riscv32
   icount_shift=0
-  echo "x4prosim: X3 (ESP32-C3); keys: arrows, Enter, Backspace, P" >&2
+  echo "x4prosim: $X4MACHINE (ESP32-C3); keys: arrows, Enter, Backspace, P" >&2
 else
   qemu=$here/build/qemu-system-xtensa
   icount_shift=2

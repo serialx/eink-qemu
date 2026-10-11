@@ -1,6 +1,6 @@
 /*
  * Solomon SSD1677 e-paper controller (800x480, 1-bit RAM planes), as wired
- * on the Xteink X4 Pro: write-only SPI, DC and RST on GPIO inputs, BUSY on a
+ * on the Xteink X4: write-only SPI, DC and RST on GPIO inputs, BUSY on a
  * GPIO output (active high).
  *
  * Models the BW (0x24) and RED (0x26) RAM planes with the data-entry mode,
@@ -18,6 +18,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/bitops.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "hw/ssi/ssi.h"
@@ -42,7 +43,7 @@ struct Ssd1677State {
     qemu_irq busy;
     QEMUTimer busy_timer;
     uint32_t busy_ms;
-    bool portrait;      /* show the panel turned 90 degrees clockwise, as the X4 Pro is held */
+    bool portrait;      /* turn 90 degrees clockwise, as the X4 is held */
 
     bool dc;            /* 1 = data */
     bool in_reset;
@@ -75,6 +76,10 @@ static void ssd1677_busy_done(void *opaque)
 
 static void ssd1677_ram_write(Ssd1677State *s, int plane, uint8_t v)
 {
+    /* X is pixel-addressed: D7 lands at the counter, also when decrementing. */
+    if (!(s->entry & 1)) {
+        v = revbit8(v);
+    }
     if (s->xc < W && s->yc < H) {
         s->ram[plane][s->yc][s->xc / 8] = v;
     }
@@ -107,7 +112,7 @@ static void ssd1677_activate(Ssd1677State *s)
 {
     uint8_t bw_opt = s->ctrl1[0] & 0xf, red_opt = s->ctrl1[0] >> 4;
 
-    /* Gates are wired in reverse on the X4 Pro: RAM row r is screen row H-1-r. */
+    /* Gates are wired in reverse on the X4: RAM row r is screen row H-1-r. */
     for (int y = 0; y < H; y++) {
         int r = H - 1 - y;
         for (int xb = 0; xb < WB; xb++) {

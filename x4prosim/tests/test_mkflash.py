@@ -39,7 +39,7 @@ class MkflashTest(unittest.TestCase):
         self.assertEqual(self.table[208:224], hashlib.md5(self.table[:192]).digest())
 
     def test_chip_detection(self):
-        for chip, machine in ((5, 'x3'), (9, 'x4pro')):
+        for chip, machine in ((5, 'x3'), (5, 'x4'), (9, 'x4pro')):
             self.assertEqual(mkflash.detect_chip(self.app(chip), machine), chip)
         for data in (b'', b'\xe9', b'X' * 24, self.app(0), self.app(261)):
             with self.assertRaises(ValueError):
@@ -61,6 +61,14 @@ class MkflashTest(unittest.TestCase):
             self.assertEqual(flash[0xE000:0x10000], b'\xff' * 0x2000)
             self.assertEqual(flash[0x10000:0x10000 + len(app)], app)
             self.assertEqual(flash[0x10000 + len(app):], b'\xff' * (mkflash.FLASH_SIZE - 0x10000 - len(app)))
+
+    def test_x4_composition_does_not_force_x3_detection(self):
+        app = self.app(5)
+        flash = mkflash.make_flash(self.write('app.bin', app), 'x4')
+        self.assertEqual(flash[0x9000:0xe000], b'\xff' * 0x5000)
+        self.assertEqual(flash[0x10000:0x10000 + len(app)], app)
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            mkflash.detect_chip(self.app(9), 'x4')
 
     def test_pass_through(self):
         data = bytes(range(256)) * (mkflash.FLASH_SIZE // 256)

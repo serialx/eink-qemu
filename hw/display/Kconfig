@@ -156,3 +156,7 @@ config MAC_PVG_PCI
 
 config ESP_RGB
     bool
+
+config SSD1677
+    bool
+    depends on SSI

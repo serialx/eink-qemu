@@ -38,6 +38,7 @@ config XTENSA_ESP32S3
     default y
     depends on XTENSA
     select SSI
+    select SSD1677
     select SSI_M25P80
     select UNIMP
     select OPENCORES_ETH

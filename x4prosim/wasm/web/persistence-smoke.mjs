@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 
 const url = new URL(process.argv[2]);
+url.searchParams.set('device', 'x3');
 assert(!url.searchParams.has('flash') && !url.searchParams.has('sd'));
 const pages = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT || 9224}/json`)).json();
 const ws = new WebSocket(pages.find(page => page.type === 'page').webSocketDebuggerUrl);

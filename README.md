@@ -1,7 +1,7 @@
 # x4prosim
 
 An emulator for the **Xteink X4 Pro** e-reader (ESP32-S3R8, 16 MB flash, 8 MB
-octal PSRAM) and the **Xteink X3** (ESP32-C3). It runs **unmodified firmware**,
+octal PSRAM) and the **Xteink X3/X4** (ESP32-C3). It runs **unmodified firmware**,
 whether that's the stock firmware, CrossInk, CrossDink, CrossPoint, or a bare
 ESP-IDF/Arduino app. The screen, SD card, keys, touch, clock, battery gauge and
 Wi-Fi all behave like the board, so you can develop firmware without the device.
@@ -12,6 +12,30 @@ Built on upstream **QEMU 11.1.2**, with the Espressif SoC models ported over.
 The rule is that no firmware is ever changed to make it boot here: the hardware is modeled from datasheets and
 from the real board instead.
 
+## Xteink X4 / TRMNL
+
+Select **X4** in the browser before loading TRMNL's merged firmware `.bin`.
+X3 and X4 both use ESP32-C3, so the chip header cannot distinguish them.
+The browser remembers the selection; `?device=x4` also selects it.
+
+For native or Node runs, prepare a flash image and select the board explicitly:
+
+```sh
+python3 x4prosim/mkflash.py --machine x4 FW1.8.17.bin flash-x4.bin
+X4MACHINE=x4 x4prosim/run.sh flash-x4.bin sd.img
+X4MACHINE=x4 x4prosim/wasm/run-node.sh flash-x4.bin sd.img
+```
+
+Merged images preserve their bootloader, partition table, NVS and app bytes.
+App-only X4 images use the bundled bootloader and CrossPoint partitions without
+forcing X3 detection in NVS. CLI chip detection still defaults C3 to X3 for
+compatibility; use `X4MACHINE=x4` for X4.
+
+The X4 SSD1677 model supports framebuffer writes, RAM windows and active-high
+BUSY. Refresh timing is simplified and ghosting is not modeled. The console
+uses the device's 480×800 portrait orientation; TRMNL draws its setup interface
+in landscape.
+
 ## Porting layers
 
 See [x4prosim/porting/README.md](x4prosim/porting/README.md) for the QEMU 11.1.2
@@ -21,7 +45,7 @@ porting branches, layer ownership, build command and commit rules.
 
 CI builds every push for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and
 Windows, one archive per emulator (`xtensa-softmmu` = X4 Pro,
-`riscv32-softmmu` = X3). Get them from the latest run under
+`riscv32-softmmu` = X3/X4). Get them from the latest run under
 [Actions](../../actions) (artifacts `dist-qemu-*`), or from
 [Releases](../../releases) for tagged versions. Each archive has `bin/`, the
 `x4prosim/` scripts and the docs; `x4prosim/run.sh` finds `bin/` by itself.
@@ -91,7 +115,8 @@ x4prosim/run.sh flash.bin sd.img                       # SDL window, firmware lo
 
 `run.sh`, `drive.py` and `mkflash.sh` pick the machine from the image's chip:
 an ESP32-S3 image runs on `x4pro`, an ESP32-C3 image (the CrossPoint X3/X4
-binary) on `x3`.
+binary) defaults to `x3`. Set `X4MACHINE=x4` in the launchers and
+`--machine x4` in the composer for X4.
 
 A flash dump of a real device works too, as long as it doesn't use flash
 encryption: `esptool.py --chip esp32s3 read_flash 0 0x1000000 flash.bin`.

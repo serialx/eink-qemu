@@ -44,6 +44,14 @@
         </button>
       </div>
       <div class="controls" aria-label="Emulator">
+        <label class="device-choice">Device
+          <select id="device" aria-label="Device">
+            <option value="auto">Auto</option>
+            <option value="x3">X3</option>
+            <option value="x4">X4</option>
+            <option value="x4pro">X4 Pro</option>
+          </select>
+        </label>
         <label class="file-chip" title="Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump">
           <input id="flash" class="visually-hidden" type="file" accept=".bin,.xota">
           <svg class="icon brand-icon"><use href="#i-chip"/></svg>
@@ -73,6 +81,7 @@
             </button>
             <div id="ghosting-help" class="tip" role="tooltip">
               <strong>E-ink ghosting</strong>
+              <p>Available on X3 and X4 Pro. X4 shows completed frames without ghosting.</p>
               <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
                 Turn it off for clean, stable pixels when comparing screenshots.</p>
               <p class="fine">Applies when the emulator starts. <code>?ghosting=0</code> opens the page with it off.</p>
@@ -149,10 +158,10 @@
           <div id="screen">
             <div class="intro">
               <h2>Choose firmware to begin</h2>
-              <p>Pick <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> for the X3 or <code>crosspoint-&lt;ver&gt;-x4pro.bin</code>
+              <p>Pick <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> for the X3/X4 or <code>crosspoint-&lt;ver&gt;-x4pro.bin</code>
                 for the X4 Pro from the <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases">CrossPoint releases</a>,
                 an official X4 Pro <code>.xota</code> update, a merged <code>.bin</code>, or a 16 MiB flash dump.
-                It starts as soon as you choose it.</p>
+                Select your device above; choose X4 for TRMNL firmware. Loading the file starts the emulator.</p>
               <label class="button" for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</label>
               <p class="fine">Your SD card is saved in this browser. On your first visit a blank 64 MiB FAT32 card is used.</p>
             </div>

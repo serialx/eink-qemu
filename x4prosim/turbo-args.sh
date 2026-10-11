@@ -23,6 +23,9 @@ case "$1" in
             printf '%s\n' -global "uc8279.$property=1"
         done
         ;;
+    x4)
+        printf '%s\n' -global ssd1677.busy-ms=1
+        ;;
     x4pro)
         # Zero would divide by zero in animation playback; 1 us is the minimum.
         # PON/POF are fixed at 2 ms in this model, with no override properties.

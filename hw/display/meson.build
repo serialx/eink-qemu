@@ -144,5 +144,6 @@ endif
 system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_lcdc.c'))
 
 modules += { 'hw-display': hw_display_modules }
-system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('ssd1677.c', 'uc8179.c'))
+system_ss.add(when: 'CONFIG_SSD1677', if_true: files('ssd1677.c'))
+system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('uc8179.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('uc8279.c'))

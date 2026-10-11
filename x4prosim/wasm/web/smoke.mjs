@@ -247,7 +247,9 @@ smoke: try {
             }
         });
     `})).identifier;
-    await call('Page.navigate', {url: process.argv[2]});
+    const target = new URL(process.argv[2]);
+    if (!target.searchParams.has('device')) target.searchParams.set('device', process.env.WEB_MACHINE || 'x3');
+    await call('Page.navigate', {url: target.href});
     // Do not count exceptions from the previous navigation.
     errors.length = 0;
     if (process.env.PICKER_FLASH) {

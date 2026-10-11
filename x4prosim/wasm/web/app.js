@@ -5,6 +5,14 @@ const params = new URLSearchParams(location.search);
 $('turbo').checked = params.get('turbo') !== '0';
 $('ghosting').checked = params.get('ghosting') !== '0';
 $('wifi').checked = params.get('wifi') !== 'off';
+try {
+    const saved = params.get('device') || localStorage.getItem('x4prosim-device');
+    if (['auto', 'x3', 'x4', 'x4pro'].includes(saved)) $('device').value = saved;
+} catch {}
+$('device').addEventListener('change', () => {
+    try { localStorage.setItem('x4prosim-device', $('device').value); } catch {}
+    if ($('flash').files[0] || params.has('flash')) start();
+});
 let frame, bootData, pending = false, running = false;
 // The page owns the SD image while the emulator is not running; the runtime
 // iframe owns it (MEMFS /sd.img) from boot until the stop snapshot returns it.
@@ -138,15 +146,15 @@ function append(line) {
     } else if (consoleMatches(line)) view.append(line + '\n');
     if (follow) view.scrollTop = view.scrollHeight;
     if (/main_task: Returned from app_main\(\)/.test(line) && !window.bootTimeSeconds) {
-        status(`${frame?.title.startsWith('X4 Pro') ? 'X4 Pro' : 'X3'} · ${timingLabel()} · Firmware running`);
+        status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Firmware running`);
     }
     if (/Wait complete:\s+(?:8179|8279|X3)_DRF/.test(line) && ++milestones === 3) {
         const seconds = (performance.now() - startedAt) / 1000;
-        status(`${/8179_DRF/.test(line) ? 'X4 Pro' : 'X3'} · ${timingLabel()} · Home drawn in ${seconds.toFixed(2)} s · finishing startup…`);
+        status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Home drawn in ${seconds.toFixed(2)} s · finishing startup…`);
         window.bootTimeSeconds = seconds;
     }
     if (line.includes('[MEM]') && window.bootTimeSeconds) {
-        status(`${frame?.title.startsWith('X4 Pro') ? 'X4 Pro' : 'X3'} · ${timingLabel()} · Ready · Home drawn in ${window.bootTimeSeconds.toFixed(2)} s`);
+        status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Ready · Home drawn in ${window.bootTimeSeconds.toFixed(2)} s`);
     }
 }
 function resetting(prefix = '') {
@@ -188,9 +196,9 @@ const keyHints = {Back: 'Esc', Confirm: 'Enter', Left: '←', Right: '→', Up: 
 function buttons(machine) {
     $('keys').replaceChildren();
     $('keys').dataset.machine = machine;
-    $('key-hint').textContent = machine === 'x3' ? 'Keyboard: arrows · Enter · Esc · P' :
+    $('key-hint').textContent = machine !== 'x4pro' ? 'Keyboard: arrows · Enter · Esc · P' :
         'Keyboard: ↑ ↓ · Home · P · touch the screen';
-    const names = machine === 'x3' ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
+    const names = machine !== 'x4pro' ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
     for (const name of names) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -228,7 +236,7 @@ function saveBlob(bytes, name) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 /* Page chrome: run state, firmware chip, screenshot, theme and mobile tabs. */
-const machineNames = {x3: 'Xteink X3 · 528 × 792', x4pro: 'Xteink X4 Pro · 480 × 800'};
+const machineNames = {x3: 'Xteink X3 · 528 × 792', x4: 'Xteink X4 · 480 × 800', x4pro: 'Xteink X4 Pro · 480 × 800'};
 function setLive(machine) {
     document.querySelector('.app').classList.toggle('live', !!machine);
     $('machine').textContent = machine ? machineNames[machine] : 'No device running';
@@ -255,7 +263,7 @@ if (params.has('flash')) {
 }
 $('screenshot').addEventListener('click', () => {
     const canvas = frame?.contentDocument?.querySelector('canvas');
-    canvas?.toBlob(blob => blob && saveBlob(blob, `${frame.title.startsWith('X3') ? 'x3' : 'x4pro'}-screen.png`));
+    canvas?.toBlob(blob => blob && saveBlob(blob, `${frame.dataset.machine}-screen.png`));
 });
 function currentTheme() {
     return document.documentElement.dataset.theme ||
@@ -290,11 +298,11 @@ async function prepareFlash(input) {
         bytes = await XOTA.decode(bytes);
     }
     if (bytes.length === 0x1000000) {
-        return {flash: input, machine: bytes[12] === 5 ? 'x3' : 'x4pro', composed: false};
+        return {flash: bytes.buffer, machine: FlashImage.selectMachine(bytes[12] | bytes[13] << 8, $('device').value), composed: false};
     }
     const merged = !xota && FlashImage.expandMerged(bytes);
     if (merged) {
-        return {flash: merged.buffer, machine: merged[12] === 5 ? 'x3' : 'x4pro', composed: false};
+        return {flash: merged.buffer, machine: FlashImage.selectMachine(merged[12] | merged[13] << 8, $('device').value), composed: false};
     }
     if (bytes.length < 24 || bytes[0] !== 0xe9) {
         throw new Error('Choose a firmware .bin, an X4 Pro .xota update, or a 16 MiB flash dump (16777216 bytes).');
@@ -306,12 +314,12 @@ async function prepareFlash(input) {
     if (bytes.length > 0x640000) {
         throw new Error('App image exceeds the CrossPoint app0 partition (6553600 bytes).');
     }
-    const machine = chip === 5 ? 'x3' : 'x4pro';
-    status(`Composing 16 MiB flash image for ${machine === 'x3' ? 'X3' : 'X4 Pro'}…`);
+    const machine = FlashImage.selectMachine(chip, $('device').value);
+    status(`Composing 16 MiB flash image for ${{x3: 'X3', x4: 'X4', x4pro: 'X4 Pro'}[machine]}…`);
     const [boot, partitions, nvs] = await Promise.all([
         fetchImage(`bootloader-${chip === 5 ? 'esp32c3' : 'esp32s3'}.bin`),
         fetchImage('partitions.bin'),
-        chip === 5 ? fetchImage('nvs-x3.bin') : null
+        machine === 'x3' ? fetchImage('nvs-x3.bin') : null
     ]);
     if (boot.byteLength < 24 || boot.byteLength > 0x8000 ||
         new Uint8Array(boot)[0] !== 0xe9 || new Uint8Array(boot)[12] !== chip ||
@@ -414,7 +422,7 @@ async function start() {
     pending = true;
     startedAt = performance.now(); milestones = 0; window.bootTimeSeconds = null;
     $('start').disabled = true; clearConsole();
-    for (const id of ['flash', 'sd', 'turbo', 'ghosting', 'wifi', 'reset', 'stop', 'download']) $(id).disabled = true;
+    for (const id of ['device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi', 'reset', 'stop', 'download']) $(id).disabled = true;
     try {
         if (!crossOriginIsolated) throw new Error('SharedArrayBuffer needs isolation headers. Serve this folder with serve.py on localhost or HTTPS.');
         status('Loading images…');
@@ -429,7 +437,7 @@ async function start() {
         if (sdLoading) await sdLoading.catch(() => {});
         if (!sdImage) await loadSD($('sd').files[0] || defaultSD());
         if (!sdImage) throw new Error('No SD image is loaded.');
-        const rom = await fetchImage(machine === 'x3' ? 'esp32c3-rom.bin' : 'esp32s3_rev0_rom.bin');
+        const rom = await fetchImage(machine !== 'x4pro' ? 'esp32c3-rom.bin' : 'esp32s3_rev0_rom.bin');
         // The explorer waits for the runtime to own the card.
         sd.ready = false; sdSetEnabled(false); sdStatus('Starting the emulator…');
         bootData = {type: 'boot', machine, flash, sd: sdImage.buffer, rom, wifi: $('wifi').checked, turbo: $('turbo').checked, ghosting: $('ghosting').checked};
@@ -439,21 +447,22 @@ async function start() {
         frame = document.createElement('iframe');
         frame.width = machine === 'x3' ? '528' : '480';
         frame.height = machine === 'x3' ? '792' : '800';
-        frame.title = `${machine === 'x3' ? 'X3' : 'X4 Pro'} display`;
+        frame.dataset.machine = machine;
+        frame.title = `${{x3: 'X3', x4: 'X4', x4pro: 'X4 Pro'}[machine]} display`;
         frame.src = 'runtime.html';
         // The canvas exists once the runtime page loads; size it then too.
         frame.addEventListener('load', resizeScreen);
         $('screen').replaceChildren(frame);
         setLive(machine);
         resizeScreen();
-        status(`${composition}Booting ${machine === 'x3' ? 'X3 (ESP32-C3)' : 'X4 Pro (ESP32-S3)'} · ${timingLabel()}…`);
+        status(`${composition}Booting ${{x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)'}[machine]} · ${timingLabel()}…`);
     } catch (error) { fail(error.message); }
     finally { pending = false; }
 }
 function fail(message) {
     status(message); append(`Error: ${message}`);
     if (!frame) {
-        for (const id of ['start', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
+        for (const id of ['start', 'device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
         if (bootData) {
             // The boot never reached the runtime; take the card back.
             sdImage = new Uint8Array(bootData.sd); bootData = null;
@@ -502,7 +511,7 @@ window.addEventListener('message', ({source, origin, data}) => {
             $('screen').textContent = 'Stopped. Start again to use the current SD card.';
             $('keys').replaceChildren();
             for (const id of ['reset', 'stop']) $(id).disabled = true;
-            for (const id of ['start', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
+            for (const id of ['start', 'device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
             status('Stopped. Start resumes from a fresh boot with your current SD image.');
             sdImage = data.bytes;
             sdSnapshotPending = false;

@@ -117,6 +117,7 @@ struct Esp32C3MachineState {
 /* Create a macro which defines the name of our new machine class */
 #define TYPE_ESP32C3_MACHINE MACHINE_TYPE_NAME("esp32c3")
 #define TYPE_X3_MACHINE MACHINE_TYPE_NAME("x3")
+#define TYPE_X4_MACHINE MACHINE_TYPE_NAME("x4")
 
 /* This will create a macro ESP32_MACHINE, which can be used to check and cast a generic MachineClass
  * to the specific class we defined above: Esp32C3MachineState. */
@@ -843,12 +844,14 @@ static void x3_board_init(Esp32C3MachineState *ms)
     DeviceState *gpio = DEVICE(&ms->gpio);
     DeviceState *rtc = DEVICE(&ms->rtccntl);
     SSIBus *bus = (SSIBus *)qdev_get_child_bus(ms->spi2, "spi");
-    DeviceState *panel = qdev_new("uc8279");
+    bool x4 = object_dynamic_cast(OBJECT(ms), TYPE_X4_MACHINE);
+    DeviceState *panel = qdev_new(x4 ? "ssd1677" : "uc8279");
 
-    if (!qdev_find_global_prop(OBJECT(panel), "uc8253")) {
+    if (!x4 && !qdev_find_global_prop(OBJECT(panel), "uc8253")) {
         qdev_prop_set_bit(panel, "uc8253", true);
     }
-    if (object_property_get_bool(OBJECT(panel), "uc8253", &error_fatal)) {
+    if (!x4 &&
+        object_property_get_bool(OBJECT(panel), "uc8253", &error_fatal)) {
         /* Measured UC8253 X3; see x4prosim/sdcal/panel.md. */
         if (!qdev_find_global_prop(OBJECT(panel), "frame-us")) {
             qdev_prop_set_uint32(panel, "frame-us", 12850);
@@ -867,11 +870,17 @@ static void x3_board_init(Esp32C3MachineState *ms)
     qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 4, qdev_get_gpio_in_named(panel, "dc", 0));
     qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 5, qdev_get_gpio_in_named(panel, "rst", 0));
     qdev_connect_gpio_out_named(panel, "busy", 0, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 6));
-    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 6), 1);
-    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 8, qdev_get_gpio_in_named(panel, "sclk", 0));
-    qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 10, qdev_get_gpio_in_named(panel, "sda", 0));
-    qdev_connect_gpio_out_named(panel, "sda-out", 0, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 10));
-    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 10), 1);
+    qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 6), !x4);
+    if (!x4) {
+        qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 8,
+                                   qdev_get_gpio_in_named(panel, "sclk", 0));
+        qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 10,
+                                   qdev_get_gpio_in_named(panel, "sda", 0));
+        qdev_connect_gpio_out_named(panel, "sda-out", 0,
+                                   qdev_get_gpio_in_named(gpio,
+                                                         ESP32S3_GPIO_IN, 10));
+        qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 10), 1);
+    }
 
     DeviceState *sd = qdev_new("ssi-sd");
     /* X3 card probe medians: see x4prosim/sdcal/cpu.md. */
@@ -918,6 +927,9 @@ static void x3_board_init(Esp32C3MachineState *ms)
     qdev_connect_gpio_out_named(keys, "power", 1, qdev_get_gpio_in_named(rtc, ESP32C3_RTC_PAD, 3));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(keys), &error_fatal);
 
+    if (x4) {
+        return;
+    }
     I2CBus *i2c = I2C_BUS(qdev_get_child_bus(ms->i2c0, "i2c"));
     x3_add_i2c(i2c, "bq27220", 0x55);
     x3_add_i2c(i2c, "ds3231", 0x68);
@@ -950,6 +962,19 @@ static const TypeInfo x3_info = {
     .class_init = x3_machine_class_init,
 };
 
+/* The C3 X4 shares SPI, SD and keys with X3, but uses an SSD1677 panel. */
+static void x4_machine_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    mc->desc = "Xteink X4 (ESP32-C3, SSD1677 e-paper)";
+}
+
+static const TypeInfo x4_info = {
+    .name = TYPE_X4_MACHINE,
+    .parent = TYPE_X3_MACHINE,
+    .class_init = x4_machine_class_init,
+};
+
 /* Create a new type of machine ("child class") */
 static const TypeInfo esp32c3_info = {
     .name = TYPE_ESP32C3_MACHINE,
@@ -966,6 +991,7 @@ static void esp32c3_machine_type_init(void)
 {
     type_register_static(&esp32c3_info);
     type_register_static(&x3_info);
+    type_register_static(&x4_info);
 }
 
 type_init(esp32c3_machine_type_init);

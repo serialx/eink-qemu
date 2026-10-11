@@ -14,6 +14,7 @@ import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 
 const url = new URL(process.argv[2]);
+url.searchParams.set('device', 'x3');
 assert(!url.searchParams.has('flash') && !url.searchParams.has('sd'), 'Use the picker and default blank card, without ?flash= or ?sd=');
 assert(!url.searchParams.has('sleep'), 'Accurate acceptance requires default sleep pacing');
 const evidence = path.resolve(process.env.EVIDENCE_DIR || 'build-wasm/evidence', 'explorer');

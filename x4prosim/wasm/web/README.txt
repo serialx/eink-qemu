@@ -23,13 +23,13 @@ Memory64 is also available in this Chrome version without experimental flags;
 older browsers may require MEMORY64=2. Firefox and Safari are not verified.
 
 Open http://127.0.0.1:8000, optionally replace the SD image, then select an
-official CrossPoint release app .bin or a 16 MiB flash dump; choosing the
+official CrossPoint release app .bin, merged firmware .bin, or a 16 MiB flash dump; choosing the
 firmware starts the emulator (Start reruns it after Stop). Release assets:
-  X3:     crosspoint-<ver>-x3-x4.bin
+  X3/X4:  crosspoint-<ver>-x3-x4.bin
   X4 Pro: crosspoint-<ver>-x4pro.bin
   https://github.com/crosspoint-reader/crosspoint-reader/releases
 The browser composes release apps into 16 MiB flash using bundled C3/S3
-bootloaders, the CrossPoint partition table and the C3-only NVS device seed.
+bootloaders, the CrossPoint partition table and the X3-only NVS device seed.
 App bytes stay unchanged. No esptool or PlatformIO is needed. Boot asset
 provenance and licenses are in x4prosim/boot/README.md (boot-provenance.md in
 the package). Unsupported chips, invalid headers and apps over 0x640000 bytes
@@ -49,8 +49,16 @@ Alternatively put copies of your images in web-dist and open:
   http://127.0.0.1:8000/?flash=flash.bin&sd=sd.img
   http://127.0.0.1:8000/?flash=crosspoint-1.6.5-x3-x4.bin&sd=sd.img
 Query images must be same-origin or provide appropriate CORS/CORP headers.
-For full images, bootloader byte 12 equal to 5 selects X3; other values select
-X4 Pro, matching run.sh. App images use chip ID 5 (C3) or 9 (S3) in their header.
+Device remembers your choice between visits. Auto selects X4 Pro for ESP32-S3;
+ESP32-C3 requires an explicit X3 or X4 choice because both use the same chip.
+Use ?device=x3, ?device=x4 or ?device=x4pro to select a board in a link.
+A device/chip mismatch is rejected before boot.
+
+For TRMNL FW1.8.17.bin, choose X4 and load the merged .bin directly. Its
+bootloader, partitions and firmware bytes are preserved. The SSD1677 panel
+shows the setup QR code and Wi-Fi instructions. X4 has simplified refresh
+timing and no ghosting simulation. The display stays in physical portrait
+orientation; firmware such as TRMNL may draw its interface in landscape.
 
 The server sets COOP and COEP for SharedArrayBuffer and pthreads. For a remote
 host use HTTPS and the same headers; plain HTTP works only on localhost. A
@@ -71,7 +79,7 @@ is disabled because Emscripten SDL has one canvas. Wi-Fi networking is disabled 
 Node wasm launcher.
 
 The canvas and runtime iframe retain the native panel resolution: 528x792 for
-X3 and 480x800 for X4 Pro. The page scales the iframe in whole physical-pixel
+X3 and 480x800 for X4/X4 Pro. The page scales the iframe in whole physical-pixel
 multiples, adapting to browser zoom, monitor pixel density, and available width.
 On a 2x Retina display at 100% zoom, each panel pixel occupies a 2x2 block.
 If a narrow window cannot fit even one physical pixel per panel pixel, the
@@ -121,6 +129,15 @@ card is a useful starting point. A first boot with books can spend substantial
 time generating cover thumbnails after Home first appears. The status remains
 'finishing startup' until the CrossPoint memory log checkpoint used by smoke.sh.
 Other firmware may not print those CrossPoint-specific progress messages.
+
+TRMNL X4 acceptance uses the same server and isolated Chrome setup below:
+  TRMNL_FIRMWARE=/absolute/path/FW1.8.17.bin \
+    node x4prosim/wasm/web/trmnl-smoke.mjs http://127.0.0.1:8000/
+It verifies C3 ambiguity, chip mismatch rejection, unchanged merged firmware,
+480x800 output, Reset, Stop and remembered selection. Optional REFERENCE_PPM
+compares the panel bytes against a native X4 capture with
+`-nic hubport,hubid=0,model=esp32_wifi`. This keeps the radio present without a
+host connection, matching the browser with Wi-Fi downloads off.
 
 Automated acceptance (Node 22+ and Chrome; no npm dependencies):
   # In separate terminals, start serve.py as above and Chrome:

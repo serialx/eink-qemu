@@ -23,7 +23,7 @@ shift 2
 chip=$(od -An -tu1 -j12 -N1 "$flash" | tr -d ' ')
 machine=${X4MACHINE:-$([ "$chip" = 5 ] && echo x3 || echo x4pro)}
 case "$machine" in
-    x3) arch=riscv32; shift_bits=0; accel=tcg,tb-size=64 ;;
+    x3|x4) arch=riscv32; shift_bits=0; accel=tcg,tb-size=64 ;;
     x4pro) arch=xtensa; shift_bits=2; accel=tcg,tb-size=64 ;;
     *) echo "unsupported machine: $machine" >&2; exit 2 ;;
 esac
@@ -34,7 +34,8 @@ esac
 cp "$flash" "$flash.run"
 chmod u+w "$flash.run"
 timing=(-icount "shift=$shift_bits,sleep=${RUN_NODE_SLEEP:-on}")
-network=(-nic none)
+# Keep the radio hardware present even without a host network adapter.
+network=(-nic hubport,hubid=0,model=esp32_wifi)
 if [ -n "${WIFI_ASSETS:-}" ]; then
     network=(-nic browser,model=esp32_wifi)
 fi

@@ -30,7 +30,7 @@ def detect_chip(data, machine=None):
     chip = struct.unpack_from("<H", data, 12)[0]
     if chip not in CHIPS:
         raise ValueError(f"unsupported ESP chip ID {chip}; expected 5 (C3) or 9 (S3)")
-    if machine and machine != CHIPS[chip][0]:
+    if machine and {"x3": 5, "x4": 5, "x4pro": 9}.get(machine) != chip:
         raise ValueError(f"--machine {machine} conflicts with {CHIPS[chip][1]} image")
     return chip
 
@@ -98,7 +98,7 @@ def compose(app, boot, table, machine=None):
     flash[:len(boot)] = boot
     flash[TABLE_OFFSET:TABLE_OFFSET + len(table)] = table
     flash[APP_OFFSET:APP_OFFSET + len(app)] = app
-    if chip == 5:
+    if chip == 5 and machine != "x4":
         # Same cached X3 device detection as mkflash.sh; S3 remains erased.
         if (1, 2, 0x9000, 0x5000) not in entries:
             raise ValueError("C3 seed requires NVS at 0x9000 with size 0x5000")
@@ -156,7 +156,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="app or merged .bin, build directory, or 16 MiB image")
     parser.add_argument("output", type=Path)
-    parser.add_argument("--machine", choices=("x3", "x4pro"), help="check the detected chip matches this machine")
+    parser.add_argument("--machine", choices=("x3", "x4", "x4pro"), help="check the detected chip matches this machine")
     args = parser.parse_args()
     try:
         image = make_flash(args.source, args.machine)

@@ -48,6 +48,7 @@ function turboProperties(machine) {
             [...['frame-us', 'refresh-overhead-us'].map(name => `uc8279.${name}=0`),
                 ...['pon-ms', 'pof-ms', 'busy-ms'].map(name => `uc8279.${name}=1`)] :
             // Animation divides by frame-us; PON/POF remain fixed at 2 ms.
+            machine === 'x4' ? ['ssd1677.busy-ms=1'] :
             ['uc8179.frame-us=1', 'uc8179.busy-ms=1'])
     ];
     return properties.flatMap(property => ['-global', property]);
@@ -183,16 +184,16 @@ window.addEventListener('message', async ({source, origin, data}) => {
             canvas,
             arguments: ['-L', '/', '-machine', machine,
                 '-accel', 'tcg,tb-size=64',
-                '-icount', `shift=${machine === 'x3' ? 0 : 2},sleep=${sleep}`,
+                '-icount', `shift=${machine !== 'x4pro' ? 0 : 2},sleep=${sleep}`,
                 ...(turbo ? turboProperties(machine) : []),
-                '-global', `${machine === 'x3' ? 'uc8279' : 'uc8179'}.ghosting=${ghosting ? 'on' : 'off'}`,
+                ...(machine === 'x4' ? [] : ['-global', `${machine === 'x3' ? 'uc8279' : 'uc8179'}.ghosting=${ghosting ? 'on' : 'off'}`]),
                 '-drive', 'file=/flash.bin,if=mtd,format=raw,cache.direct=off',
                 '-drive', 'file=/sd.img,if=sd,format=raw,cache.direct=off',
                 '-chardev', 'stdio,id=cdc', '-serial', 'null', '-parallel', 'none',
                 '-global', 'driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc',
                 '-chardev', 'file,id=hmp,path=/dev/hmp,input-path=/dev/hmp,append=on',
                 '-mon', 'chardev=hmp,mode=readline', '-display', 'sdl,show-cursor=on',
-                '-nic', wifi ? 'browser,model=esp32_wifi' : 'none'],
+                '-nic', wifi ? 'browser,model=esp32_wifi' : 'hubport,hubid=0,model=esp32_wifi'],
             print: output, printErr: output,
             onAbort: reason => send('error', {message: String(reason)}),
             onExit: status => send('exit', {status}),
@@ -200,7 +201,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
                 monitorDevice(Module.FS);
                 Module.FS.writeFile('/flash.bin', new Uint8Array(flash), {canOwn: true});
                 Module.FS.writeFile('/sd.img', new Uint8Array(sd), {canOwn: true});
-                Module.FS.writeFile(machine === 'x3' ? '/esp32c3-rom.bin' : '/esp32s3_rev0_rom.bin', new Uint8Array(rom));
+                Module.FS.writeFile(machine !== 'x4pro' ? '/esp32c3-rom.bin' : '/esp32s3_rev0_rom.bin', new Uint8Array(rom));
             }],
             onRuntimeInitialized: () => {
                 // Nothing is typed into the firmware's serial port: keep stdin quiet.
@@ -212,7 +213,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
             }
         };
         const script = document.createElement('script');
-        script.src = `qemu-system-${machine === 'x3' ? 'riscv32' : 'xtensa'}.js`;
+        script.src = `qemu-system-${machine !== 'x4pro' ? 'riscv32' : 'xtensa'}.js`;
         script.onerror = () => send('error', {message: 'Could not load the emulator. Run package-web.sh first.'});
         document.body.append(script);
     }

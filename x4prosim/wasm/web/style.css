@@ -262,7 +262,7 @@ label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text
   padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
 }
 #keys button:active, #keys button.held { background: var(--brand-tint); border-color: var(--meter); }
-#keys[data-machine="x3"] button:is(:nth-child(3), :nth-child(5), :nth-child(7)),
+#keys:is([data-machine="x3"], [data-machine="x4"]) button:is(:nth-child(3), :nth-child(5), :nth-child(7)),
 #keys[data-machine="x4pro"] button:is(:nth-child(2), :nth-child(4)) { margin-left: 12px; }
 
 /* Console */
@@ -333,10 +333,13 @@ label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text
   #keys { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 0 16px 18px; }
   #keys button { min-height: 48px; border-radius: 10px; margin-left: 0 !important; }
   #keys button::after { display: none; }
-  #keys[data-machine="x3"] button:nth-child(7) { grid-column: span 2; }
+  #keys:is([data-machine="x3"], [data-machine="x4"]) button:nth-child(7) { grid-column: span 2; }
 }
 @media (hover: none) {
   .col-ops { width: 124px; }
   #sd-table td.ops { position: static; display: table-cell; padding: 0 2px; white-space: nowrap; opacity: 1; pointer-events: auto; background: none; text-align: right; }
   #sd-table td.ops button { width: 40px; height: 40px; }
 }
+
+.device-choice { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.device-choice select { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
