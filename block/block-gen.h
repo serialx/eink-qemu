@@ -27,6 +27,7 @@
 #define BLOCK_BLOCK_GEN_H
 
 #include "block/block_int.h"
+#include "exec/icount.h"
 
 /* Base structure for argument packing structures */
 typedef struct BdrvPollCo {
@@ -39,8 +40,14 @@ static inline void bdrv_poll_co(BdrvPollCo *s)
 {
     assert(!qemu_in_coroutine());
 
+    if (icount_enabled()) {
+        icount_begin_block_poll();
+    }
     aio_co_enter(s->ctx, s->co);
     AIO_WAIT_WHILE(s->ctx, s->in_progress);
+    if (icount_enabled()) {
+        icount_end_block_poll();
+    }
 }
 
 #endif /* BLOCK_BLOCK_GEN_H */

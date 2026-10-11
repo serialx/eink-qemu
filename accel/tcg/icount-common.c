@@ -491,9 +491,34 @@ bool icount_configure(QemuOpts *opts, Error **errp)
     return true;
 }
 
+/* Host block completions must not shorten a synchronous guest I/O slice. */
+static __thread unsigned int icount_block_poll_depth;
+
+void icount_begin_block_poll(void)
+{
+    icount_block_poll_depth++;
+}
+
+void icount_end_block_poll(void)
+{
+    assert(icount_block_poll_depth);
+    icount_block_poll_depth--;
+}
+
 void icount_notify_exit(void)
 {
     assert(icount_enabled());
+
+    /*
+     * A synchronous block wrapper is already polling for its completion.
+     * Its host BH notifications must not cause an extra round-robin CPU
+     * switch: inline and thread-pool block backends must consume the same
+     * guest instruction budget. Timer and interrupt kicks remain active.
+     * Keep the record/replay checkpoint behaviour unchanged.
+     */
+    if (icount_block_poll_depth && replay_mode == REPLAY_MODE_NONE) {
+        return;
+    }
 
     if (current_cpu) {
         qemu_cpu_kick(current_cpu);
