@@ -130,6 +130,8 @@ function monitorDevice(FS) {
     const POLLIN = 1, POLLOUT = 4, EAGAIN = 6;
     const device = FS.makedev(64, 0);
     FS.registerDevice(device, {
+        // A character device is a stream: never seek, even for O_APPEND writes.
+        open(stream) { stream.seekable = false; },
         read(stream, buffer, offset, length) {
             if (!monitorInput.length) throw new FS.ErrnoError(EAGAIN);
             const n = Math.min(length, monitorInput.length);
