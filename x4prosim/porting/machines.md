@@ -204,10 +204,15 @@ copied input both retain SHA-256
 `80b8d1de62ff9ade1bf5770177e23283677ce13427b724a3e7091409fab8b12a`.
 Only `drive.py`'s disposable `.run` copy receives guest writes.
 
+This recipe pins the recorded 1 GiB SDSC image and the old helper's 4 KiB
+clusters. The current default produces a 2050 MiB SDHC image, which changes
+the acceptance setup. See [SD image geometry](../../README.md#sd-image-geometry)
+for new timing comparisons.
+
 ```sh
 mkdir -p build/machines
 cp /Users/serialx/workspace/x4prosim/x3-flash.bin build/machines/x3-flash.bin
-python3 x4prosim/mksd.py build/machines/sd.img
+python3 x4prosim/mksd.py build/machines/sd.img 1024 --cluster-size 4096
 QEMU_EXTRA='-nic user,model=esp32_wifi' \
   python3 x4prosim/drive.py build/machines/x3-flash.bin \
   build/machines/sd.img build/machines/x3.log \

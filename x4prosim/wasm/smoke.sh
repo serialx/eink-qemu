@@ -43,7 +43,7 @@ evidence = Path(os.environ.get('EVIDENCE_DIR', root / 'build-wasm/evidence/smoke
 evidence.mkdir(parents=True, exist_ok=True)
 if rom_only:
     subprocess.run([sys.executable, str(root / 'x4prosim/mksd.py'),
-                    str(evidence / 'sd.img'), '64'], check=True)
+                    str(evidence / 'sd.img'), '64', '--cluster-size', '512'], check=True)
 else:
     for src, dest in zip(args, ('flash.bin', 'sd.img')):
         shutil.copyfile(src, evidence / dest)

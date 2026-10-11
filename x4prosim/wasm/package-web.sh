@@ -44,6 +44,7 @@ provenance = (mkflash.BOOT_DIR / 'README.md').read_text()
 (out / 'nvs-x3.bin').write_bytes(mknvs.image(0x5000, 'cphw', {'dev_det': 2}))
 PYBOOT
 if [ ! -f "$DEST/blank-sd.img" ]; then
-    python3 "$ROOT/x4prosim/mksd.py" "$DEST/blank-sd.img" 64
+    # Compact browser fixture; stock X3 timing comparisons need 32 KiB clusters.
+    python3 "$ROOT/x4prosim/mksd.py" "$DEST/blank-sd.img" 64 --cluster-size 512
 fi
 printf 'Web package: %s\nRun: python3 x4prosim/wasm/serve.py %s\n' "$DEST" "$DEST"

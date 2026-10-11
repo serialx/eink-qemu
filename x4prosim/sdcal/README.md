@@ -5,6 +5,11 @@ SD stop-busy model. See [CPU calibration and SD refit](cpu.md) for the current
 values, 30-row validation, and reading measurements; the values below document
 the original plain-instruction-count calibration at `icount shift=2`.
 
+For new firmware timing comparisons, use the stock X3 card's **32 KiB FAT32
+clusters**, now the `mksd.py` default, or explicitly match the card under test.
+Copying the same files into an image with smaller clusters changes the number
+of FAT reads needed for font seeks. Record geometry alongside the workload
+before fitting emulator timing parameters. See [SD image geometry](../../README.md#sd-image-geometry).
 
 All 30 median totals meet the requested limits: the largest absolute error is
 **2.92% for reads** (limit 5%) and **13.12% for writes** (limit 15%). The unchanged
@@ -170,12 +175,17 @@ The copied runner changes only the host launcher to use no shared monitor
 socket or GUI, accepts optional `SD_TIMING_EXTRA` QEMU arguments and allows
 600 seconds for host execution. It never edits or flashes the probe firmware.
 
+These historical results used a 512 MiB SDSC image. The command below selects
+4 KiB clusters explicitly to retain the old helper's geometry. The new 2050 MiB
+default is advertised as SDHC and changes the card's addressing mode, so it
+cannot reproduce this configuration.
+
 From this worktree after `ninja -C build`:
 
 ```sh
 mkdir -p /tmp/sdcal
 x4prosim/mkflash.sh /Users/serialx/orca/workspaces/crosspoint-reader/sd-timing-probe/.pio/build/default /tmp/sdcal/flash.bin
-python3 x4prosim/mksd.py /tmp/sdcal/sd.img 512
+python3 x4prosim/mksd.py /tmp/sdcal/sd.img 512 --cluster-size 4096
 python3 x4prosim/sdcal/run_qemu.py "$PWD" "$PWD//tmp/sdcal"
 python3 x4prosim/sdcal/parse.py /tmp/sdcal/console.log --json /tmp/sdcal/results.json
 python3 x4prosim/sdcal/compare.py device-results.json /tmp/sdcal/console.log
