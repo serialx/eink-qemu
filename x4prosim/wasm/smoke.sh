@@ -29,6 +29,11 @@ import time
 root = Path(sys.argv[1])
 args = sys.argv[2:]
 turbo = bool(args and args[0] == '--turbo')
+sleep = os.environ.get('RUN_NODE_SLEEP') or 'on'
+if sleep not in ('on', 'off'):
+    sys.exit('RUN_NODE_SLEEP must be on or off')
+if turbo:
+    sleep = 'off'
 if turbo:
     args = args[1:]
 rom_only = args == ['--rom-only']
@@ -80,7 +85,7 @@ def run(machine, flash, firmware=False):
     if native:
         arch = 'riscv32' if machine == 'x3' else 'xtensa'
         timing = ['-icount', 'shift=' + ('0' if machine == 'x3' else '2') +
-                  ',sleep=' + ('off' if turbo else 'on')]
+                  ',sleep=' + sleep]
         if turbo:
             timing += subprocess.check_output(
                 ['sh', str(root / 'x4prosim/turbo-args.sh'), machine],
@@ -185,7 +190,8 @@ def run(machine, flash, firmware=False):
                             p.kill()
                         time.sleep(.01)
                     peak_rss = usage.ru_maxrss / (1024 if sys.platform == 'darwin' else 1)
-                    measurements[machine] = dict(turbo=turbo, firmware=firmware, startup_to_rom_s=boot,
+                    measurements[machine] = dict(turbo=turbo, sleep=sleep, argv=command,
+                        firmware=firmware, startup_to_rom_s=boot,
                         milestone_s=ready, settled_mem_s=settled_time, screenshot_s=screenshot_time,
                         jit_compiled_tbs=compiled, home_jit_compiled_tbs=home_compiled,
                         peak_rss_kib=peak_rss,

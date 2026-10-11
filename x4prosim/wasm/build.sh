@@ -9,6 +9,12 @@ if [ "${1:-}" = --web ]; then
 fi
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SYSROOT="${WASM_SYSROOT:-$ROOT/build-wasm-deps/sysroot-wasm64}"
+if [[ ! -d "$SYSROOT/lib/pkgconfig" ]]; then
+    echo "Run $ROOT/x4prosim/wasm/build-deps.sh first" >&2
+    exit 1
+fi
+SYSROOT=$(cd "$SYSROOT" && pwd)
+WASM_SYSROOT="$SYSROOT" "$ROOT/x4prosim/wasm/build-deps.sh" --prepare-paths
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 export EM_CACHE="${EM_CACHE:-$ROOT/build-wasm-deps/em-cache}"
 export PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig"

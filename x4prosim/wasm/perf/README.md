@@ -20,11 +20,19 @@ python3 x4prosim/wasm/perf/benchmark.py --help
 python3 x4prosim/wasm/perf/benchmark.py
 ```
 
-The default is three interleaved native/Wasm runs with `sleep=off`. Home is
+The default is three interleaved accurate native/Wasm runs with `sleep=off`.
+`--turbo` (or `TURBO=1`) applies the canonical `turbo-args.sh x3` options to
+both runtimes and forces `sleep=off`; `--accurate` overrides `TURBO=1`.
+Each `run.json` and `results.json` records the mode, and an output directory
+containing another mode is rejected. Older records without a mode are treated
+as accurate: those harness versions ignored `TURBO`.
+Home is
 the third completed `X3_DRF` refresh. The second phase ends at the first
 complete subsequent `[MEM]` line, then the harness captures the named `panel`
-console and quits normally. It checks all screenshots and the first eight
-guest wait timestamps against the first run. Output directories must be new,
+console and quits normally. It checks all screenshots against the first run;
+accurate mode also compares the first eight guest wait timestamps. Turbo
+requires the eight wait milestones but does not compare their timestamps.
+Output directories must be new,
 so an accidental rerun cannot silently overwrite evidence.
 
 `--native-bin`, `--wasm-build`, `--node`, `--flash`, `--sd`, `--runs`,

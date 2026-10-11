@@ -3,6 +3,7 @@
 # Uses Homebrew Emscripten/ninja/autoconf/automake/libtool and pinned pip
 # Meson 1.5.0 + tomli in build-wasm-deps/venv. No Docker or changes to QEMU sources are required.
 # Run from any directory. FORCE=1 rebuilds; WASM_SYSROOT reuses a matching sysroot.
+# --prepare-paths only repairs cross-file and pkg-config paths in a copied tree.
 # Downloads (including Meson's PCRE2 fallback) survive rebuilds for offline use.
 # Fork crypto: native build-time generators; portable libgcrypt with asm and
 # jitter entropy disabled. Hide sys/random.h's unsupported getrandom API;
@@ -17,6 +18,37 @@ CROSS="$BUILD/cross.meson"
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
 FORCE=${FORCE:-0}
 mkdir -p "$SRC" "$SYSROOT/lib/pkgconfig"
+SYSROOT=$(cd "$SYSROOT" && pwd)
+
+# Run on every QEMU build too: copied dependency trees may predate the
+# relocatable metadata. No compiler, downloads or dependency rebuilds needed.
+prepare_paths() {
+    python3 - "$ROOT/x4prosim/wasm/cross.meson" "$CROSS" "$SYSROOT" <<'PYTHON'
+from pathlib import Path
+import os
+import re
+import sys
+
+source, destination, sysroot = map(Path, sys.argv[1:])
+relative = os.path.relpath(sysroot, destination.parent)
+quoted = relative.replace("\\", "\\\\").replace("'", "\\'")
+text = re.sub(r'^sysroot = .*$', "sysroot = '@DIRNAME@' / '" + quoted + "'",
+              source.read_text(), flags=re.M)
+if not destination.exists() or destination.read_text() != text:
+    destination.write_text(text)
+for pc in (sysroot / 'lib/pkgconfig').glob('*.pc'):
+    text = pc.read_text()
+    prefix = re.search(r'^prefix=(/[^\n]+)$', text, re.M)
+    if prefix:
+        # Some packages expand prefix in other variables at install time.
+        text = text.replace(prefix[1], '${pcfiledir}/../..')
+        pc.write_text(text)
+PYTHON
+}
+prepare_paths
+if [[ "${1:-}" == --prepare-paths ]]; then
+    exit 0
+fi
 
 if ! command -v emcc >/dev/null 2>&1; then
     if [[ "$(uname -s)" != Darwin ]]; then
@@ -48,18 +80,6 @@ if ! find "$(aclocal --print-ac-dir 2>/dev/null)" /usr/share/aclocal /usr/local/
     echo 'Missing ltdl.m4: install libltdl-dev (Debian/Ubuntu) or libtool (Homebrew)' >&2
     exit 1
 fi
-SYSROOT=$(cd "$SYSROOT" && pwd)
-# Meson cannot expand shell environment variables in a cross file.
-python3 - "$ROOT/x4prosim/wasm/cross.meson" "$CROSS" "$SYSROOT" <<'PYTHON'
-from pathlib import Path
-import sys
-source, destination, sysroot = sys.argv[1:]
-quoted = sysroot.replace("\\", "\\\\").replace("'", "\\'")
-text = Path(source).read_text().replace(
-    "sysroot = '@DIRNAME@' / '../../build-wasm-deps/sysroot-wasm64'",
-    "sysroot = '" + quoted + "'")
-Path(destination).write_text(text)
-PYTHON
 
 # Keep Emscripten's writable compiler cache out of the Homebrew installation.
 export EM_CACHE="${EM_CACHE:-$BUILD/em-cache}"
@@ -138,7 +158,7 @@ if needed pixman-1; then
     fetch pixman-0.44.2.tar.gz https://cairographics.org/releases/pixman-0.44.2.tar.gz \
         6349061ce1a338ab6952b92194d1b0377472244208d47ff25bef86fc71973466
     extract pixman-0.44.2.tar.gz pixman
-    "$BUILD/venv/bin/meson" setup "$BUILD/pixman/_build" "$BUILD/pixman" \
+    "$BUILD/venv/bin/python" -m mesonbuild.mesonmain setup "$BUILD/pixman/_build" "$BUILD/pixman" \
         --prefix="$SYSROOT" --libdir=lib --cross-file="$CROSS" \
         --default-library=static --buildtype=release -Dtests=disabled -Ddemos=disabled
     ninja -C "$BUILD/pixman/_build" -j"$JOBS" install
@@ -182,7 +202,7 @@ path.write_text(source.replace(old, new))
 PYTHON
     mkdir -p "$SRC/meson-packagecache"
     ln -s "$SRC/meson-packagecache" "$BUILD/glib/subprojects/packagecache"
-    "$BUILD/venv/bin/meson" setup "$BUILD/glib/_build" "$BUILD/glib" \
+    "$BUILD/venv/bin/python" -m mesonbuild.mesonmain setup "$BUILD/glib/_build" "$BUILD/glib" \
         --prefix="$SYSROOT" --libdir=lib --cross-file="$CROSS" \
         --default-library=static --buildtype=release --force-fallback-for=pcre2 \
         -Dc_args="-O3 -pthread -DWASM_BIGINT -sMEMORY64=1 -Wno-incompatible-function-pointer-types" \
@@ -229,4 +249,5 @@ if needed libgcrypt; then
     )
 fi
 
+prepare_paths
 echo "Wasm dependency sysroot ready: $SYSROOT"

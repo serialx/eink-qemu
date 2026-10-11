@@ -9,6 +9,24 @@ BUILD="$WORK/build"
 unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS CPATH
 export EM_CACHE="${EM_CACHE:-$DEPS/em-cache}"
 mkdir -p "$DEPS/src" "$WORK" "$BUILD"
+# CMake caches record both directories and cannot be reused after copying a
+# worktree. package-web.sh calls this entry point as well as standalone builds.
+python3 - "$ROOT/x4prosim/wasm/browser-net" "$BUILD" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+source, build = map(lambda p: Path(p).resolve(), sys.argv[1:])
+cache = build / 'CMakeCache.txt'
+if cache.exists():
+    entries = dict(line.split('=', 1) for line in cache.read_text().splitlines()
+                   if '=' in line and not line.startswith(('#', '//')))
+    if (entries.get('CMAKE_HOME_DIRECTORY:INTERNAL') != str(source) or
+            entries.get('CMAKE_CACHEFILE_DIR:INTERNAL') != str(build)):
+        print('Discarding browser-net CMake state from another directory')
+        cache.unlink()
+        shutil.rmtree(build / 'CMakeFiles', ignore_errors=True)
+PY
 fetch() {
     local file=$1 url=$2 sha=$3
     if [ ! -f "$DEPS/src/$file" ]; then
