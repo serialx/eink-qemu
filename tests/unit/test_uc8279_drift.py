@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
-    'panel_ink', ROOT / 'x4prosim/tests/test_panel_ink.py')
+    'panel_ink', ROOT / 'eink-qemu/tests/test_panel_ink.py')
 helpers = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helpers)
 

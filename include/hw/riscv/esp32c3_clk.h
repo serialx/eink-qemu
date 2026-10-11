@@ -58,7 +58,7 @@ typedef struct ESP32C3ClockState {
     uint32_t levels;
 
     uint32_t sys_ext_dev_enc_dec_ctrl;
-    /* x4prosim: RTC fast memory CRC engine (deep-sleep wake stub check) */
+    /* eink-qemu: RTC fast memory CRC engine (deep-sleep wake stub check) */
     uint32_t rtc_fastmem_config;
     uint32_t rtc_fastmem_crc;
 } ESP32C3ClockState;

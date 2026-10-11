@@ -31,7 +31,7 @@
  * family UC8253c A0.61 p26 (UC8279d). These revision mappings are inferred,
  * not a measured PLL sweep or matching-silicon documentation. frame-us is an
  * effective panel period, not the reciprocal of the nominal PLL frequency.
- * PON/POF use pon-ms/pof-ms. See x4prosim/sdcal/panel.md for calibration and
+ * PON/POF use pon-ms/pof-ms. See eink-qemu/sdcal/panel.md for calibration and
  * remaining revision uncertainties. Plane bit 1 = white; DSLP sleeps until RST.
  * Shown portrait (528x792) like the device, panel row 0 at the right.
  *

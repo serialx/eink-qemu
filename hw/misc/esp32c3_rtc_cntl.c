@@ -1,7 +1,7 @@
 /*
  * ESP32-C3 RTC CNTL
  *
- * x4prosim adds the RTC timer (TIME_UPDATE latches TIME_LOW0/HIGH0 at the
+ * eink-qemu adds the RTC timer (TIME_UPDATE latches TIME_LOW0/HIGH0 at the
  * 136 kHz slow clock) and sleep: SLEEP_EN with DG_WRAP_PD_EN clear is light
  * sleep, which ends on the RTC timer alarm or a GPIO wake and raises
  * SLP_WAKEUP in INT_RAW; with it set it is deep sleep, which ends the same

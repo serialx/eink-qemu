@@ -85,7 +85,7 @@ typedef struct Esp32s3RtcCntlState {
     Esp32s3ResetCause reset_cause[ESP32S3_CPU_COUNT];
     bool stat_vector_sel[ESP32S3_CPU_COUNT];
 
-    /* x4prosim: light sleep (SLEEP_EN until a timer or GPIO wake source fires) */
+    /* eink-qemu: light sleep (SLEEP_EN until a timer or GPIO wake source fires) */
     uint32_t slp_timer[2];
     uint32_t state0_reg;
     uint32_t wakeup_state_reg;

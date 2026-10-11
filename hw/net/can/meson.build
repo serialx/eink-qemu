@@ -8,7 +8,7 @@ system_ss.add(when: 'CONFIG_XLNX_ZYNQMP', if_true: files('xlnx-zynqmp-can.c'))
 system_ss.add(when: 'CONFIG_XLNX_VERSAL', if_true: files('xlnx-versal-canfd.c'))
 system_ss.add(when: 'CONFIG_CAN_FLEXCAN', if_true: files('flexcan.c'))
 
-# x4prosim dev-net: Espressif TWAI controllers.
+# eink-qemu dev-net: Espressif TWAI controllers.
 system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_twai.c'))
 system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32_twai.c', 'esp32c3_twai.c'))
 system_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32_twai.c', 'esp32s3_twai.c'))

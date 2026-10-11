@@ -5,7 +5,7 @@
 Example: python3 tests/unit/run-wasm-event-notifier.py
 The build uses its existing compiler command and libqemuutil, without editing
 Meson or the SDK. --no-run produces index.html plus JS/Wasm for browser tests;
-serve the output directory with x4prosim/wasm/serve.py (COOP/COEP required).
+serve the output directory with eink-qemu/wasm/serve.py (COOP/COEP required).
 """
 import argparse
 import json

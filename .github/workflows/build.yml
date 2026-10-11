@@ -2,7 +2,7 @@ name: 'build'
 
 on: [push, pull_request]
 
-# x4prosim: a newer push to the same branch or PR cancels the older run
+# eink-qemu: a newer push to the same branch or PR cancels the older run
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -69,7 +69,7 @@ jobs:
         include:
           - platform: x86_64-linux-gnu
             runs_on: ubuntu-22.04
-            # x4prosim: Debian 11's security archive is gone; Debian 12 (glibc 2.36)
+            # eink-qemu: Debian 11's security archive is gone; Debian 12 (glibc 2.36)
             container: debian:12
             shell: bash -e {0}
             run_prerequisites: "./.github/workflows/scripts/prerequisites-native.sh"
@@ -77,7 +77,7 @@ jobs:
 
           - platform: aarch64-linux-gnu
             runs_on: ubuntu-22.04
-            # x4prosim: Debian 11's security archive is gone; Debian 12 (glibc 2.36)
+            # eink-qemu: Debian 11's security archive is gone; Debian 12 (glibc 2.36)
             container: debian:12
             shell: bash -e {0}
             run_prerequisites: "./.github/workflows/scripts/prerequisites-cross-linux-arm64.sh"
@@ -150,7 +150,7 @@ jobs:
       - name: Smoke test (${{ matrix.target }} @ ${{ matrix.platform }})
         if : ${{ matrix.platform == 'x86_64-linux-gnu' }}
         run: |
-          # x4prosim: the board machines must come up (no firmware: blank flash spins in the ROM)
+          # eink-qemu: the board machines must come up (no firmware: blank flash spins in the ROM)
           head -c 16777216 /dev/zero > blank.bin
           if [ "${{ matrix.target }}" = xtensa-softmmu ]; then bin=qemu-system-xtensa; m=x4pro; else bin=qemu-system-riscv32; m=x3; fi
           set +e
@@ -172,7 +172,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           find $PWD/install/qemu/share/qemu/ -maxdepth 1 -mindepth 1 -not -name 'esp*.bin' -exec rm -rfv {} \;
-          cp -R x4prosim README.md X4PROSIM.md install/qemu/   # x4prosim: run.sh/drive.py find bin/ next to them
+          cp -R eink-qemu README.md EINK-QEMU.md install/qemu/   # eink-qemu: run.sh/drive.py find bin/ next to them
           export DIST_DIR=${PWD}/dist
           mkdir -p ${DIST_DIR}
           cd $PWD/install
@@ -300,26 +300,26 @@ jobs:
         with:
           node-version: '26'
       - name: Test browser FAT filesystem
-        run: node x4prosim/wasm/web/fat.test.mjs
+        run: node eink-qemu/wasm/web/fat.test.mjs
       - name: Test Wi-Fi asset preparation and packaging
-        run: python3 -m unittest discover -s x4prosim/wasm -p test_wifi_assets.py
+        run: python3 -m unittest discover -s eink-qemu/wasm -p test_wifi_assets.py
       - name: Cache wasm dependencies
         uses: actions/cache@v5
         with:
           path: |
             build-wasm-deps/sysroot-wasm64
             build-wasm-deps/em-cache
-          key: wasm64-${{ runner.os }}-${{ runner.arch }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('x4prosim/wasm/build-deps.sh', 'x4prosim/wasm/cross.meson') }}
+          key: wasm64-${{ runner.os }}-${{ runner.arch }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('eink-qemu/wasm/build-deps.sh', 'eink-qemu/wasm/cross.meson') }}
       - name: Build dependencies
-        run: x4prosim/wasm/build-deps.sh
+        run: eink-qemu/wasm/build-deps.sh
       - name: Build and package wasm
         env:
           VERSION: ${{ needs.Vars.outputs.VERSION }}
-        run: x4prosim/wasm/build.sh --web --with-pkgversion="$VERSION"
+        run: eink-qemu/wasm/build.sh --web --with-pkgversion="$VERSION"
       - name: Test browser Wi-Fi TCP and TLS downloads
-        run: node --test x4prosim/wasm/test-browser-network.mjs
+        run: node --test eink-qemu/wasm/test-browser-network.mjs
       - name: Smoke test without firmware
-        run: x4prosim/wasm/smoke.sh --rom-only
+        run: eink-qemu/wasm/smoke.sh --rom-only
       - name: Check Pages isolation assets
         run: |
           test -s build-wasm-32limit/web-dist/coi-serviceworker.js
@@ -327,7 +327,7 @@ jobs:
       - name: Upload wasm package
         uses: actions/upload-artifact@v7
         with:
-          name: x4prosim-${{ needs.Vars.outputs.VERSION }}-wasm
+          name: eink-qemu-${{ needs.Vars.outputs.VERSION }}-wasm
           path: build-wasm-32limit/web-dist
           if-no-files-found: error
       - name: Upload smoke evidence

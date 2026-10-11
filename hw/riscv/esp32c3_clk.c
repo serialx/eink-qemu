@@ -29,7 +29,7 @@
 #define ESP32C3_RTC_FASTMEM_SIZE 0x2000
 
 /*
- * x4prosim: the RTC_MEM_CRC engine: START sums RTC fast memory from word
+ * eink-qemu: the RTC_MEM_CRC engine: START sums RTC fast memory from word
  * ADDR, LEN + 1 words, into RTC_FASTMEM_CRC and raises FINISH at once. The
  * deep-sleep entry and the ROM's wake-stub check both use it, so only its
  * consistency matters, not the silicon's polynomial.
