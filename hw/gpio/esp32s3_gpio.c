@@ -202,6 +202,18 @@ static void esp32s3_gpio_reset_hold(Object *obj, ResetType type)
     s->last_in = gpio_in(s);
 }
 
+static void esp32s3_gpio_reset_exit(Object *obj, ResetType type)
+{
+    ESP32S3GPIOState *s = ESP32S3_GPIO(obj);
+
+    /*
+     * Board wiring may be connected after the initial input callbacks have
+     * cached released outputs. Publish every pull-up after all devices reset.
+     */
+    s->last_out = 0;
+    gpio_update(s);
+}
+
 static void esp32s3_gpio_init(Object *obj)
 {
     ESP32S3GPIOState *s = ESP32S3_GPIO(obj);
@@ -225,6 +237,7 @@ static void esp32s3_gpio_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     rc->phases.hold = esp32s3_gpio_reset_hold;
+    rc->phases.exit = esp32s3_gpio_reset_exit;
     device_class_set_props(dc, esp32s3_gpio_properties);
 }
 
