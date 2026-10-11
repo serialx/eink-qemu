@@ -58,31 +58,65 @@ It changes guest timing; `smoke.sh` tests accurate mode and
 `smoke.sh --turbo flash.bin sd.img` compares against native turbo without
 requiring timestamp equality.
 
-The 2026-10-10 stack combines inline Emscripten file I/O with amortized BQL
-locking, lock-free GPSPI CMD reads with single-access dispatch, and direct
-TB tail chaining in the wasm64 backend. These changes preserve accurate guest
-waits and panel bytes; turbo separately reduces device delays and changes guest
-timing.
+## Measured performance
 
 CrossPoint 1.6.5 X3 on an Apple M5 Max, Emscripten 6.0.12, Node 26 and
-Chrome 155, using `MEMORY64=2`. Baseline is the build before these three
-changes. Node and native figures are independent three-run medians; Chrome
-figures are single-run confirmations with GPU/WebGL.
-Home is the third completed refresh; post-Home ends at the following `[MEM]`
-checkpoint. Chrome Home starts at image loading, while settled starts at page
-load, so those columns do not sum to the post-Home interval. Accurate figures
-use `sleep=off` for deterministic comparisons; normal launches use `sleep=on`.
+Chrome 155, using `MEMORY64=2` and `sleep=off`. Five quiet alternating pairs
+per runtime/mode compare untouched `5ea1b8ef2e` with the six-commit stack
+ending at `02ad73311d` (2026-10-10). Runs use fresh image copies, Wi-Fi off,
+and no builds or profilers; Chrome uses normal GPU/WebGL and autosave.
+
+Home is the third completed `X3_DRF`; post-Home runs from Home to the first
+`[MEM]`, the settled checkpoint. Node Home and settled start at process launch.
+Chrome Home starts at image loading, while settled starts at navigation.
+Each phase is a separate median, so Home plus post-Home need not equal settled.
+Reduction is `100 × (1 − median(stack/base))` across paired post-Home times.
 
 | Runtime / mode | Baseline Home / post-Home / settled | Combined stack Home / post-Home / settled | Post-Home reduction |
 | --- | ---: | ---: | ---: |
-| Node accurate, `sleep=off` | 2.404 / 9.897 / 12.299 s | 1.953 / 7.314 / 9.255 s | 26.10% |
-| Chrome accurate, `sleep=off` | 2.829 / 11.484 / 14.835 s | 2.358 / 8.580 / 11.463 s | 25.29% |
-| Chrome turbo | 1.368 / 3.993 / 5.886 s | 1.227 / 2.929 / 4.681 s | 26.65% |
-| Native accurate, `sleep=off` | 1.776 / 8.794 / 10.573 s | 1.541 / 8.024 / 9.565 s | 8.76% |
+| Node accurate | 2.074 / 7.330 / 9.422 s | 1.712 / 5.803 / 7.518 s | 20.8% |
+| Chrome accurate | 2.671 / 8.979 / 12.181 s | 2.185 / 6.251 / 8.961 s | 30.2% |
+| Node turbo | 1.201 / 2.814 / 4.022 s | 1.194 / 2.605 / 3.800 s | 7.9% |
+| Chrome turbo | 1.547 / 3.005 / 5.078 s | 1.521 / 2.813 / 4.843 s | 6.5% |
 
-With `sleep=off`, accurate Node now settles within about 10.05 s of guest time;
-Chrome still takes longer. Both address modes build and pass smoke. The hosted page is
-<https://serialx.github.io/x4prosim/>.
+Chrome accurate now settles before the ten-second autosave; each baseline run
+incurred one save pause (60–63 ms) before settling. Its improvement includes
+avoiding that pause; no save-disabled or matched-save-phase comparison was run.
+Native performance was not measured in this series.
+
+X3 guest-visible first-eight waits, full first `[MEM]` line (accurate: 10049 ms)
+and whole SD contents are unchanged within each mode. Native/Node comparisons
+are exact, as are Chrome completed-refresh panels and resumed waits/MEM/SD.
+Late Chrome accurate captures can still differ by one grayscale level,
+consistent with the panel model's existing host-cadence drift. Turbo separately changes guest timing.
+
+### What makes it fast
+
+These six changes build on inline file I/O, amortized BQL locking, lock-free
+GPSPI CMD reads and direct TB tail chaining from the earlier stack:
+
+- A guarded MMIO word cache avoids repeated dispatch for the polled GPSPI CMD
+  register; each read still fetches its live atomic value.
+- Host GUI deadlines no longer limit icount execution budgets; BQL handoff
+  lets host waiters interrupt a retained single-vCPU lock and service the UI.
+- Each JavaScript realm caches its clock origin while reading the live clock.
+- Asynchronous Wasm AIO notifier wakeups avoid synchronous JavaScript handoffs.
+- Generated translation blocks (TBs) query Asyncify state directly in Wasm.
+
+### Tried and rejected
+
+- Shared browser SD image: the cleaner repeat was slower, with no reproducible win.
+- Exact panel kernel specialization: bit-exact work brought no qualifying gain;
+  more aggressive variants failed Wasm NaN-state equality.
+- Exact busy-poll fast-forward: a timer-publication race could cross a newly
+  inserted virtual deadline before its notification reached the vCPU.
+- V8/LTO/SIMD flags: earlier screens found startup or throughput regressions,
+  or gains too small and noisy to qualify.
+
+### Compatibility
+
+Both address modes have passed build/smoke checks; this timing series uses only
+`MEMORY64=2`. The hosted page is <https://serialx.github.io/x4prosim/>.
 Official CrossPoint 1.6.5 X4 Pro now reaches Home in native, Node and Chrome,
 including accurate and turbo modes; the browser verifies Down/Up and a pointer
 tap into Library. This requires the shared-TB CPU context reload, UC8179 timer

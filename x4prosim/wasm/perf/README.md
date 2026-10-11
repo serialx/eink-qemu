@@ -1,7 +1,8 @@
 # X3 phase profiling
 
 These tools measure the CrossPoint X3 boot without changing firmware. See
-[turbo-profile.md](turbo-profile.md) for the measured costs and recommendations.
+[current measurements](../README.md#measured-performance) for performance and
+caveats, and [turbo-profile.md](turbo-profile.md) for historical profiles.
 They use only Python's standard library and Node's built-in profiler. Native
 sampling additionally requires macOS `sample` and permission to inspect the
 emulator process. Run from any directory; default binaries and output paths

@@ -52,32 +52,16 @@ checkbox starts ticked, and unticking it or `?turbo=0` selects accurate timing
 (`?turbo=1` remains accepted). The Node launcher keeps accurate timing by
 default; `TURBO=1 x4prosim/wasm/run-node.sh flash.bin sd.img` opts in.
 
-The 2026-10-10 stack combines inline Emscripten file I/O with amortized BQL
-locking, lock-free GPSPI CMD reads with single-access dispatch, and direct
-TB tail chaining in the wasm64 backend. These changes preserve accurate guest
-waits and panel bytes; turbo separately reduces device delays and changes guest
-timing.
-
-CrossPoint 1.6.5 X3 on an Apple M5 Max, Emscripten 6.0.12, Node 26 and
-Chrome 155, using `MEMORY64=2`. Baseline is the build before these three
-changes. Node and native figures are independent three-run medians; Chrome
-figures are single-run confirmations with GPU/WebGL.
-Home is the third completed refresh; post-Home ends at the following `[MEM]`
-checkpoint. Chrome Home starts at image loading, while settled starts at page
-load, so those columns do not sum to the post-Home interval. Accurate figures
-use `sleep=off` for deterministic comparisons; normal launches use `sleep=on`.
-
-| Runtime / mode | Baseline Home / post-Home / settled | Combined stack Home / post-Home / settled | Post-Home reduction |
-| --- | ---: | ---: | ---: |
-| Node accurate, `sleep=off` | 2.404 / 9.897 / 12.299 s | 1.953 / 7.314 / 9.255 s | 26.10% |
-| Chrome accurate, `sleep=off` | 2.829 / 11.484 / 14.835 s | 2.358 / 8.580 / 11.463 s | 25.29% |
-| Chrome turbo | 1.368 / 3.993 / 5.886 s | 1.227 / 2.929 / 4.681 s | 26.65% |
-| Native accurate, `sleep=off` | 1.776 / 8.794 / 10.573 s | 1.541 / 8.024 / 9.565 s | 8.76% |
-
-With `sleep=off`, the combined stack reaches accurate settled startup in Node
-within the roughly 10.05 s of guest time; Chrome still takes longer. Wi-Fi is disabled, and SD
-writes must be downloaded before closing the browser. Official X4 Pro firmware
-also passed native, Node and Chrome acceptance; Safari/Firefox remain untested.
+Five quiet alternating pairs on an Apple M5 Max (Node 26, Chrome 155,
+`MEMORY64=2`, `sleep=off`) compare `5ea1b8ef2e` with the six-change performance
+stack. CrossPoint 1.6.5 X3 accurate startup settles in **7.518 s in Node** and
+**8.961 s in Chrome**, with paired post-Home reductions of **20.8%** and **30.2%**.
+Chrome's gain includes settling before the ten-second autosave; the baseline
+incurred one 60–63 ms save pause. X3 waits, first MEM and whole SD contents are
+unchanged; completed-refresh panels match, with late one-level Chrome drift
+still possible. Turbo changes guest timing and is measured separately.
+Official X4 Pro firmware also passed native, Node and Chrome acceptance;
+Safari/Firefox remain untested.
 See [the full WebAssembly guide](X4PROSIM.md#webassembly-build) for build modes,
 measurement methods, limits and upstream candidates.
 
