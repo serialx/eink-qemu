@@ -1,6 +1,13 @@
 # X3 boot profile: native and Wasm64
 
-## After round 2 integration: 2026-10-10
+This is a historical profile of the earlier integration rounds. Its timings,
+target status, defaults and implementation decisions describe those revisions;
+later changes added BQL amortization and made browser turbo the default.
+For current measurements and caveats, see
+[Measured performance](../README.md#measured-performance). Accurate Node and
+Chrome now both settle below the earlier 10.06 s target with `sleep=off`.
+
+## Earlier round 2 integration: 2026-10-10
 
 Accurate Node `sleep=off` reaches Home in **2.394 s** and settled in **12.464 s**
 (three-run medians). Node **Home < 3.25 s: reached; settled < 10.06 s: not reached**.
