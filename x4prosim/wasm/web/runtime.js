@@ -1,7 +1,10 @@
 /* A fresh iframe owns each Emscripten instance and its pthread workers. */
 'use strict';
-let input = [];
-let monitor = false;
+// Monitor (HMP) traffic uses its own character device, /dev/hmp, so its echo
+// and terminal escapes never interleave with the firmware's USB serial log.
+const monitorInput = [];
+let monitorOutput = '';
+const monitorDecoder = new TextDecoder();
 let machineType, homeHeld = false;
 // Actions that need the VM stopped (snapshots, SD card operations), FIFO.
 // Each one runs on the 'VM status: paused' line of its own 'info status'.
@@ -50,11 +53,11 @@ function turboProperties(machine) {
     return properties.flatMap(property => ['-global', property]);
 }
 function output(line) {
-    // HMP shares the CDC chardev; keep terminal editing escapes out of the log.
-    // 'VM status' answers the page's own pause requests; keep them out too.
-    if (!line.includes('\x1b') && !line.startsWith('QEMU ') && !line.startsWith('VM status:')) {
-        send('log', {line: line.replace(/^\(qemu\) /, '')});
-    }
+    send('log', {line});
+}
+// Lines the monitor prints: prompts, echo of the page's own commands and
+// their answers. Only the 'VM status' answer drives the page; nothing is logged.
+function monitorLine(line) {
     if (paused && line.includes('VM status: paused')) {
         const action = paused;
         const resume = action();
@@ -118,9 +121,33 @@ function sdOperation({id, op, args}) {
     });
 }
 function command(text) {
-    if (!monitor) { input.push(1, 99); monitor = true; }
-    input.push(...new TextEncoder().encode(text + '\n'));
-    Module.FS.getStream(0).node.notifyListeners?.(1);
+    monitorInput.push(...new TextEncoder().encode(text + '\n'));
+    Module.FS.lookupPath('/dev/hmp').node.notifyListeners?.(1);
+}
+// Character device behind '-chardev file,path=/dev/hmp,input-path=/dev/hmp'.
+// QEMU polls it like any other fd; reads report EAGAIN until a command is queued.
+function monitorDevice(FS) {
+    const POLLIN = 1, POLLOUT = 4, EAGAIN = 6;
+    const device = FS.makedev(64, 0);
+    FS.registerDevice(device, {
+        // A character device is a stream: never seek, even for O_APPEND writes.
+        open(stream) { stream.seekable = false; },
+        read(stream, buffer, offset, length) {
+            if (!monitorInput.length) throw new FS.ErrnoError(EAGAIN);
+            const n = Math.min(length, monitorInput.length);
+            buffer.set(monitorInput.splice(0, n), offset);
+            return n;
+        },
+        write(stream, buffer, offset, length) {
+            monitorOutput += monitorDecoder.decode(buffer.slice(offset, offset + length), {stream: true});
+            const lines = monitorOutput.split('\n');
+            monitorOutput = lines.pop();
+            lines.forEach(monitorLine);
+            return length;
+        },
+        poll: () => (monitorInput.length ? POLLIN : 0) | POLLOUT
+    });
+    FS.mkdev('/dev/hmp', device);
 }
 window.addEventListener('message', async ({source, origin, data}) => {
     if (source !== parent || origin !== location.origin) return;
@@ -160,22 +187,25 @@ window.addEventListener('message', async ({source, origin, data}) => {
                 ...(turbo ? turboProperties(machine) : []),
                 '-drive', 'file=/flash.bin,if=mtd,format=raw,cache.direct=off',
                 '-drive', 'file=/sd.img,if=sd,format=raw,cache.direct=off',
-                '-chardev', 'stdio,id=cdc,mux=on', '-serial', 'null', '-parallel', 'none',
+                '-chardev', 'stdio,id=cdc', '-serial', 'null', '-parallel', 'none',
                 '-global', 'driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc',
-                '-mon', 'chardev=cdc,mode=readline', '-display', 'sdl,show-cursor=on',
+                '-chardev', 'file,id=hmp,path=/dev/hmp,input-path=/dev/hmp,append=on',
+                '-mon', 'chardev=hmp,mode=readline', '-display', 'sdl,show-cursor=on',
                 '-nic', wifi ? 'browser,model=esp32_wifi' : 'none'],
             print: output, printErr: output,
             onAbort: reason => send('error', {message: String(reason)}),
             onExit: status => send('exit', {status}),
             preRun: [() => {
+                monitorDevice(Module.FS);
                 Module.FS.writeFile('/flash.bin', new Uint8Array(flash), {canOwn: true});
                 Module.FS.writeFile('/sd.img', new Uint8Array(sd), {canOwn: true});
                 Module.FS.writeFile(machine === 'x3' ? '/esp32c3-rom.bin' : '/esp32s3_rev0_rom.bin', new Uint8Array(rom));
             }],
             onRuntimeInitialized: () => {
-                Module.TTY.default_tty_ops.get_char = () => input.length ? input.shift() : undefined;
+                // Nothing is typed into the firmware's serial port: keep stdin quiet.
+                Module.TTY.default_tty_ops.get_char = () => undefined;
                 const stdin = Module.FS.getStream(0);
-                stdin.stream_ops = {...stdin.stream_ops, poll: () => input.length ? 1 : 0};
+                stdin.stream_ops = {...stdin.stream_ops, poll: () => 0};
                 send('running');
                 canvas.focus({preventScroll: true});
             }
