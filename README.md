@@ -169,9 +169,14 @@ the device gets 10.0.2.15, and `curl localhost:8080` reaches its port 80. To
 put it on your LAN, so it gets an address from your router, run with
 `X4BR=br0` on a host bridge (setup in [X4PROSIM.md](X4PROSIM.md)).
 
-**Panel.** Every ghosting and timing parameter can be tuned or turned off with
-`-global uc8179.<name>=N`. For quick scripted runs, `-global uc8179.animate=false`
-skips the animation. See [x4prosim/ghosting/README.md](x4prosim/ghosting/README.md).
+**Panel.** Ghosting is **off by default in native and Node CLI runs** for stable
+pixel comparisons. Enable it with `-global uc8179.ghosting=on` (X4 Pro) or
+`-global uc8279.ghosting=on` (X3). The web page defaults to **Ghosting on**;
+untick the switch before starting, or use `?ghosting=0`, for clean pixels.
+Ghosting off removes physical ink artifacts and idle drift while retaining LUT
+grayscale and refresh timing. `-global uc8179.animate=false` independently skips
+animation; use the `uc8279` prefix for X3. Capture after refresh completion when
+comparing pixels. See [x4prosim/ghosting/README.md](x4prosim/ghosting/README.md).
 
 ## Docs
 

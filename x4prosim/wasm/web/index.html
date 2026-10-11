@@ -67,6 +67,18 @@
             </div>
           </div>
           <div class="option">
+            <label class="switch"><input id="ghosting" type="checkbox" role="switch" checked> Ghosting</label>
+            <button class="info" type="button" aria-label="About Ghosting" aria-describedby="ghosting-help" aria-expanded="false">
+              <svg class="icon"><use href="#i-info"/></svg>
+            </button>
+            <div id="ghosting-help" class="tip" role="tooltip">
+              <strong>E-ink ghosting</strong>
+              <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
+                Turn it off for clean, stable pixels when comparing screenshots.</p>
+              <p class="fine">Applies when the emulator starts. <code>?ghosting=0</code> opens the page with it off.</p>
+            </div>
+          </div>
+          <div class="option">
             <label class="switch"><input id="turbo" type="checkbox" role="switch"> Turbo</label>
             <button class="info" type="button" aria-label="About Turbo" aria-describedby="turbo-help" aria-expanded="false">
               <svg class="icon"><use href="#i-info"/></svg>

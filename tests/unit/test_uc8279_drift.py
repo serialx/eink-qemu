@@ -43,6 +43,7 @@ static void init(PanelState *s)
     s->ink = calloc(W * H, sizeof(*s->ink));
     s->frames = calloc(MAX_FRAMES, sizeof(*s->frames));
     s->swing = 6; s->rail_soft = 100;
+    s->ghosting = true;
     s->remnant_fast_ms = 1000; s->remnant_slow_ms = 30000;
     /* A large drift makes cadence failures obvious on the small test glass. */
     s->drift = 500; s->drift_s = 10;
@@ -130,8 +131,20 @@ int main(void)
     assert(a.drift_timer.deadline == (int64_t)ceil(14.05 * 1e9));
     assert(a.drift_timer.pending);
     RESET_CASE
+    /* Clean mode keeps the actual framebuffer unchanged during idle time. */
+    a.ghosting = false;
+    timer_del(&a.drift_timer);
+    a.redraw = true;
+    present(&a);
+    memcpy(saved, surface.pixels, sizeof(saved));
+    panel_relax(&a, 100000, true);
+    a.redraw = true;
+    present(&a);
+    assert(memcmp(saved, surface.pixels, sizeof(saved)) == 0);
+    panel_run_frames(&a, -1);
+    assert(!a.drift_timer.pending);
     free(a.ink); free(a.frames); free(b.ink); free(b.frames);
-    puts("GUI cadence, late dispatch, leakage and refresh boundary: PASS");
+    puts("GUI cadence, late dispatch, leakage, refresh boundary and clean framebuffer: PASS");
 }
 '''
 

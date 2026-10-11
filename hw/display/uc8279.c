@@ -87,6 +87,7 @@ struct Uc8279State {
     QEMUTimer anim_timer;
     QEMUTimer drift_timer;
     int64_t drift_deadline;
+    bool ghosting;          /* physical ink artifacts; off for pixel QA */
     bool animate;
     int anim_f, anim_n;
     double anim_t0;
@@ -288,7 +289,7 @@ static int uc8279_otp_frames(Uc8279State *s)
     int n = 0;
 
     if (s->partial) {
-        float h = s->otp_hold_drive / 1000.0f;
+        float h = s->ghosting ? s->otp_hold_drive / 1000.0f : 0;
         for (int i = 0; i < s->otp_fast_frames; i++, n++) {
             memcpy(s->frames[n], (float[4]) { -h, 1, -1, h },
                    sizeof(s->frames[n]));
@@ -332,6 +333,11 @@ static void uc8279_relax(Uc8279State *s, double now, bool leak)
         expf(-(now - s->t_refresh) * 1e3 / s->remnant_slow_ms) : 0;
     bool drift = s->drift && s->drift_s && now > s->t_drift;
     float amt = s->drift / 1000.0f, tau = s->drift_s;
+
+    if (!s->ghosting) {
+        s->t_drift = now;
+        return;
+    }
 
     for (int i = 0; i < H * W; i++) {
         Uc8279Ink *k = &s->ink[i];
@@ -387,6 +393,12 @@ static void uc8279_run_frame(Uc8279State *s, int f)
             Uc8279Ink *k = &s->ink[y * W + x];
             float d = e[c[x]];
             bool driven = fabsf(d) >= 0.5f;
+
+            if (!s->ghosting) {
+                /* Ideal linear ink retains LUT grayscale and undriven pixels. */
+                k->p = ink_move(k->p, d * step, 0);
+                continue;
+            }
             if (edges && driven) {
                 float nb = 0;
                 nb += x > 0 ? e[c[x - 1]] - e[c[x]] : 0;
@@ -423,7 +435,7 @@ static void uc8279_run_frames(Uc8279State *s, double now)
     if (s->anim_f == s->anim_n) {
         timer_del(&s->anim_timer);
         s->t_refresh = s->t_drift = s->anim_t0 + s->anim_n * dt;
-        if (s->drift && s->drift_s) {
+        if (s->ghosting && s->drift && s->drift_s) {
             s->drift_deadline = ceil((s->t_drift + 1) * 1e9);
             timer_mod(&s->drift_timer, s->drift_deadline);
         }
@@ -795,7 +807,7 @@ static void uc8279_realize(SSIPeripheral *d, Error **errp)
     timer_init_us(&s->busy_timer, QEMU_CLOCK_VIRTUAL, uc8279_busy_done, s);
     timer_init_ns(&s->anim_timer, QEMU_CLOCK_VIRTUAL, uc8279_anim_tick, s);
     timer_init_ns(&s->drift_timer, QEMU_CLOCK_VIRTUAL, uc8279_drift_tick, s);
-    if (s->drift && s->drift_s) {
+    if (s->ghosting && s->drift && s->drift_s) {
         s->drift_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                             1000000000;
         timer_mod(&s->drift_timer, s->drift_deadline);
@@ -818,6 +830,7 @@ static const Property uc8279_properties[] = {
     DEFINE_PROP_UINT32("pon-ms", Uc8279State, pon_ms, 2),
     DEFINE_PROP_UINT32("pof-ms", Uc8279State, pof_ms, 2),
     DEFINE_PROP_UINT8("swing-frames", Uc8279State, swing, 6),
+    DEFINE_PROP_BOOL("ghosting", Uc8279State, ghosting, false),
     DEFINE_PROP_BOOL("animate", Uc8279State, animate, true),
     DEFINE_PROP_UINT32("rail-soft", Uc8279State, rail_soft, 100),
     DEFINE_PROP_UINT8("otp-fast-frames", Uc8279State, otp_fast_frames, 10),

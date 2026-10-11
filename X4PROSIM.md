@@ -453,7 +453,15 @@ Done on `x4prosim`:
     (0x20 VCOM, 0x21 WW, 0x22 KW, 0x23 WK, 0x24 KK); REG=0 runs stand-ins for the
     OTP waveforms (bodies never dumped): fast inside PTIN/PTOUT, full otherwise.
     CDI N2OCP copies NEW to OLD after the refresh.
-  - Per pixel: saturating particle motion, two-component remnant voltage,
+  - `ghosting` defaults to **off** in native and Node CLI runs. Opt in with
+    `-global uc8179.ghosting=on` (X4 Pro) or `-global uc8279.ghosting=on` (X3).
+    The web page enables it by default; its **Ghosting** switch applies at start,
+    and `?ghosting=0` disables it for browser QA. With ghosting off, ink motion is
+    linear with hard saturation: no remnant charge, blooming, soft rails, OTP
+    hold drive or idle drift. LUT grayscale, orientation, animation and BUSY
+    timing remain active. Compare screenshots after the refresh completes, or
+    use `animate=false` to apply all frames immediately.
+  - With ghosting on, per pixel: saturating particle motion, two-component remnant voltage,
     blooming (edge loss), drift toward gray, shown linear in L*. Defaults are
     fitted to device photos: a typed-then-deleted word leaves ~11% ghost (device
     ~11%) that fades x0.53 over 6 fast refreshes (device x0.51); menus and gray

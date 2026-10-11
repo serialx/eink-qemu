@@ -35,6 +35,13 @@ provenance and licenses are in x4prosim/boot/README.md (boot-provenance.md in
 the package). Unsupported chips, invalid headers and apps over 0x640000 bytes
 are rejected. Full 16 MiB images pass through unchanged.
 The hosted copy is https://serialx.github.io/x4prosim/ (no firmware included).
+Ghosting starts ticked. Untick it before Start or use ?ghosting=0 for clean,
+stable pixels in automated QA. The setting applies each time the emulator
+starts. Ghosting off removes physical ink artifacts and idle drift while
+preserving LUT grayscale, animation and refresh timing. Capture after refresh
+completion. Native and Node runs default to ghosting off, so use ghosting=0
+when comparing browser captures with their default output.
+
 Turbo (fast, not timing-accurate) is the page default and starts ticked;
 untick it or open with ?turbo=0 for accurate device timing, as in smoke.sh.
 ?turbo=1 remains accepted. Both modes appear in the status line.

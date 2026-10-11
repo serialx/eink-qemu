@@ -81,6 +81,7 @@ static void parity(void)
 {
     Uc8279State a = {0}, b = {0};
     init(&a); init(&b);
+    a.ghosting = b.ghosting = true;
     /* Thin edges, held pixels, mixed gray positions, prior charge. */
     for (int i = 0; i < W * H; i++) {
         a.ink[i].p = (i % 9) / 8.0f;
@@ -156,6 +157,7 @@ static void clear_and_animate(void)
 {
     Uc8279State a = {0}, b = {0};
     init(&a); init(&b);
+    a.ghosting = b.ghosting = true;
     a.uc8253 = b.uc8253 = true;
     a.psr = b.psr = PSR_REG;
     a.animate = true; b.animate = false;
@@ -205,17 +207,63 @@ static void clear_and_animate(void)
     fini(&a); fini(&b);
 }
 
+static void clean_ink(void)
+{
+    Uc8279State a = {0}, b = {0};
+    init(&a); init(&b);
+    assert(!a.ghosting && !b.ghosting);
+    /* Same target, different ink/charge history and neighboring classes. */
+    for (int i = 0; i < W * H; i++) {
+        a.ink[i].p = (i % 9) / 8.0f;
+        b.ink[i].p = 1 - a.ink[i].p;
+        a.ink[i].qf = 0.2f; b.ink[i].qs = -0.3f;
+        a.cls[i / W][i % W] = b.cls[i / W][i % W] = i % 4;
+    }
+    /* Saturate black, then paint four evenly spaced LUT gray levels. */
+    for (int f = 0; f < 12; f++) {
+        for (int c = 0; c < 4; c++) {
+            a.frames[f][c] = b.frames[f][c] =
+                f < 6 ? -1 : (f - 6 < c * 2 ? 1 : 0);
+        }
+        uc8279_run_frame(&a, f);
+        ref_run_frame(&b, f);
+    }
+    for (int i = 0; i < W * H; i++) {
+        float target = (i % 4) / 3.0f;
+        assert(fabsf(a.ink[i].p - target) < 1e-6f);
+        assert(a.ink[i].p == b.ink[i].p);
+    }
+    float before = a.ink[0].p;
+    uc8279_relax(&a, 100000.0, true);
+    ref_relax(&b, 100000.0, true);
+    assert(a.ink[0].p == before && b.ink[0].p == before);
+    a.anim_n = a.anim_f = 12;
+    uc8279_run_frames(&a, -1);
+    assert(!a.drift_timer.pending);
+    /* Fast OTP refreshes must leave held gray pixels untouched. */
+    a.partial = b.partial = true;
+    a.ink[0].p = b.ink[0].p = 1.0f / 3;
+    int n = uc8279_otp_frames(&a);
+    assert(n == ref_otp_frames(&b));
+    for (int f = 0; f < n; f++) {
+        uc8279_run_frame(&a, f);
+        ref_run_frame(&b, f);
+    }
+    assert(a.ink[0].p == 1.0f / 3 && b.ink[0].p == 1.0f / 3);
+    fini(&a); fini(&b);
+}
+
 int main(void)
 {
-    parity(); lut_order(); clear_and_animate();
-    puts("X4 Pro parity, LUT order, clearing, animation, turbo and timing: PASS");
+    parity(); lut_order(); clear_and_animate(); clean_ink();
+    puts("X4 Pro parity, LUT order, clearing, animation, turbo, timing and clean ink: PASS");
 }
 '''
 
 
 class PanelInkTest(unittest.TestCase):
     def test_defaults_match_x4pro(self):
-        for name in ('swing-frames', 'rail-soft', 'otp-fast-frames',
+        for name in ('ghosting', 'swing-frames', 'rail-soft', 'otp-fast-frames',
                      'otp-full-frames', 'otp-hold-drive', 'remnant-fast',
                      'remnant-fast-ms', 'remnant-slow', 'remnant-slow-ms',
                      'bloom', 'drift', 'drift-s', 'animate', 'frame-us'):

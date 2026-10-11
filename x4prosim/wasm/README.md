@@ -47,6 +47,13 @@ compatible dependencies. `WASM_JIT_STATS=1` enables Node JIT module counts;
 `RUN_NODE_SLEEP=off` gives deterministic idle timing for comparisons. See the
 full guide before changing the fixed 256 MiB heap or 64 MiB translation cache.
 
+Ghosting defaults off in Node and on in the browser. Untick **Ghosting** before
+starting or add `?ghosting=0` for browser pixel comparisons against CLI captures.
+To enable it in Node, append `-global uc8179.ghosting=on` (X4 Pro) or
+`-global uc8279.ghosting=on` (X3) after the flash and SD arguments.
+Ghosting off preserves LUT grayscale and refresh timing, but removes physical
+ink artifacts and idle drift; capture after refresh completion.
+
 The browser page defaults to turbo (checkbox ticked); `?turbo=0` or unticking
 it selects accurate timing, and `?turbo=1` remains accepted. `run-node.sh` keeps
 accurate timing by default; opt in with `TURBO=1 x4prosim/wasm/run-node.sh

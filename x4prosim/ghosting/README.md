@@ -397,12 +397,17 @@ Sources:
 
 ## 7. Reproducing
 
+CLI runs default to ghosting off for pixel QA. Enable `ghosting` to reproduce
+the physical model and parameter sweeps below. Use `uc8279` in place of `uc8179`
+for X3. The browser defaults to ghosting on; its switch or `?ghosting=0` selects
+clean rendering before starting.
+
 ```sh
 # one step per line (steps contain spaces):
 mapfile -t S < x4prosim/ghosting/test/type-delete-pep-steps.txt   # replace OUT in shot: lines first
-x4prosim/drive.py flash.bin sd.img log.txt "${S[@]}"
+QEMU_EXTRA="-global uc8179.ghosting=on" x4prosim/drive.py flash.bin sd.img log.txt "${S[@]}"
 python3 x4prosim/ghosting/tools/pepmeasure.py OUT.png
-QEMU_EXTRA="-global uc8179.bloom=30" x4prosim/drive.py ...   # sweep a parameter
+QEMU_EXTRA="-global uc8179.ghosting=on -global uc8179.bloom=30" x4prosim/drive.py ...   # sweep a parameter
 ```
 
 - **Use a fresh SD image per run.** A used SD changes Home's rows and the

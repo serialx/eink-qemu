@@ -102,6 +102,7 @@ struct Uc8179State {
     QEMUTimer drift_timer;
     int64_t drift_deadline;
     uint32_t busy_ms;       /* fixed DRF BUSY time; 0 = the frames' duration */
+    bool ghosting;          /* physical ink artifacts; off for pixel QA */
     bool animate;
     int anim_f, anim_n;     /* next frame to run, frames in the refresh */
     double anim_t0;         /* virtual seconds the refresh started */
@@ -248,7 +249,7 @@ static int uc8179_otp_frames(Uc8179State *s)
     int n = 0;
 
     if (s->partial) {
-        float h = s->otp_hold_drive / 1000.0f;
+        float h = s->ghosting ? s->otp_hold_drive / 1000.0f : 0;
         for (int i = 0; i < s->otp_fast_frames; i++, n++) {
             memcpy(s->frames[n], (float[4]) { -h, 1, -1, h }, sizeof(s->frames[n]));
         }
@@ -288,6 +289,11 @@ static void uc8179_relax(Uc8179State *s, double now, bool leak)
     float rs = s->remnant_slow_ms ? expf(-(now - s->t_refresh) * 1e3 / s->remnant_slow_ms) : 0;
     bool drift = s->drift && s->drift_s && now > s->t_drift;
     float amt = s->drift / 1000.0f, tau = s->drift_s;
+
+    if (!s->ghosting) {
+        s->t_drift = now;
+        return;
+    }
 
     for (int i = 0; i < H * W; i++) {
         Uc8179Ink *k = &s->ink[i];
@@ -341,6 +347,12 @@ static void uc8179_run_frame(Uc8179State *s, int f)
             Uc8179Ink *k = &s->ink[y * W + x];
             float d = e[c[x]];
             bool driven = fabsf(d) >= 0.5f;
+
+            if (!s->ghosting) {
+                /* Ideal linear ink retains LUT grayscale and undriven pixels. */
+                k->p = ink_move(k->p, d * step, 0);
+                continue;
+            }
             if (edges && driven) {
                 float nb = 0;
                 nb += x > 0 ? e[c[x - 1]] - e[c[x]] : 0;
@@ -376,7 +388,7 @@ static void uc8179_run_frames(Uc8179State *s, double now)
     if (s->anim_f == s->anim_n) {
         timer_del(&s->anim_timer);
         s->t_refresh = s->t_drift = s->anim_t0 + s->anim_n * dt;
-        if (s->drift && s->drift_s) {
+        if (s->ghosting && s->drift && s->drift_s) {
             s->drift_deadline = ceil((s->t_drift + 1) * 1e9);
             timer_mod(&s->drift_timer, s->drift_deadline);
         }
@@ -616,7 +628,7 @@ static void uc8179_set_rst(void *opaque, int n, int level)
 
             /* Charge is integrated through the last completed frame. */
             s->t_refresh = s->t_drift = s->anim_t0 + s->anim_f * dt;
-            if (s->drift && s->drift_s) {
+            if (s->ghosting && s->drift && s->drift_s) {
                 s->drift_deadline = ceil((s->t_drift + 1) * 1e9);
                 timer_mod(&s->drift_timer, s->drift_deadline);
             }
@@ -706,7 +718,7 @@ static void uc8179_realize(SSIPeripheral *d, Error **errp)
     timer_init_ms(&s->busy_timer, QEMU_CLOCK_VIRTUAL, uc8179_busy_done, s);
     timer_init_ns(&s->anim_timer, QEMU_CLOCK_VIRTUAL, uc8179_anim_tick, s);
     timer_init_ns(&s->drift_timer, QEMU_CLOCK_VIRTUAL, uc8179_drift_tick, s);
-    if (s->drift && s->drift_s) {
+    if (s->ghosting && s->drift && s->drift_s) {
         s->drift_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                             1000000000;
         timer_mod(&s->drift_timer, s->drift_deadline);
@@ -721,6 +733,7 @@ static void uc8179_realize(SSIPeripheral *d, Error **errp)
 
 static const Property uc8179_properties[] = {
     DEFINE_PROP_UINT32("busy-ms", Uc8179State, busy_ms, 0),
+    DEFINE_PROP_BOOL("ghosting", Uc8179State, ghosting, false),
     DEFINE_PROP_BOOL("animate", Uc8179State, animate, true),
     DEFINE_PROP_BOOL("portrait", Uc8179State, portrait, true),
     /* 6: the vendor gray LUT's black + 2 / + 4 white frames read 1/3 and 2/3 */

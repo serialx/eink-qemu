@@ -165,7 +165,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
     } else if (data.type === 'sd') {
         sdOperation(data);
     } else if (data.type === 'boot') {
-        const {machine, flash, sd, rom, wifi = true, turbo = false} = data;
+        const {machine, flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
         machineType = machine;
         // Keep the default pacing; allow deterministic benchmark runs to opt out.
         const sleep = turbo || new URLSearchParams(parent.location.search).get('sleep') === 'off' ? 'off' : 'on';
@@ -185,6 +185,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
                 '-accel', 'tcg,tb-size=64',
                 '-icount', `shift=${machine === 'x3' ? 0 : 2},sleep=${sleep}`,
                 ...(turbo ? turboProperties(machine) : []),
+                '-global', `${machine === 'x3' ? 'uc8279' : 'uc8179'}.ghosting=${ghosting ? 'on' : 'off'}`,
                 '-drive', 'file=/flash.bin,if=mtd,format=raw,cache.direct=off',
                 '-drive', 'file=/sd.img,if=sd,format=raw,cache.direct=off',
                 '-chardev', 'stdio,id=cdc', '-serial', 'null', '-parallel', 'none',
