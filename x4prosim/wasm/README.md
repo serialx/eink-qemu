@@ -87,8 +87,10 @@ Native performance was not measured in this series.
 X3 guest-visible first-eight waits, full first `[MEM]` line (accurate: 10049 ms)
 and whole SD contents are unchanged within each mode. Native/Node comparisons
 are exact, as are Chrome completed-refresh panels and resumed waits/MEM/SD.
-Late Chrome accurate captures can still differ by one grayscale level,
-consistent with the panel model's existing host-cadence drift. Turbo separately changes guest timing.
+Panel ink drift advances in fixed virtual-time steps, so a capture at a
+given virtual time is identical regardless of how often the host redraws (it
+used to differ by one grayscale level after `[MEM]`). Turbo separately changes
+guest timing.
 
 ### What makes it fast
 

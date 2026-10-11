@@ -58,8 +58,8 @@ stack. CrossPoint 1.6.5 X3 accurate startup settles in **7.518 s in Node** and
 **8.961 s in Chrome**, with paired post-Home reductions of **20.8%** and **30.2%**.
 Chrome's gain includes settling before the ten-second autosave; the baseline
 incurred one 60–63 ms save pause. X3 waits, first MEM and whole SD contents are
-unchanged; completed-refresh panels match, with late one-level Chrome drift
-still possible. Turbo changes guest timing and is measured separately.
+unchanged, and panels match at equal virtual time. Turbo changes guest timing
+and is measured separately.
 Official X4 Pro firmware also passed native, Node and Chrome acceptance;
 Safari/Firefox remain untested.
 See [the full WebAssembly guide](X4PROSIM.md#webassembly-build) for build modes,
