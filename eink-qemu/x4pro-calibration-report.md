@@ -1,5 +1,10 @@
 # X4 Pro UC8279-0x68 panel implementation
 
+> Historical first-stage report. The completed timing calibration, temporary
+> diagnostic uploads, verified restoration and remaining limits are in
+> [X4 Pro fidelity calibration](x4cal/README.md). Its measurements supersede
+> the provisional timings and open implementation stages below.
+
 The explicit `uc8279-68` profile runs the connected X4 Pro's unmodified
 CrossPoint 1.6.5 firmware through boot, touch navigation, text and image
 grayscale, page turns, and return to Home. Native and WebAssembly builds
