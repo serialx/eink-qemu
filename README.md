@@ -100,8 +100,9 @@ For an X4 Pro with the UC8279 revision `0x68` panel, select its measured
 profile with `X4PANEL=uc8279-68 eink-qemu/run.sh flash.bin sd.img`. The same
 variable works with `drive.py` and the Node launcher. In the browser, choose
 **X4 Pro panel → UC8279 (0x68)**; turn off Turbo to use measured panel delays.
-The default remains UC8179. See the [calibration report](eink-qemu/x4pro-calibration-report.md)
-for measured coverage and remaining CPU, SDMMC, and optical work.
+The default remains UC8179. See the [calibration report](eink-qemu/x4cal/README.md)
+for measured CPU, SDMMC, SPI, panel and sleep timing, and the remaining cache
+and optical limits. X4 Pro launchers use `icount shift=0` with these defaults.
 
 For the X4 or the Picco, name the board in both steps:
 
@@ -136,14 +137,15 @@ The X4 Pro:
 | --- | --- | --- |
 | CPU, flash, PSRAM | ESP32-S3 dual core, 16 MB flash, 8 MB octal PSRAM | done |
 | Display | UC8179 800x480 e-ink: identity/OTP probe, register LUTs, animated refreshes, physical ghosting fitted to device photos | done |
-| SD card | SDMMC, FAT32 image | done |
+| SD card | SDMMC, FAT32 image, measured command/DMA/card delays | done |
 | Keys | Up, Down, Power (GPIO, wake from light sleep) | done |
 | Touch | GT911 on I2C | done |
 | Clock | BM8563 RTC on I2C | done |
 | Battery | CW2017 fuel gauge on I2C | done |
 | Wi-Fi | emulated MAC + a fake open AP (`PICSimLabWifi`), bridged to the host network | done |
 | Light sleep | RTC timer and GPIO wake | done |
-| Frontlight, charger STAT, deep sleep, USB OTG | | not yet |
+| Deep sleep | RTC timer wake, retained memory, both-core restart; boot latency approximate | timer wake |
+| Frontlight, charger STAT, ext0/ext1 deep-sleep wake, USB OTG | | not yet |
 
 **The X3** has a UC8279d or UC8253 792x528 panel, an SD card in SPI mode, six
 keys on an ADC ladder plus Power, a BQ27220 gauge, a DS3231 clock, a QMI8658

@@ -42,7 +42,7 @@
     }
   },
   "source_sha256": {
-    "probe/platformio.ini": "64507112232e88095aac96ce2c607878a98df63259c89acf3907f3f32968eee8",
+    "probe/platformio.ini": "a06348f26c394447a335dd38fc4068bdaa76cbf049d9812f80e0265b7a926a33",
     "probe/partitions.csv": "c23434071d22951d76771268ac32895ba9d4c7cfd103cc56f7c060d6c7a4e422",
     "probe/src/main.cpp": "45ea56361423699e73517525daa33f6b6262bef871cc1319b7d4ce8d714d449d"
   },
@@ -57,9 +57,9 @@
       91652,
       91649
     ],
-    "emulator_light_us": 91850,
+    "emulator_light_us": 91856,
     "hardware_deep_to_setup_us": 266197,
-    "emulator_deep_to_setup_us": 644636,
+    "emulator_deep_to_setup_us": 634637,
     "hardware_timer_wake": 4,
     "emulator_timer_wake": 4,
     "hardware_result_retrieval": "USB disconnect/re-enumeration; INFO after USB reset reads RTC_NOINIT record"

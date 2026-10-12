@@ -1,0 +1,82 @@
+{
+  "date": "2026-10-13",
+  "tested_commit": "422d026ba4",
+  "native_unittest": {
+    "run": 100,
+    "skipped": 1,
+    "failures": 0
+  },
+  "javascript_tests": {
+    "run": 35,
+    "failures": 0
+  },
+  "x3_instruction_cost_regressions": "pass",
+  "x3_panel_drift_regression": "pass",
+  "native_and_wasm_builds": "pass",
+  "native_node_home_sha256": "18ea87da049aa2782ab5e7eea8487a15606884c604980808a2a81a3624f3762b",
+  "native_node_probe_parity": {
+    "CPU": {
+      "groups": 30,
+      "max_median_delta_us": 0,
+      "checksums_match": true
+    },
+    "SD": {
+      "groups": 90,
+      "max_median_delta_us": 1.0,
+      "checksums_match": true
+    }
+  },
+  "browser": {
+    "engine": "Chrome/155.0.8059.39",
+    "checks": {
+      "turbo": false,
+      "cross_origin_isolated": true,
+      "service_worker_controlled": false,
+      "firmware": true,
+      "down_changed_canvas": true,
+      "keyboard_up_changed_canvas": true,
+      "touch_changed_canvas": true,
+      "touch_opened_library": true,
+      "pointer_delivered_without_error": true,
+      "button_home_returned_home": true,
+      "page_keyboard_home_returned_home": true,
+      "canvas_keyboard_home_returned_home": true,
+      "stop_removed_runtime": true
+    }
+  },
+  "native_node_turbo": "pass",
+  "native_node_epub": "Home, Library, grayscale fixture, page turn, Home return",
+  "wasm_sleep": {
+    "light_us": 91855,
+    "deep_to_setup_us": 640637,
+    "wake_cause": 4,
+    "retained_marker": 8550760
+  },
+  "physical_restoration": {
+    "restored": true,
+    "readback_sha256": "4bf8abc4fe05fc1e7538c7912dfdabb65856423888fd676086d20a79481f42d7",
+    "offset": 65536,
+    "length": 409600
+  },
+  "notes": [
+    "Host screenshots validate software rendering; no physical optical comparison was made.",
+    "Native tests use QEMU_XTENSA and QEMU_RISCV32 pointing to freshly built binaries.",
+    "One native test is skipped because its optional official-release/reference-flash fixture was not supplied; the connected-reader firmware has separate native/Node/browser acceptance evidence.",
+    "CPU/SD median parity and EPUB interaction checkpoints precede the final isolated abort/periodic-phase corrections; final native suite, X3 costs, browser, native/Node Home and native/Node sleep were rerun afterward."
+  ],
+  "standard_browser_package": "pass",
+  "independent_review": {
+    "important_findings": 1,
+    "minor_findings": 1,
+    "corrections": [
+      "Allow stop/abort during SD data and DMA ownership waits, with recovery regression.",
+      "Preserve remaining periodic SYSTIMER interval across RTC sleep, with regression."
+    ],
+    "followup": "No remaining material concerns; 17 focused tests and suspended reprogramming independently verified."
+  },
+  "native_sleep": {
+    "light_us": 91856,
+    "deep_to_setup_us": 634637,
+    "wake_cause": 4
+  }
+}

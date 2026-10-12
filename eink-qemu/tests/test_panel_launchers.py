@@ -46,4 +46,3 @@ class PanelLaunchers(unittest.TestCase):
                             if machine == 'x4pro':
                                 self.assertIn('uc8179.pon-ms=1', args)
                                 self.assertIn('uc8179.pof-ms=1', args)
-

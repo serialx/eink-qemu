@@ -35,8 +35,8 @@ not host benchmark results or guarantees for other cards.
 | SD reads/writes, 1–32 sectors, 10/20/40 MHz | — | — | −5.64% to +4.98% |
 | SPI, 60,000 bytes, chunks 1–1024, 2.5/5/10 MHz | — | — | −1.13% to +2.15% |
 | Panel BUSY, measured PLL/LUT/OTP/power cases | — | — | −0.11% to +0.064% |
-| Light sleep, requested 100 ms | 91,649 µs | 91,850 µs | +0.22% |
-| Deep sleep, request through next application setup | 266,197 µs | 644,636 µs | +142% |
+| Light sleep, requested 100 ms | 91,649 µs | 91,856 µs | +0.23% |
+| Deep sleep, request through next application setup | 266,197 µs | 634,637 µs | +138% |
 | Sequential PSRAM, 512 KiB working set | 240,183 µs | 91,366 µs | −62.0% |
 | Random PSRAM, 512 KiB working set | 245,114 µs | 19,248 µs | −92.1% |
 
@@ -83,9 +83,10 @@ buffers, descriptor ownership and completion IRQs change at completion, not
 command submission. The measured card adds 315 µs read latency plus 13 µs per
 additional block, capped after three increments; writes add 900 µs plus 16 µs
 per block beyond eight. Qtests exercise pending reset, DMA reset, descriptor
-ownership, clock gating, bus width, overlap and recovery after a sticky response
-error. Mid-transfer clock disable/re-enable restarts the current phase; it does
-not preserve fractional progress. Card-wear and latency-tail distributions are
+ownership, clock gating, bus width, overlap, stop/abort during data or DMA
+ownership waits, and recovery after a sticky response error. Mid-transfer clock
+disable/re-enable restarts the current phase; it does not preserve fractional
+progress. Card-wear and latency-tail distributions are
 not modeled.
 
 **SPI.** The existing S3 GPSPI wire-time model adds 650 ns plus two programmed
@@ -180,9 +181,11 @@ The original CrossPoint firmware is installed again.
 
 ## Verification and limits
 
-Native protocol tests cover instruction costs, clock transitions, SYSTIMER
-fractional ticks, RTC deadlines/retention, SPI, SDMMC faults, panel identity,
-LUTs, timing, addressing, overrides and reset. Panel core tests run with address
+The final native suite runs 100 tests (one optional release fixture skipped);
+35 JavaScript tests pass. Native protocol tests cover instruction costs, clock
+transitions, SYSTIMER fractional ticks, periodic-alarm phase across sleep, RTC
+deadlines/retention, SPI, SDMMC faults, panel identity, LUTs, timing, addressing,
+overrides and reset. Panel core tests run with address
 and undefined-behavior sanitizers. X3 instruction-cost and drift regressions,
 JavaScript tests, native and WebAssembly builds also pass. Firmware acceptance
 uses the original CrossPoint release and a generated EPUB/card fixture; native
@@ -211,3 +214,10 @@ Register interpretations were checked against the local ESP-IDF headers and
 [Espressif's S3 TRM](https://www.espressif.com/sites/default/files/documentation/esp32-s3_technical_reference_manual_en.pdf).
 Panel-specific values above come from the connected controller, not a presumed
 UC8179 datasheet.
+
+[verification.json](evidence/verification.json) records the final checks. Native
+and Node CPU medians match exactly across 30 groups; SD medians differ by at
+most 1 µs across 90 groups, with all checksums matching. The independent final
+review found the SD abort and periodic-timer sleep cases described above; both
+now have regression tests. The standard browser distribution is rebuilt under
+`build-wasm-32limit/web-dist`, and native launchers use refreshed `build/` binaries.

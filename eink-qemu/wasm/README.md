@@ -59,7 +59,7 @@ For the X4 Pro UC8279 revision `0x68`, use
 **X4 Pro panel → UC8279 (0x68)** in the browser. The URL equivalent is
 `?panel=uc8279-68&turbo=0`. Panel selection is separate from chip detection;
 Auto cannot determine a panel revision from a flash image. The default is
-UC8179. See the [calibration report](../x4pro-calibration-report.md) before
+UC8179. See the [calibration report](../x4cal/README.md) before
 using timing or ghosting results as hardware predictions.
 
 The browser page defaults to turbo (checkbox ticked); `?turbo=0` or unticking
@@ -137,8 +137,10 @@ Both address modes have passed build/smoke checks; this timing series uses only
 Official CrossPoint 1.6.5 X4 Pro now reaches Home in native, Node and Chrome,
 including accurate and turbo modes; the browser verifies Down/Up and a pointer
 tap into Library. This requires the shared-TB CPU context reload, UC8179 timer
-rounding and SDL logical-coordinate fixes in the current source. S3 deep-sleep
-wake remains unsupported. This X4 Pro verification used `MEMORY64=2`;
+rounding and SDL logical-coordinate fixes in the current source. S3 timer-based
+deep-sleep wake now preserves RTC memory and restarts both cores; ext0/ext1
+wake and complete boot-latency calibration remain open. X4 Pro uses
+`icount shift=0` with measured CPU, SDMMC and SPI defaults. This X4 Pro verification used `MEMORY64=2`;
 `MEMORY64=1` and Safari/Firefox were not retested with these fixes.
 
 ## Wi-Fi and font downloads

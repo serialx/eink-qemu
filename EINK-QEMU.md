@@ -227,7 +227,7 @@ blank-flash ROM check. Browser automation and controls are documented in
 [eink-qemu/wasm/web/README.txt](eink-qemu/wasm/web/README.txt).
 
 The launchers use ordinary TCG blocks with a 64 MiB translation cache and
-`-icount shift=0,sleep=on` for X3 (`shift=2` for X4 Pro). The Wasm backend
+`-icount shift=0,sleep=on` for both X3 and X4 Pro. The Wasm backend
 learns recurring MMIO boundaries to avoid repeated mid-block exits. Native
 Wasm longjmp and fixed 256 MiB linear memory reduce runtime overhead.
 For larger workloads, rebuild with `WASM_INITIAL_MEMORY=<bytes>` or
@@ -378,7 +378,9 @@ natively, including a blank 64 MiB SD first run. `drive.py` verified Down/Up
 selection, GT911 taps into Library and Settings, and the capacitive Home key.
 The same screens work with `testdata/sdcard` copied onto the card; that fixture
 contains battery history but no books. Power draws the sleep screen, but a
-second Power press does not resume; S3 deep sleep/ext0/ext1 wake remains open.
+second Power press did not resume in this October 10 check. The October 13
+[calibration](eink-qemu/x4cal/README.md) adds timer-based deep-sleep wake and
+retention; ext0/ext1 wake remains open.
 
 The same composed image reaches Home and the following `[MEM]` checkpoint
 under Node in default accurate mode and `TURBO=1`, and in Chrome with either mode.
@@ -486,16 +488,17 @@ Done in `eink-qemu`:
   (which never realizes it) no longer opens a stray black 800x600 SDL window.
 - `hw/misc/esp32s3_sens.c`: temperature sensor always ready, 25 C (Goodies >
   Battery & Stats hung a core on it). `run.sh` shows the host cursor in SDL.
-- X4 Pro uses `-icount shift=2` (set by `run.sh`/`drive.py`): guest time follows
-  instructions, not host speed; without it FreeRTOS can assert after light sleep on a slow host.
-  Guest runs slower than real time, so give `wait:` steps generous values.
+- X4 Pro uses `-icount shift=0` with calibrated instruction costs and CPU clock
+  scaling (selected by native, Node and browser launchers). See the measured
+  [CPU, SDMMC, SPI and panel profile](eink-qemu/x4cal/README.md). Host execution
+  speed and guest virtual time are separate; allow headless steps enough time.
 - `eink-qemu/testdata/`: real device logs, the panel OTP dump, battery history to
   seed the SD card, estimated power numbers. See its README.
 - `hw/input/x4pro_keys.c`: Up/Down/Power keys (arrow keys + P, or
   `qom-set /machine/x4pro-keys down true`).
-- `hw/misc/esp32s3_rtc_cntl.c`: light sleep: `SLEEP_EN` waits for the RTC timer
-  alarm or a GPIO wake, and hides the sleep from the RTC counter so esp_timer
-  isn't advanced twice.
+- `hw/misc/esp32s3_rtc_cntl.c`: light sleep waits for an RTC timer or GPIO wake.
+  RTC continues while SYSTIMER is suspended, including periodic-alarm phase.
+  Deep timer wake retains RTC memory and restarts both cores.
 - SD card: `eink-qemu/mksd.py` makes an MBR + FAT32 image (SdFat needs the MBR);
   the existing `dwc_sdmmc` model mounts it.
 - `eink-qemu/drive.py`: headless runner with steps (`wait:S`, `press:down[:ms]`,
@@ -524,7 +527,7 @@ Still missing: LEDC frontlight, charger STAT (GPIO21 reads 1 = charging), real W
 deep sleep with ext0/ext1 wake, USB OTG.
 
 Gaps another firmware is likely to hit (CrossDink doesn't need them yet):
-- GPSPI: DMA transfers (IDF `spi_master` uses DMA above 64 bytes), hardware CS,
+- GPSPI: hardware CS,
   command/address/dummy phases, and half-duplex reads on SDA.
 - GPIO matrix / IO_MUX routing: pins are wired directly, so a peripheral routed to
   a different pin than the X4 Pro's won't reach the device.
