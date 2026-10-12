@@ -75,6 +75,9 @@ requiring timestamp equality.
 
 ## Measured performance
 
+For native QEMU and Node on Linux x86-64, see the
+[amd64 measurements](perf/README.md#amd64-measurements).
+
 CrossPoint 1.6.5 X3 on an Apple M5 Max, Emscripten 6.0.12, Node 26 and
 Chrome 155, using `MEMORY64=2` and `sleep=off`. Five quiet alternating pairs
 per runtime/mode compare untouched `5ea1b8ef2e` with the six-commit stack

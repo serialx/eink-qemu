@@ -104,3 +104,63 @@ Temporary counter sources/builds and their restoration script live in
 is enabled by this directory. `summarize-counters.py` extracts their phase
 snapshots, and `make-report.py` regenerates the report's measurement tables.
 Raw profiles, images and logs stay in ignored build directories.
+
+## amd64 measurements
+
+Measured on 2026-10-13 with an Intel Core i3-N305 (8 cores), Linux x86-64,
+GCC 15.2.0, Emscripten 6.0.12 and Node 26.11.1. The baseline is
+`04e34edecf`; the optimized code ends at `722eadf74f`. Native builds use the
+normal configure options; Wasm uses the default `MEMORY64=2` build. No extra
+Node flags are required.
+
+Each runtime has three interleaved before/after pairs, with fresh copies of
+the same flash and SD images, accurate device timing and `sleep=off`. Builds
+and profiles ran separately from these measurements. Home is the third
+completed `X3_DRF`; settled is the first complete subsequent `[MEM]` line.
+Both times start at process launch. These are medians in seconds:
+
+| Runtime | Baseline Home | Optimized Home | Baseline settled | Optimized settled |
+| --- | ---: | ---: | ---: | ---: |
+| Native QEMU | 2.839 | 1.029 | 4.367 | 1.840 |
+| Node | 4.888 | 4.479 | 9.075 | 8.063 |
+
+The settled medians decrease by 58% for native and 11% for Node. Individual
+settled pairs, in measurement order, were native `4.392/1.840`, `4.309/1.897`,
+`4.367/1.798` and Node `9.075/8.288`, `9.121/8.001`, `8.961/8.063`.
+
+The fixture is the unmodified CrossPoint 1.6.5 X3/X4 release app, composed
+with `mkflash.py`, and a fresh 2050 MiB FAT32 card with 32 KiB clusters
+containing `aesop-eng.epub` and `demian-kor.epub`. This fixture has five startup
+waits, so the benchmark uses `--wait-count 5`. It differs from the older M5
+fixture; timings across those two series are not directly comparable.
+All twelve runs have identical panel pixels and all five guest wait lines,
+including timestamps (1061, 1996, 2669, 3157 and 3647 ms). The panel SHA-256 is
+`3de44548188a599f93db8c35771cea3468e0ab288704fe6a6f3971683459d927`.
+Raw runs, profiles and input hashes are in the local ignored directory
+`build-wasm/evidence/amd64/`.
+
+Two changes account for the improvement:
+
+- Native x86-64 learns translation-block boundaries at MMIO accesses, including
+  RISC-V PC-relative blocks. Repeated polling can reuse a block ending at the
+  access instead of repeatedly unwinding and replaying it. A 2000-read probe
+  reduced I/O-recompile exits from 2005 to 5 with identical results.
+- The Wasm interpreter calls `helper_lookup_tb_ptr` directly. Its fixed pointer
+  signature avoids JavaScript libffi conversions on indirect branches. Separate
+  Node CPU profiles confirm the lookup disappears from `ffi_call_js` stacks;
+  other helpers retain the generic path.
+
+Lower JIT thresholds and Node's `--wasm-tiering-budget=100000` did not produce
+a consistent improvement. `--no-liftoff` substantially slowed startup. The
+default JIT threshold and V8 options remain unchanged.
+
+Validation includes both native and Wasm RISC-V/Xtensa builds, X3 and X4 Pro
+firmware smoke tests against baseline panel captures, weighted icount/deadline
+and clock-change tests, and the device suite (54 passed, one optional release
+fixture skipped). The new guest probes cover repeated MMIO, self-modifying
+code, cold/hot cross-page indirect branches, generic helpers, and an instruction
+fetch fault during TB lookup. Run the suite with `RISCV32_CC` pointing to a
+RISC-V bare-metal GCC and `WASM_BUILD_DIR` to the default Wasm build. This
+container requires `ASAN_OPTIONS=detect_leaks=0` for the panel test; address and
+undefined-behavior checks remain enabled, but leak detection was not tested.
+Browser and Apple-host performance were not measured in this series.
