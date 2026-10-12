@@ -21,7 +21,7 @@
 #include "hw/timer/esp_systimer.h"
 
 
-#define TICKS_TO_NS(ticks) (((ticks) / ESP_SYSTIMER_CNT_PER_US) * 1000)
+#define TICKS_TO_NS(ticks) DIV_ROUND_UP((uint64_t)(ticks) * 1000, ESP_SYSTIMER_CNT_PER_US)
 
 #define SYSTIMER_DEBUG      0
 #define SYSTIMER_WARNING    0
@@ -32,8 +32,16 @@
 static void esp_systimer_update_counter(ESPSysTimerCounter *counter) {
     const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     const int64_t elapsed_ns = now - counter->base;
-    const int64_t ticks = (elapsed_ns * (ESP_SYSTIMER_CNT_CLK / 1000000)) / 1000;
-    counter->value = (counter->value + ticks) & ESP_SYSTIMER_52BIT_MASK;
+    if (counter->enabled) {
+        /* Keep the remainder: polling faster than 62.5 ns must not stop time.
+         * Split before multiplying to avoid overflow after long idle periods. */
+        uint64_t fractional = (elapsed_ns % 1000) * ESP_SYSTIMER_CNT_PER_US +
+                              counter->fraction;
+        uint64_t ticks = (elapsed_ns / 1000) * ESP_SYSTIMER_CNT_PER_US +
+                         fractional / 1000;
+        counter->fraction = fractional % 1000;
+        counter->value = (counter->value + ticks) & ESP_SYSTIMER_52BIT_MASK;
+    }
     counter->base = now;
 }
 
@@ -150,7 +158,9 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
 
     /* Calculate the number of ns the counter will take to reach the absolute count */
     const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    const int64_t target_ns = now + TICKS_TO_NS(diff);
+    const int64_t target_ns = now + DIV_ROUND_UP(diff * 1000 -
+                                               counter->fraction,
+                                               ESP_SYSTIMER_CNT_PER_US);
     comparator->expire_time = target_ns;
 #if SYSTIMER_DEBUG
     int comp_idx = comparator - s->comparators;
@@ -343,6 +353,8 @@ static void esp_systimer_load_counter(ESPSysTimerState *s, uint32_t index)
         esp_systimer_update_counter(counter);
     }
     counter->value = counter->toload;
+    counter->base = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    counter->fraction = 0;
 
     /* If one of the comparator is enabled and depends on the current timer, reprogram it */
     for (int i = 0; i < ESP_SYSTIMER_COMP_COUNT; i++) {
@@ -386,6 +398,7 @@ static void esp_systimer_conf_set(ESPSysTimerState *s, uint64_t value)
 
     for (int i = 0; i < ESP_SYSTIMER_COUNTER_COUNT; i++) {
         state_counter[i] = s->counter[i].enabled;
+        esp_systimer_update_counter(&s->counter[i]);
     }
     s->counter[0].enabled = (value & R_SYSTIMER_CONF_TIMER_UNIT0_WORK_EN_MASK) ? 1 : 0;
     s->counter[1].enabled = (value & R_SYSTIMER_CONF_TIMER_UNIT1_WORK_EN_MASK) ? 1 : 0;
@@ -584,6 +597,10 @@ static void esp_systimer_default_conf(ESPSysTimerState *s)
 static void esp_systimer_reset_hold(Object *obj, ResetType type)
 {
     ESPSysTimerState *s = ESP_SYSTIMER(obj);
+    memset(s->counter, 0, sizeof(s->counter));
+    for (int i = 0; i < ESP_SYSTIMER_COUNTER_COUNT; i++) {
+        s->counter[i].base = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    }
     for (int i = 0; i < ESP_SYSTIMER_COMP_COUNT; i++) {
         ESPSysTimerComp* comp = &s->comparators[i];
         QEMUTimer qtimer = comp->qtimer;

@@ -77,6 +77,8 @@ typedef struct {
     uint64_t flushed; // Mirror of the internal counter that can be seen by the guest program
     /* Absolute time, in ns, when value was updated last */
     int64_t base;
+    /* Fractional tick numerator, in thousandths of a tick. */
+    uint32_t fraction;
 } ESPSysTimerCounter;
 
 

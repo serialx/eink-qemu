@@ -90,6 +90,47 @@ class StockBootPeripherals(unittest.TestCase):
     def write(self, addr, value):
         self.command(f'writel {addr:#x} {value:#x}')
 
+    def systimer_value(self):
+        self.write(0x60023004, 1 << 30)
+        return self.read(0x60023044) | (self.read(0x60023040) << 32)
+
+    def test_systimer_polling_preserves_fractional_ticks(self):
+        for _ in range(100):
+            self.command('clock_step 32')
+            self.systimer_value()
+        self.assertEqual(self.systimer_value(), 51)
+        self.command('clock_step 50')
+        self.assertEqual(self.systimer_value(), 52)
+
+    def test_systimer_stopped_time_is_excluded(self):
+        self.command('clock_step 125')
+        self.write(0x60023000, 0)
+        self.command('clock_step 10000')
+        self.assertEqual(self.systimer_value(), 2)
+        self.write(0x60023000, 1 << 30)
+        self.command('clock_step 125')
+        self.assertEqual(self.systimer_value(), 4)
+
+    def test_systimer_alarm_keeps_submicrosecond_precision(self):
+        self.command('clock_step 32')
+        self.write(0x60023020, 1)
+        self.write(0x60023050, 1)
+        self.write(0x60023000, (1 << 30) | (1 << 24))
+        self.assertEqual(self.read(0x60023068), 0)
+        self.command('clock_step 30')
+        self.assertEqual(self.read(0x60023068), 0)
+        self.command('clock_step 1')
+        self.assertEqual(self.read(0x60023068), 1)
+        self.assertEqual(self.systimer_value(), 1)
+
+    def test_systimer_reset_restarts_counter(self):
+        self.command('clock_step 1000000')
+        self.assertEqual(self.systimer_value(), 16000)
+        self.qmp('system_reset')
+        self.assertEqual(self.systimer_value(), 0)
+        self.command('clock_step 125')
+        self.assertEqual(self.systimer_value(), 2)
+
     def test_cache_occupy_completes(self):
         reg = 0x600C4034
         self.assertEqual(self.read(reg), 2)
