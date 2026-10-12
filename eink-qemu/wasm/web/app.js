@@ -267,6 +267,42 @@ async function describeFlash() {
     else status('This file is not an ESP32-C3 or ESP32-S3 firmware image.');
 }
 $('flash').addEventListener('change', describeFlash);
+/* Firmware drag and drop, onto the firmware chooser or the device stage. A
+   dropped file goes through the chooser, so it starts exactly like a picked one. */
+const draggingFiles = event => [...event.dataTransfer.types].includes('Files');
+const firmwareDropOpen = () => !$('flash').disabled && !frame && !pending;
+for (const target of [document.querySelector('.file-chip'), document.querySelector('.stage')]) {
+    for (const type of ['dragenter', 'dragover']) target.addEventListener(type, event => {
+        if (!draggingFiles(event) || !firmwareDropOpen()) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        target.classList.add('firmware-drop');
+    });
+    target.addEventListener('dragleave', event => {
+        if (!target.contains(event.relatedTarget)) target.classList.remove('firmware-drop');
+    });
+    target.addEventListener('drop', event => {
+        event.preventDefault();
+        target.classList.remove('firmware-drop');
+        if (!firmwareDropOpen()) return;
+        const files = [...event.dataTransfer.files];
+        if (files.length !== 1 || !/\.(bin|xota)$/i.test(files[0].name)) {
+            status('Drop one firmware file: a .bin, or an X4 Pro .xota update.');
+            return;
+        }
+        const list = new DataTransfer();
+        list.items.add(files[0]);
+        $('flash').files = list.files;
+        $('flash').dispatchEvent(new Event('change'));
+    });
+}
+// A file dropped anywhere else must not replace the page and a running device.
+document.addEventListener('dragover', event => {
+    if (!draggingFiles(event) || event.defaultPrevented) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'none';
+});
+document.addEventListener('drop', event => { if (draggingFiles(event)) event.preventDefault(); });
 if (params.has('flash')) {
     $('flash-name').textContent = params.get('flash').split('/').pop();
     $('flash-name').classList.remove('empty');
