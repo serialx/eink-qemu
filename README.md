@@ -14,7 +14,10 @@ hardware is modeled from datasheets and measurements of real devices.
 
 **Try it now in your browser:** https://serialx.github.io/eink-qemu/
 
-<img src="eink-qemu/ghosting/sim-screenshots/05-menus-final-clean.png" width="240" alt="CrossDink Home screen in eink-qemu">
+<a href="https://serialx.github.io/eink-qemu/"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="eink-qemu/screenshots/browser-dark.png">
+  <img src="eink-qemu/screenshots/browser-light.png" alt="The eink-qemu browser emulator running CrossPoint on an Xteink X4 Pro, showing a page of Aesop's Fables, with the SD card files on the left and the firmware console on the right">
+</picture></a>
 
 eink-qemu started as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
 by prokrypt, which first brought the Xteink X4 Pro up in QEMU: the board and its
