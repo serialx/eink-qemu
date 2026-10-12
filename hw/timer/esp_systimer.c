@@ -32,7 +32,7 @@
 static void esp_systimer_update_counter(ESPSysTimerCounter *counter) {
     const int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     const int64_t elapsed_ns = now - counter->base;
-    if (counter->enabled) {
+    if (counter->enabled && !counter->suspended) {
         /* Keep the remainder: polling faster than 62.5 ns must not stop time.
          * Split before multiplying to avoid overflow after long idle periods. */
         uint64_t fractional = (elapsed_ns % 1000) * ESP_SYSTIMER_CNT_PER_US +
@@ -77,7 +77,7 @@ static void esp_systimer_notify(ESPSysTimerComp* comparator)
     ESPSysTimerState *s = comparator->systimer;
     ESPSysTimerCounter* counter = &s->counter[counter_idx];
 
-    if (counter->enabled) {
+    if (counter->enabled && !counter->suspended) {
         esp_systimer_update_counter(counter);
     }
 
@@ -87,7 +87,8 @@ static void esp_systimer_notify(ESPSysTimerComp* comparator)
     esp_systimer_set_irqs(s);
 
     /* Check if we have to reload the comparator's timer */
-    if (counter->enabled && comparator->period_mode) {
+    if (counter->enabled && !counter->suspended && comparator->period_mode &&
+        comparator->period) {
         /**
          * If the timer is periodic, we have to compensate the delay that may have been taken
          * by QEMU framework. Indeed, this timer may have been triggered too late (tenth of us)
@@ -124,7 +125,7 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
     esp_systimer_update_counter(counter);
 
     /* If the counter we have to compare it to is not enabled, do not program any timer */
-    if (!counter->enabled) {
+    if (!counter->enabled || counter->suspended) {
         /* "Disable" the timer */
         timer_del(&comparator->qtimer);
         return;
@@ -149,6 +150,10 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
     uint64_t diff = 0;
 
     if (comparator->period_mode) {
+        if (!comparator->period) {
+            timer_del(&comparator->qtimer);
+            return;
+        }
         diff = comparator->period;
     } else if (overflow_valid) {
         diff = ((ESP_SYSTIMER_52BIT_MASK + 1) - count_val) + alarm;
@@ -332,7 +337,7 @@ static uint64_t esp_systimer_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp_systimer_flush_counter(ESPSysTimerCounter *counter)
 {
     /* If the counter is enabled, get its latest value */
-    if (counter->enabled) {
+    if (counter->enabled && !counter->suspended) {
         esp_systimer_update_counter(counter);
     }
     /* In any case, flush the value to send to the guest program */
@@ -349,7 +354,7 @@ static void esp_systimer_load_counter(ESPSysTimerState *s, uint32_t index)
 
     /* If the counter is enabled, update the internal value to the latest count.
      * Even though the value will be replaced, this will also update the base time. */
-    if (counter->enabled) {
+    if (counter->enabled && !counter->suspended) {
         esp_systimer_update_counter(counter);
     }
     counter->value = counter->toload;
@@ -627,6 +632,17 @@ static void esp_systimer_realize(DeviceState *dev, Error **errp)
 }
 
 
+/* RTC power-domain gating: retain counter/configuration across light sleep. */
+static void esp_systimer_set_sleep(void *opaque, int n, int level)
+{
+    ESPSysTimerState *s = opaque;
+    for (int i = 0; i < ESP_SYSTIMER_COUNTER_COUNT; i++) {
+        esp_systimer_update_counter(&s->counter[i]);
+        s->counter[i].suspended = level != 0;
+    }
+    esp_systimer_comparator_reprogram_all(s);
+}
+
 static void esp_systimer_init(Object *obj)
 {
     ESPSysTimerState *s = ESP_SYSTIMER(obj);
@@ -643,6 +659,7 @@ static void esp_systimer_init(Object *obj)
         timer_init_ns(&s->comparators[i].qtimer, QEMU_CLOCK_VIRTUAL, esp_systimer_cb, &s->comparators[i]);
     }
     esp_systimer_default_conf(s);
+    qdev_init_gpio_in_named(DEVICE(obj), esp_systimer_set_sleep, "sleep", 1);
 }
 
 

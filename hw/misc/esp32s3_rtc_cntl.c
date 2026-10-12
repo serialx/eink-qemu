@@ -14,6 +14,7 @@
 #include "qemu/timer.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "hw/timer/esp_timg.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -38,7 +39,8 @@ static void esp32s3_rtc_update_clk(Esp32s3RtcCntlState* s);
 #define INT_SLP_WAKEUP      BIT(0)
 #define WAKE_GPIO           BIT(2)
 #define WAKE_TIMER          BIT(3)
-#define LIGHT_SLEEP_EARLY_NS (5 * SCALE_MS)
+#define R_DIG_PWC           0x90
+#define DIG_WRAP_PD_EN      BIT(31)
 
 static void esp32s3_rtc_wake(Esp32s3RtcCntlState *s, uint32_t cause)
 {
@@ -47,16 +49,15 @@ static void esp32s3_rtc_wake(Esp32s3RtcCntlState *s, uint32_t cause)
     }
     s->sleeping = false;
     timer_del(&s->sleep_timer);
-    /*
-     * The systimer (esp_timer) keeps counting in QEMU while the guest "sleeps",
-     * but IDF also advances it by the RTC-measured sleep time. Hide the sleep
-     * from the RTC counter so the time is only counted once.
-     */
-    s->time_base_ns += qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->sleep_start_ns;
+    qemu_set_irq(s->sleep_state, 0);
     s->state0_reg &= ~STATE0_SLEEP_EN;
     s->wakeup_cause = cause;
     s->int_raw |= INT_SLP_WAKEUP;
     qemu_set_irq(s->irq, (s->int_raw & s->int_ena) != 0);
+    if (s->dig_pwc & DIG_WRAP_PD_EN) {
+        s->reset_cause[0] = s->reset_cause[1] = ESP32_DEEPSLEEP_RESET;
+        qemu_irq_pulse(s->dig_reset_req);
+    }
 }
 
 static void esp32s3_rtc_sleep_timer_cb(void *opaque)
@@ -71,6 +72,7 @@ static void esp32s3_rtc_start_sleep(Esp32s3RtcCntlState *s)
     bool timer = (ena & WAKE_TIMER) && (s->slp_timer[1] & SLP_TIMER1_ALARM_EN);
 
     s->sleeping = true;
+    qemu_set_irq(s->sleep_state, 1);
     s->sleep_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if ((ena & WAKE_GPIO) && s->gpio_wake) {
         esp32s3_rtc_wake(s, WAKE_GPIO);
@@ -78,13 +80,11 @@ static void esp32s3_rtc_start_sleep(Esp32s3RtcCntlState *s)
     }
     if (timer) {
         uint64_t target = s->slp_timer[0] | ((uint64_t)(s->slp_timer[1] & 0xffff) << 32);
-        /*
-         * Wake a little early: TCG runs the sleep entry/exit code slower than
-         * silicon, and FreeRTOS asserts if the measured sleep overshoots the
-         * idle time it planned (vTaskStepTick).
-         */
-        int64_t ns = s->time_base_ns + muldiv64(target, NANOSECONDS_PER_SECOND, s->rtc_slowclk_freq)
-                     - LIGHT_SLEEP_EARLY_NS;
+        int64_t ns = s->time_base_ns;
+        if (target > s->ticks_base) {
+            ns += muldiv64(target - s->ticks_base, NANOSECONDS_PER_SECOND,
+                           s->rtc_slowclk_freq);
+        }
         if (ns > qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
             timer_mod_ns(&s->sleep_timer, ns);
             return;
@@ -112,6 +112,7 @@ static uint64_t esp32s3_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int si
     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(opaque);
     uint64_t r = 0;
     switch (addr) {
+    case R_DIG_PWC:          r = s->dig_pwc; break;
     case R_SLP_TIMER0:       r = s->slp_timer[0]; break;
     case R_SLP_TIMER1:       r = s->slp_timer[1]; break;
     case R_STATE0:           r = s->state0_reg; break;
@@ -172,6 +173,7 @@ static void esp32s3_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
 {
     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(opaque);
     switch (addr) {
+    case R_DIG_PWC:      s->dig_pwc = value; break;
     case R_SLP_TIMER0:   s->slp_timer[0] = value; break;
     case R_SLP_TIMER1:   s->slp_timer[1] = value; break;
     case R_WAKEUP_STATE: s->wakeup_state_reg = value; break;
@@ -212,7 +214,7 @@ static void esp32s3_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
 
     case A_RTC_CNTL_TIME_UPDATE:
         if (value & R_RTC_CNTL_TIME_UPDATE_UPDATE_MASK) {
-            s->time_reg = muldiv64(
+            s->time_reg = s->ticks_base + muldiv64(
                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->time_base_ns,
                 s->rtc_slowclk_freq, NANOSECONDS_PER_SECOND);
         }
@@ -233,6 +235,10 @@ static void esp32s3_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
         break;
 
     case A_RTC_CNTL_CLK_CONF:
+        /* Changing the mux must not retroactively rescale elapsed time. */
+        s->ticks_base += muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+            s->time_base_ns, s->rtc_slowclk_freq, NANOSECONDS_PER_SECOND);
+        s->time_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         s->soc_clk = FIELD_EX32(value, RTC_CNTL_CLK_CONF, SOC_CLK_SEL);
         s->rtc_fastclk = FIELD_EX32(value, RTC_CNTL_CLK_CONF, FAST_CLK_RTC_SEL);
         s->rtc_slowclk = FIELD_EX32(value, RTC_CNTL_CLK_CONF, ANA_CLK_RTC_SEL);
@@ -272,8 +278,11 @@ static void esp32s3_rtc_update_cpu_stall(Esp32s3RtcCntlState* s)
 
 static void esp32s3_rtc_update_clk(Esp32s3RtcCntlState* s)
 {
-    const uint32_t slowclk_freq[] = {150000, 32768, 8000000/256};
-    const uint32_t fastclk_freq[] = {s->xtal_apb_freq / 4, 8000000};
+    const uint32_t slowclk_freq[] = {
+        ESP_RC_SLOW_FREQ, ESP_XTAL32K_FREQ, ESP_RC_FAST_DIV_FREQ,
+        ESP_RC_SLOW_FREQ /* reserved selector: deterministic fallback */
+    };
+    const uint32_t fastclk_freq[] = {s->xtal_apb_freq / 4, ESP_RC_FAST_FREQ};
     s->rtc_slowclk_freq = slowclk_freq[s->rtc_slowclk];
     s->rtc_fastclk_freq = fastclk_freq[s->rtc_fastclk];
     qemu_irq_pulse(s->clk_update);
@@ -290,7 +299,10 @@ static void esp32s3_rtc_cntl_reset_hold(Object *obj, ResetType type)
     Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(obj);
 
     s->time_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->ticks_base = 0;
     s->sleeping = false;
+    s->dig_pwc = 0;
+    qemu_set_irq(s->sleep_state, 0);
     s->int_raw = 0;
     s->state0_reg = 0;
     timer_del(&s->sleep_timer);
@@ -309,6 +321,7 @@ static void esp32s3_rtc_cntl_init(Object *obj)
                           TYPE_ESP32S3_RTC_CNTL, ESP32S3_RTC_CNTL_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    qdev_init_gpio_out_named(DEVICE(sbd), &s->sleep_state, "sleep", 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->dig_reset_req, ESP32S3_RTC_DIG_RESET_GPIO, 1);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_reset_req[0], ESP32S3_RTC_CPU_RESET_GPIO, ESP32S3_CPU_COUNT);
     qdev_init_gpio_out_named(DEVICE(sbd), &s->cpu_stall_req[0], ESP32S3_RTC_CPU_STALL_GPIO, ESP32S3_CPU_COUNT);

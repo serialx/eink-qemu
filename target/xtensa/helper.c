@@ -327,6 +327,8 @@ void xtensa_runstall(CPUXtensaState *env, bool runstall)
     if (runstall) {
         cpu_interrupt(cpu, CPU_INTERRUPT_HALT);
     } else {
+        /* A reset/stall can be released before this CPU gets a timeslice. */
+        cpu_reset_interrupt(cpu, CPU_INTERRUPT_HALT);
         qemu_cpu_kick(cpu);
     }
 }

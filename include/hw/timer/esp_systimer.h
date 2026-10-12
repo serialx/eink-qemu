@@ -69,6 +69,7 @@ static inline void systimer_set_reg(uint64_t* reg, uint64_t value, uint64_t mask
 
 typedef struct {
     bool enabled;
+    bool suspended;
     /* Enabled on CPU stall */
     bool core0_stall_en;
     bool core1_stall_en;

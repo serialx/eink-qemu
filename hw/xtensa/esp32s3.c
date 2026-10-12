@@ -226,6 +226,13 @@ static void esp32s3_soc_reset(DeviceState *dev)
         remove_cpu_watchpoints(&s->cpu[1]);
         cpu_reset(CPU(&s->cpu[1]));
     }
+    if (s->requested_reset & ESP32S3_SOC_RESET_PERIPH) {
+        /* Reset CPU clock gates after CPU reset so RTC stalls from deep sleep
+         * cannot keep the application core stopped on the next boot. */
+        s->rtc_cntl.sw_cpu_stall_reg = 0;
+        s->rtc_cntl.options0_reg &= ~0xf;
+        device_cold_reset(DEVICE(&s->clock));
+    }
     s->requested_reset = 0;
 }
 
@@ -787,6 +794,8 @@ static void esp32s3_machine_init(MachineState *machine)
     /* System timer */
     {
         sysbus_realize(SYS_BUS_DEVICE(&ss->systimer), &error_fatal);
+        qdev_connect_gpio_out_named(DEVICE(&ss->rtc_cntl), "sleep", 0,
+            qdev_get_gpio_in_named(DEVICE(&ss->systimer), "sleep", 0));
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->systimer), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTIMER_BASE, mr, 0);
         for (int i = 0; i < ESP_SYSTIMER_IRQ_COUNT; i++) {

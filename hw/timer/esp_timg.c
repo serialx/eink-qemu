@@ -95,7 +95,8 @@ static void esp_timg_rtc_cali_update(ESPTimgState *s, uint32_t value)
     const uint32_t osc_freq_arr[] = {
         [ESP_TIMG_CALI_RC_SLOW_CLK]     = ESP_RC_SLOW_FREQ,
         [ESP_TIMG_CALI_RC_FAST_DIV_CLK] = ESP_RC_FAST_DIV_FREQ,
-        [ESP_TIMG_CALI_XTAL32K_CLK]     = ESP_XTAL32K_FREQ
+        [ESP_TIMG_CALI_XTAL32K_CLK]     = ESP_XTAL32K_FREQ,
+        [3]                           = ESP_RC_SLOW_FREQ
     };
     /* Copy the new value to the register but keep RDY bit to 0 (read-only) */
     value &= ~(R_TIMG_RTCCALICFG_RDY_MASK);
@@ -111,7 +112,7 @@ static void esp_timg_rtc_cali_update(ESPTimgState *s, uint32_t value)
         const uint32_t max_count = FIELD_EX32(value, TIMG_RTCCALICFG, MAX);
 
         /* Calculate how many clock cycle it would require to the XTAL_CLK to reach this count */
-        const uint32_t xtal_count = (ESP_XTAL_CLK * max_count) / freq;
+        const uint32_t xtal_count = ((uint64_t)ESP_XTAL_CLK * max_count) / freq;
 
         /* Save this count in the RTC Calibration register 1 */
         s->rtc.rtc_cali_cfg_result = xtal_count << R_TIMG_RTCCALICFG1_VALUE_SHIFT;

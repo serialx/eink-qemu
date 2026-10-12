@@ -67,6 +67,7 @@ typedef struct Esp32s3RtcCntlState {
     qemu_irq cpu_reset_req[ESP32S3_CPU_COUNT];
     qemu_irq cpu_stall_req[ESP32S3_CPU_COUNT];
     qemu_irq clk_update;
+    qemu_irq sleep_state;
     bool cpu_stall_state[ESP32S3_CPU_COUNT];
 
     uint32_t xtal_apb_freq;
@@ -77,6 +78,7 @@ typedef struct Esp32s3RtcCntlState {
     Esp32s3SlowClkSel rtc_slowclk;
     uint32_t rtc_slowclk_freq;
     int64_t time_base_ns;
+    uint64_t ticks_base;
 
     uint32_t options0_reg;
     uint64_t time_reg;
@@ -88,6 +90,7 @@ typedef struct Esp32s3RtcCntlState {
     /* eink-qemu: light sleep (SLEEP_EN until a timer or GPIO wake source fires) */
     uint32_t slp_timer[2];
     uint32_t state0_reg;
+    uint32_t dig_pwc;
     uint32_t wakeup_state_reg;
     uint32_t int_ena;
     uint32_t int_raw;
