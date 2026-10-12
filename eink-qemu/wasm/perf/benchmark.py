@@ -26,6 +26,12 @@ def copy_image(source, destination):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if result.returncode == 0:
             return
+    elif os.uname().sysname == 'Linux':
+        result = subprocess.run(['cp', '--reflink=auto', '--sparse=always',
+                                 str(source), str(destination)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode == 0:
+            return
     shutil.copyfile(source, destination)
 
 
@@ -54,7 +60,7 @@ def run(args, variant, number):
     prefix = '/host' if wasm else ''
     image = lambda name: (prefix + str(out / name)).replace(',', ',,')
     if wasm:
-        command = [args.node]
+        command = [args.node, *args.node_arg]
         if args.profile == 'node':
             command += ['--cpu-prof', '--cpu-prof-interval=1000',
                         '--cpu-prof-dir=' + str(out), '--require', str(HERE / 'profile-hooks.cjs')]
@@ -127,10 +133,10 @@ def run(args, variant, number):
                     raise RuntimeError(f'emulator exited {p.returncode}: {bytes(data[-2000:])!r}')
             else:
                 raise RuntimeError('emulator milestone timeout')
-        row['wait_lines'] = [x.decode().strip() for x in WAIT.findall(data)[:8]]
+        row['wait_lines'] = [x.decode().strip() for x in WAIT.findall(data)[:args.wait_count]]
         row['jit_modules'] = [int(x) for x in re.findall(rb'WASM_JIT compiled_tbs=(\d+)', data)][-1:]
-        if args.stop_at != 'home' and len(row['wait_lines']) != 8:
-            raise RuntimeError('expected eight complete guest wait milestones')
+        if args.stop_at != 'home' and len(row['wait_lines']) != args.wait_count:
+            raise RuntimeError(f'expected {args.wait_count} complete guest wait milestones')
         # Normal exit flushes Node CPU profiles for all pthread workers.
         p.stdin.write(b'\x01cquit\n' if args.stop_at == 'home' else b'quit\n')
         p.stdin.flush()
@@ -167,6 +173,10 @@ def main():
     parser.add_argument('--native-bin', type=Path, default=ROOT / 'build/qemu-system-riscv32')
     parser.add_argument('--wasm-build', type=Path, default=ROOT / 'build-wasm-32limit')
     parser.add_argument('--node', default=os.environ.get('NODE', 'node'))
+    parser.add_argument('--node-arg', action='append', default=[],
+                        help='Node option, repeatable; use --node-arg=--flag')
+    parser.add_argument('--wait-count', type=int, default=8,
+                        help='required wait milestones for this SD fixture (default: 8)')
     parser.add_argument('--variants', nargs='+', choices=['native', 'wasm'], default=['native', 'wasm'])
     parser.add_argument('--runs', type=int, default=3)
     parser.add_argument('--sleep', choices=['on', 'off'], default='off')
@@ -186,8 +196,8 @@ def main():
         args.mode = 'turbo' if os.environ.get('TURBO') == '1' else 'accurate'
     if args.mode == 'turbo':
         args.sleep = 'off'
-    if args.runs < 1 or args.timeout <= 0:
-        parser.error('--runs and --timeout must be positive')
+    if args.runs < 1 or args.timeout <= 0 or args.wait_count < 1:
+        parser.error('--runs, --timeout and --wait-count must be positive')
     if args.profile != 'none':
         expected = ['wasm'] if args.profile == 'node' else ['native']
         if args.variants != expected:

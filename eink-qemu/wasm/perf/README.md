@@ -11,7 +11,9 @@ are relative to this repository, found from the script location.
 Build the normal native and default Wasm emulators using the
 [WebAssembly guide](../../../EINK-QEMU.md#webassembly-build), then set paths to
 original input images. Each run makes its own copies; originals are not written.
-On APFS, `cp -c` avoids physically copying the whole sparse SD image.
+On APFS, `cp -c` avoids physically copying the whole sparse SD image. On
+Linux, copies use `cp --reflink=auto --sparse=always` so the stock-sized card
+does not require writing 2 GiB before every run.
 
 ```sh
 export X3_FLASH=/absolute/path/to/x3-flash.bin
@@ -40,6 +42,13 @@ so an accidental rerun cannot silently overwrite evidence.
 available, but exact timestamp comparisons are disabled because idle-time
 warping includes host scheduling variation. `home-probe.py` provides the same
 CLI stopped at Home; it does not check the later screenshot/timestamps.
+
+The default eight wait milestones belong to the original SD fixture. For a
+different card, first inspect a native run and use `--wait-count N` for its
+complete startup/thumbnail wait sequence. Each run must reach all N milestones;
+accurate sleep-off runs still compare their full text, including guest times.
+`--node-arg=--flag` passes an option to Node and can be repeated for controlled
+V8 experiments. The exact Node options are recorded in each run's `argv`.
 
 Keep timing runs separate from profiles, instrumented counters and builds.
 On a shared host, preserve interleaving and inspect each run as well as medians.
