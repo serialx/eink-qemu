@@ -1,6 +1,12 @@
 name: 'build'
 
-on: [push, pull_request]
+# eink-qemu: branches always build; only plain version tags (0.1.0, 0.2.0-rc1)
+# build a release. The tree also carries QEMU's own v* tags, which must not.
+on:
+  push:
+    branches: [ '**' ]
+    tags: [ '[0-9]+.[0-9]+.[0-9]+*' ]
+  pull_request:
 
 # eink-qemu: a newer push to the same branch or PR cancels the older run
 concurrency:
@@ -203,11 +209,34 @@ jobs:
 
   Upload:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [ Vars, Build ]
+    # eink-qemu: the browser build and its smoke test must pass too
+    needs: [ Vars, Build, wasm ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps :
+      # eink-qemu: changelog from commit subjects since the previous version tag.
+      # GitHub's generated notes list merged pull requests, and this project
+      # commits straight to main.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: notes-src   # kept apart: later steps search the workspace for file_*
+      - name: Write the changelog
+        working-directory: notes-src
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            if [ -n "$prev" ]; then
+              echo "## Changes since $prev"
+              echo
+              git log --no-merges --format='- %s (%h)' "$prev..$GITHUB_REF_NAME" | sed -E 's/^- (eink-qemu|x4prosim): /- /'
+            else
+              echo "First release."
+            fi
+          } > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
+
       - name: Create a source archive
         id: create-source
         env:
@@ -270,6 +299,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          # eink-qemu: tags with a suffix (0.2.0-rc1) are pre-releases
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body_path: ${{ runner.temp }}/release-notes.md
           files: upload/*
 
   wasm:
