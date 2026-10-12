@@ -1,0 +1,46 @@
+{
+  "purpose": "PSRAM cache timing: IRAM kernels, 4KiB..1MiB, read/write/RMW/random/dependent, cold/warm, 240/80MHz; no SD or panel operations",
+  "base": "bc198e18b5",
+  "flash_sha256": "c6ae669eca525b4c8888da5d2ae6812bd4616b458654ba15b59c178965d5d1d0",
+  "probe_sha256": "0ddaee4108d86224c7deb6bc26b923b16389c0fdd3a975a8b755be7af87ea413",
+  "probe_size": 407344,
+  "offset": 65536,
+  "erase_length": 409600,
+  "restore_sha256": "4bf8abc4fe05fc1e7538c7912dfdabb65856423888fd676086d20a79481f42d7",
+  "expected": "PSRAM checksums match identical emulator image; three repeats per group; original reader restored with exact prefix readback",
+  "restore": "finally restore original app0 rounded prefix; preserve partition table/OTA/NVS/SD; reconnect monitor",
+  "version": 5,
+  "toolchain": "pioarduino55.03.311 Arduino3.3.11 IDF5.5",
+  "source_sha256": {
+    "probe/platformio.ini": "a06348f26c394447a335dd38fc4068bdaa76cbf049d9812f80e0265b7a926a33",
+    "probe/partitions.csv": "c23434071d22951d76771268ac32895ba9d4c7cfd103cc56f7c060d6c7a4e422",
+    "probe/src/psram.cpp": "c3b7a04964f05044b8b159c51c7a25998d16d0da35291edd02bbb9fb03363a84",
+    "probe/src/main.cpp": "aeaeb836db12d4ae0721c8e7bd3c9c14b8febb02eab00b848bb5635660b94940"
+  },
+  "device": "Xteink X4 Pro, ESP32-S3 revision 0.2, 8MiB OPI PSRAM",
+  "restoration": {
+    "restored": true,
+    "readback_sha256": "4bf8abc4fe05fc1e7538c7912dfdabb65856423888fd676086d20a79481f42d7",
+    "offset": 65536,
+    "length": 409600
+  },
+  "configuration": {
+    "dcache_ctrl": 9,
+    "dcache_line_bytes": 32,
+    "dcache_bytes": 32768,
+    "dcache_ways": 4,
+    "psram_mhz": 80,
+    "associativity_source": "https://documentation.espressif.com/esp32_s3_datasheet_en.pdf"
+  },
+  "logs_sha256": {
+    "hardware-0": "ce9014c4385bb4a937a1a02bd86ae995fcb5cd4ef9a481ab75a1f4fdb0e093a1",
+    "hardware-1": "272d72477fc89add923fe1c6eb4bb2b233c42da958bc5ccc7108a798c0728ba9",
+    "baseline": "35c74d4e83764043a0fbf84f70eeba239eacf31635c06610f6e6c02ada2d8827"
+  },
+  "notes": [
+    "Frozen v5 source and identical app binary for paired measurements.",
+    "Baseline bc198e18b5 has no miss model and incorrectly reads cache configuration as CTRL=1/line=16.",
+    "Hardware run 0 is training; run 1, dependent reads, and original CPU command are validation.",
+    "Store/RMW PSRAM kernel returns final index; read kernels return accumulated data. Functional store behavior is checked separately in emulator tests."
+  ]
+}
