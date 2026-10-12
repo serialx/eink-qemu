@@ -41,7 +41,19 @@
   <div class="app" data-tab="sd">
     <header class="topbar">
       <div class="brandbar">
-        <h1 class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">eink-<span>qemu</span></span></h1>
+        <div class="about">
+          <h1 class="brand"><button id="about-button" class="brand-button" type="button" aria-expanded="false" aria-controls="about"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">eink-<span>qemu</span></span></button></h1>
+          <div id="about" class="tip about-tip" aria-label="About eink-qemu">
+            <strong>eink-qemu</strong>
+            <p>An emulator for ESP32 e-ink readers: the Xteink X4 Pro, X3 and X4, and the BOOX Picco.
+              It runs their unmodified firmware, stock or any fork, with the screen, SD card, keys
+              and Wi-Fi behaving like the real board. Everything runs here in your browser.</p>
+            <p class="fine">Built on QEMU. Started as a fork of
+              <a href="https://github.com/prokrypt/x4prosim" target="_blank" rel="noopener">prokrypt/x4prosim</a>.</p>
+            <a class="about-link" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener">
+              <svg class="icon icon-fill" aria-hidden="true"><use href="#i-github"/></svg>github.com/serialx/eink-qemu</a>
+          </div>
+        </div>
         <a id="github" class="icon-button" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener" aria-label="eink-qemu on GitHub" title="eink-qemu on GitHub">
           <svg class="icon icon-fill"><use href="#i-github"/></svg>
         </a>

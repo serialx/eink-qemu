@@ -181,17 +181,17 @@ function release() { for (const code of held) key(code, false); }
 /* Option help: hover or keyboard focus shows it; a click (or tap) pins it. */
 function closeTips() {
     let open = false;
-    for (const button of document.querySelectorAll('.info[aria-expanded="true"]')) {
+    for (const button of document.querySelectorAll('.info[aria-expanded="true"], .brand-button[aria-expanded="true"]')) {
         button.setAttribute('aria-expanded', 'false'); open = true;
     }
     return open;
 }
-for (const button of document.querySelectorAll('.info')) button.addEventListener('click', () => {
+for (const button of document.querySelectorAll('.info, .brand-button')) button.addEventListener('click', () => {
     const open = button.getAttribute('aria-expanded') !== 'true';
     closeTips();
     button.setAttribute('aria-expanded', String(open));
 });
-document.addEventListener('click', event => { if (!event.target.closest('.option')) closeTips(); });
+document.addEventListener('click', event => { if (!event.target.closest('.option, .about')) closeTips(); });
 for (const type of ['keydown', 'keyup']) document.addEventListener(type, event => {
     // Escape closes open help before it reaches the device as Back.
     if (event.code === 'Escape' && type === 'keydown' && closeTips()) { event.preventDefault(); return; }
