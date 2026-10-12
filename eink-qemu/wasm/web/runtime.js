@@ -43,6 +43,7 @@ function turboProperties(machine) {
         ...['transaction-overhead-us', 'transaction-overhead-ns', 'buffer-overhead-ns']
             .map(name => `driver=ssi.esp32s3.gpspi,property=${name},value=0`),
         'driver=ssi.esp32s3.gpspi,property=zero-wire-time,value=on',
+        ...(['x4pro', 'picco'].includes(machine) ? ['dwc_sdmmc.timing=off'] : []),
         'esp32_wifi.rx-frame-us=500',
         ...(machine === 'x3' ?
             [...['frame-us', 'refresh-overhead-us'].map(name => `uc8279.${name}=0`),
@@ -187,7 +188,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
             canvas,
             arguments: ['-L', '/', '-machine', machine === 'x4pro' ? `${machine},panel=${panel}` : machine,
                 '-accel', 'tcg,tb-size=64',
-                '-icount', `shift=${(machine === 'x3' || machine === 'x4') ? 0 : 2},sleep=${sleep}`,
+                '-icount', `shift=${machine === 'picco' ? 2 : 0},sleep=${sleep}`,
                 ...(turbo ? turboProperties(machine) : []),
                 ...((machine === 'x4' || machine === 'picco') ? [] : ['-global', `${machine === 'x3' ? 'uc8279' : 'uc8179'}.ghosting=${ghosting ? 'on' : 'off'}`]),
                 '-drive', 'file=/flash.bin,if=mtd,format=raw,cache.direct=off',

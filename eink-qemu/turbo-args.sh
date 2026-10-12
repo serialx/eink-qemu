@@ -13,6 +13,9 @@ for property in transaction-overhead-us transaction-overhead-ns buffer-overhead-
     printf '%s\n' -global "driver=ssi.esp32s3.gpspi,property=$property,value=0"
 done
 printf '%s\n' -global driver=ssi.esp32s3.gpspi,property=zero-wire-time,value=on
+case "$1" in
+    x4pro|picco) printf '%s\n' -global dwc_sdmmc.timing=off ;;
+esac
 # Retain spacing so the guest can service each RX interrupt.
 printf '%s\n' -global esp32_wifi.rx-frame-us=500
 case "$1" in

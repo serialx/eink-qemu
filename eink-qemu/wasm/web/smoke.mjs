@@ -283,7 +283,7 @@ smoke: try {
     }
     const runtimeArgs = await waitFor('document.querySelector("iframe").contentWindow.Module?.arguments');
     measurements.runtime_args = runtimeArgs;
-    const shift = process.env.WEB_MACHINE === 'x4pro' ? 2 : 0;
+    const shift = process.env.WEB_MACHINE === 'picco' ? 2 : 0;
     const sleepOff = measurements.turbo || new URL(process.argv[2]).searchParams.get('sleep') === 'off';
     const icount = `shift=${shift},sleep=${sleepOff ? 'off' : 'on'}`;
     if (!runtimeArgs.includes(icount) ||

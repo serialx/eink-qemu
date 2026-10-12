@@ -163,6 +163,13 @@ class StockBootPeripherals(unittest.TestCase):
             self.write(0x600C0060, value)
             self.assertEqual(self.read(0x600C0060), value & 0xFFFFF)
 
+    def test_measured_board_defaults(self):
+        path = self.qmp('query-cpus-fast')[0]['qom-path']
+        for prop,value in [('cost-sram-ns',4),('cost-div',47),('cost-fma',16),
+                           ('cost-clock-scaling',True)]:
+            self.assertEqual(self.qmp('qom-get',path=path,property=prop),value)
+        self.assertTrue(self.qmp('qom-get',path='/machine/soc/sdmmc',property='timing'))
+
     def test_pll_calibration_completes(self):
         self.write(0x6000E040, 8)
         self.assertEqual(self.read(0x6000E040), (1 << 24) | 8)
@@ -253,6 +260,21 @@ class StockBootPeripherals(unittest.TestCase):
         self.assertEqual(self.read(gpio_in) & 8, 0)
         self.command('clock_step 1000000')
         self.assertEqual(self.read(gpio_in) & 8, 8)
+
+    def test_gpspi_measured_setup_and_wire_deadline(self):
+        spi = 0x60024000
+        for divider in (8, 16, 32):
+            self.write(spi + 0x38, 1 << 12)
+            self.write(spi + 0xc, (divider - 1) << 12)
+            self.write(spi + 0x1c, 7)
+            self.write(spi, 1 << 24)
+            deadline = (8 + 2) * divider * 1000 // 80 + 650
+            self.command(f'clock_step {deadline-1}')
+            self.assertTrue(self.read(spi) & (1 << 24))
+            self.assertFalse(self.read(spi + 0x3c) & (1 << 12))
+            self.command('clock_step 1')
+            self.assertFalse(self.read(spi) & (1 << 24))
+            self.assertTrue(self.read(spi + 0x3c) & (1 << 12))
 
     def test_pending_interrupt_follows_routing(self):
         spi, matrix = 0x60024000, 0x600C2000

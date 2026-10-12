@@ -1218,6 +1218,25 @@ static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
 {
     static GlobalProperty x4pro_globals[] = {
         { "ssi_psram", "is_octal", "true" },
+        /* Same diagnostic image on the reader and QEMU: x4cal/README.md. */
+        { "xtensa-cpu", "cost-rom-ns", "4" },
+        { "xtensa-cpu", "cost-sram-ns", "4" },
+        { "xtensa-cpu", "cost-flash-ns", "4" },
+        { "xtensa-cpu", "cost-load", "1" },
+        { "xtensa-cpu", "cost-mul", "5" },
+        { "xtensa-cpu", "cost-div", "47" },
+        { "xtensa-cpu", "cost-branch", "6" },
+        { "xtensa-cpu", "cost-call", "12" },
+        { "xtensa-cpu", "cost-fpu", "2" },
+        { "xtensa-cpu", "cost-fma", "16" },
+        { "xtensa-cpu", "cost-clock-scaling", "true" },
+        { "ssi.esp32s3.gpspi", "transaction-overhead-ns", "650" },
+        { "ssi.esp32s3.gpspi", "transaction-overhead-clocks", "2" },
+        { "dwc_sdmmc", "timing", "true" },
+        { "dwc_sdmmc", "read-latency-us", "315" },
+        { "dwc_sdmmc", "read-ramp-us", "13" },
+        { "dwc_sdmmc", "write-latency-us", "900" },
+        { "dwc_sdmmc", "write-tail-us", "16" },
     };
     MachineClass *mc = MACHINE_CLASS(oc);
     mc->desc = "Xteink X4 Pro (ESP32-S3R8, UC8179 e-paper)";

@@ -24,7 +24,7 @@ if not os.path.exists(sd):
     subprocess.run([sys.executable, os.path.join(here, "mksd.py"), sd], check=True)
 subprocess.run(["cp", img, img + ".run"], check=True)
 # X3 regional instruction costs are nanoseconds; Xtensa keeps 4 ns ticks.
-icount_shift = 0 if machine in ("x3", "x4") else 2
+icount_shift = 0 if machine in ("x3", "x4", "x4pro") else 2
 machine_args = machine
 if machine == "x4pro" and os.environ.get("X4PANEL"):
     machine_args += ",panel=" + os.environ["X4PANEL"]

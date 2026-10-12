@@ -84,7 +84,7 @@ def run(machine, flash, firmware=False):
     require_jit = not native and os.environ.get('REQUIRE_JIT', '1') != '0'
     if native:
         arch = 'riscv32' if machine == 'x3' else 'xtensa'
-        timing = ['-icount', 'shift=' + ('0' if machine == 'x3' else '2') +
+        timing = ['-icount', 'shift=' + ('0' if machine in ('x3', 'x4pro') else '2') +
                   ',sleep=' + sleep]
         if turbo:
             timing += subprocess.check_output(

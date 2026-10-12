@@ -42,7 +42,7 @@ class PanelLaunchers(unittest.TestCase):
                             args = json.loads(result.stdout)
                             expected = f'{machine},panel={panel}' if panel and machine == 'x4pro' else machine
                             self.assertEqual(args[args.index('-machine') + 1], expected)
-                            self.assertIn(f'shift={0 if machine == "x3" else 2},sleep=off', args)
+                            self.assertIn('shift=0,sleep=off', args)
                             if machine == 'x4pro':
                                 self.assertIn('uc8179.pon-ms=1', args)
                                 self.assertIn('uc8179.pof-ms=1', args)

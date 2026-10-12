@@ -4,7 +4,8 @@
  * Setting CMD.USR shifts MS_DLEN+1 bits out of W0..W15 (byte 0 = W0 bits 7:0)
  * onto the SSI bus at the end of its SPI_CLOCK wire time, stores what comes
  * back in the same buffer, then clears USR and raises TRANS_DONE. A virtual
- * timer adds transaction-overhead-us plus transaction-overhead-ns. Transfers
+ * timer adds transaction-overhead-us, transaction-overhead-ns and an optional
+ * number of transaction-overhead-clocks at the programmed SPI frequency. Transfers
  * longer than one byte also add buffer-overhead-ns for the buffered PIO path.
  * These effective setup costs default to zero; boards can calibrate them with
  * the guest driver's existing instruction time included in the measurement.
@@ -66,6 +67,7 @@ struct Esp32s3GpspiState {
     QEMUTimer *transfer_timer;
     uint32_t transaction_overhead_us;
     uint32_t transaction_overhead_ns;
+    uint32_t transaction_overhead_clocks;
     uint32_t buffer_overhead_ns;
     bool zero_wire_time;
     uint32_t transfer_bytes;
@@ -130,7 +132,7 @@ static void gpspi_start_transfer(Esp32s3GpspiState *s)
         bits = MIN(bits, 512);
     }
     /* clkcnt_h/l set the duty cycle; clkcnt_n sets the complete period. */
-    int64_t duration_ns = DIV_ROUND_UP((uint64_t)bits * divider *
+    int64_t duration_ns = DIV_ROUND_UP(((uint64_t)bits + s->transaction_overhead_clocks) * divider *
                                       NANOSECONDS_PER_SECOND, 80000000) +
                           (uint64_t)s->transaction_overhead_us * 1000;
 
@@ -252,6 +254,8 @@ static const Property gpspi_properties[] = {
                      ESPGdmaState *),
     DEFINE_PROP_UINT32("transaction-overhead-us", Esp32s3GpspiState,
                        transaction_overhead_us, 0),
+    DEFINE_PROP_UINT32("transaction-overhead-clocks", Esp32s3GpspiState,
+                       transaction_overhead_clocks, 0),
     DEFINE_PROP_UINT32("transaction-overhead-ns", Esp32s3GpspiState,
                        transaction_overhead_ns, 0),
     DEFINE_PROP_UINT32("buffer-overhead-ns", Esp32s3GpspiState,

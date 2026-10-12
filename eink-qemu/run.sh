@@ -23,13 +23,14 @@ if [ "$X4MACHINE" = x3 ] || [ "$X4MACHINE" = x4 ]; then
 else
   qemu=$here/build/qemu-system-xtensa
   icount_shift=2
+  [ "$X4MACHINE" = x4pro ] && icount_shift=0
 fi
 # release archives have the binaries in bin/ instead of build/
 [ -x "$qemu" ] || qemu=$here/bin/${qemu##*/}
 [ -n "$X4BR" ] && : "${X4NET=-nic bridge,br=$X4BR,helper=$(dirname "$qemu")/qemu-bridge-helper,model=esp32_wifi}"
 [ -n "$X4BR" ] && echo "eink-qemu: Wi-Fi bridged to $X4BR (LAN DHCP)" >&2 || echo "eink-qemu: Wi-Fi on QEMU NAT (10.0.2.15); X4BR=br0 for your LAN" >&2
 net=${X4NET--nic user,model=esp32_wifi,hostfwd=tcp::8080-:80}
-# X3 costs are nanoseconds: one icount tick is 1 ns; Xtensa keeps 4 ns ticks.
+# Calibrated X3/X4/X4 Pro costs use 1 ns ticks; Picco keeps 4 ns ticks.
 case "${X4TURBO:-0}" in
   0) set -- -icount shift=$icount_shift,sleep=on "$@" ;;
   1)
