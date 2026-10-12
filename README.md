@@ -19,11 +19,10 @@ hardware is modeled from datasheets and measurements of real devices.
   <img src="eink-qemu/screenshots/browser-light.png" alt="The eink-qemu browser emulator running CrossPoint on an Xteink X4 Pro, showing a page of Aesop's Fables, with the SD card files on the left and the firmware console on the right">
 </picture></a>
 
-eink-qemu started as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
-by prokrypt, which first brought the Xteink X4 Pro up in QEMU: the board and its
-peripherals, and the e-ink panel with its refresh and ghosting model. This
-project builds on that work. It is based on upstream QEMU 11.1.2, with
-Espressif's ESP32 SoC models ported over.
+eink-qemu is upstream QEMU 11.1.2 with Espressif's ESP32 SoC models, the Xteink
+X4 Pro board and panel models from [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim),
+and Kohei Tokunaga's WebAssembly JIT. Where each piece came from is in
+[Origins](#origins).
 
 ## Supported boards
 
@@ -220,14 +219,46 @@ Read the workflow section of [EINK-QEMU.md](EINK-QEMU.md) first. Branch off
 `eink-qemu: <what>`. How the QEMU 11.1.2 port is layered is in
 [eink-qemu/porting](eink-qemu/porting/README.md).
 
+## Origins
+
+eink-qemu descends from several lines of work. All of it is GPL-2.0 QEMU code
+except where noted.
+
+- **QEMU.** The tree is upstream [QEMU](https://www.qemu.org/) v11.1.2,
+  released 2026-09-28.
+- **Espressif's QEMU fork.** The ESP32, ESP32-S3 and ESP32-C3 SoC models and
+  their peripherals come from [espressif/qemu](https://github.com/espressif/qemu)
+  (branch `esp-develop`). Espressif wrote them against QEMU 9.2.2; eink-qemu
+  re-ported them onto 11.1.2 in October 2026, layer by layer, as described in
+  [eink-qemu/porting](eink-qemu/porting/README.md). The pre-port history is
+  kept on the `legacy-esp-develop` branch. That fork also carries community
+  models: ESP32 I2C by Peter Buchegger, RSA by Sachin Billore, AES and LEDC by
+  Maksim Naumenko, and the ESP32-S3 SDMMC controller by Throows.
+- **Wi-Fi.** The access-point code is Clemens Kolbitsch's 2008 QEMU work (MIT),
+  adapted to the ESP32 by Martin Johnson in 2022 and to the ESP32-C3, ESP-NOW
+  and SoftAP by lcgamboa for [PICSimLab](https://github.com/lcgamboa/picsimlab)
+  in 2023, which is why the fake network is called `PICSimLabWifi`. x4prosim
+  ported it to the ESP32-S3. See the file headers in `hw/misc`.
+- **prokrypt/x4prosim.** prokrypt started
+  [x4prosim](https://github.com/prokrypt/x4prosim) on 2026-10-08 as a fork of
+  Espressif's QEMU, to run CrossDink on the Xteink X4 Pro without the device:
+  the `x4pro` machine, its GPIO, SPI, I2C, touch, RTC and gauge models, and the
+  UC8179 panel with its refresh animation and ghosting model fitted to device
+  photos. eink-qemu forked it the same day, after contributing the Xteink X3
+  machine and its SD, panel and CPU timing calibration upstream.
+- **qemu-wasm.** The browser build rests on Kohei Tokunaga's
+  [qemu-wasm](https://github.com/ktock/qemu-wasm). His Emscripten and wasm64
+  host support is in upstream QEMU; his wasm64 TCG JIT backend, which compiles
+  hot guest code to WebAssembly at runtime and makes the browser build fast, is
+  not upstream yet and is merged here from his `wasm64-tcg-b` branch.
+
+Much of the code in both x4prosim and eink-qemu was written with Claude Code
+and Codex under human direction. Commit trailers name the sessions.
+
 ## License and credits
 
-- This project began as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
-  by prokrypt: the X4 Pro machine, its peripherals and the UC8179 panel model.
 - QEMU is GPL-2.0; see [COPYING](COPYING) and [LICENSE](LICENSE). The original
   QEMU README is [README.rst](README.rst).
-- The ESP32 SoC models come from Espressif's QEMU fork.
-- The Wi-Fi MAC and access-point emulation is adapted from lcgamboa's ESP32
-  QEMU work. The AP code is by Clemens Kolbitsch, modified for the ESP32 by
-  Martin Johnson (MIT); see the file headers.
+- The Wi-Fi access-point code and the wasm64 TCG backend are MIT; see the file
+  headers.
 - The cow logo is in [eink-qemu/logo](eink-qemu/logo).
