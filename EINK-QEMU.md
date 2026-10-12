@@ -671,6 +671,59 @@ Notes:
   (Settings > Manage Fonts starts Wi-Fi and crashed on it).
 - Not modeled: the frontlight (the X3 has none), USB MSC, flash encryption.
 
+## Xteink X4 (`-machine x4`, ESP32-C3)
+
+The X4 shares the X3's ESP32-C3, so the chip header cannot tell them apart.
+CLI chip detection defaults a C3 image to `x3`; select the X4 explicitly with
+`X4MACHINE=x4` in the launchers and `--machine x4` in the composer. In the
+browser, choose **X4** or use `?device=x4`; the page remembers the choice.
+TRMNL's merged firmware `.bin` runs here.
+
+```sh
+python3 eink-qemu/mkflash.py --machine x4 FW1.8.17.bin flash-x4.bin
+X4MACHINE=x4 eink-qemu/run.sh flash-x4.bin sd.img
+X4MACHINE=x4 eink-qemu/wasm/run-node.sh flash-x4.bin sd.img
+```
+
+Merged images preserve their bootloader, partition table, NVS and app bytes.
+App-only X4 images use the bundled bootloader and CrossPoint partitions without
+forcing X3 detection in NVS.
+
+The X4 SSD1677 model supports framebuffer writes, RAM windows and active-high
+BUSY. Refresh timing is simplified and ghosting is not modeled. The console
+uses the device's 480x800 portrait orientation; TRMNL draws its setup interface
+in landscape.
+
+## BOOX Picco (`-machine picco`, ESP32-S3)
+
+ESP32-S3 chip detection alone defaults to the X4 Pro, so the Picco needs an
+explicit board selection: `X4MACHINE=picco` and `--machine picco`, or
+**BOOX Picco** / `?device=picco` in the browser.
+
+```sh
+python3 eink-qemu/mkflash.py --machine picco picco1.0.2920.bin flash-picco.bin
+X4MACHINE=picco eink-qemu/run.sh flash-picco.bin sd.img
+X4MACHINE=picco eink-qemu/wasm/run-node.sh flash-picco.bin sd.img
+```
+
+The composer places the unchanged app at `0xE0000` using Picco's NVS, OTA,
+recovery-slot and app layout. The recovery slot stays erased because an app
+update does not contain recovery firmware. The remaining flash provides an
+empty `spiffs` partition for LittleFS; this allocation is for the emulator.
+Merged flash images retain their original layout and contents.
+
+The board includes the SSD1677 display, Up/Down/Power keys, TMA525C touch,
+SGM41562 charger, BM8563 RTC, QMI8658 motion sensor and SDMMC card. Display
+waveforms and charging are simplified; frontlight brightness, multitouch and
+touch-controller firmware updates are not simulated.
+
+Host pointer taps last at least 100 ms of guest time so slower emulation does
+not collapse a click between UI polls. Set `-global tma525c.host-touch-ms=0`
+to disable this input timing adjustment; scripted QOM `touch` events remain
+immediate. The browser also keeps Picco's guest clock paced in Turbo mode so
+ordinary clicks do not become long presses; display and bus timing still use
+the Turbo settings. `?sleep=off` permits unpaced benchmarks.
+
 ## Hardware to model (X4 Pro pin map, from freeink-sdk BoardConfig.h `XTEINK_X4_PRO`)
 
 | Area | Hardware | Pins / bus | Owner |

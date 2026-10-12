@@ -5,140 +5,69 @@
   </picture>
 </h1>
 
-An emulator for **ESP32-based e-ink readers**: the **Xteink X4 Pro** (ESP32-S3R8,
-16 MB flash, 8 MB octal PSRAM), the **BOOX Picco** (ESP32-S3), and the
-**Xteink X3/X4** (ESP32-C3). It runs **unmodified stock firmware and any fork**,
-including CrossInk, CrossDink and CrossPoint, or a bare ESP-IDF/Arduino app.
-The screen, SD card, keys, touch, clock, battery gauge and
-Wi-Fi all behave like the board, so you can develop firmware without the device.
+eink-qemu emulates **ESP32-based e-ink readers** so you can run and debug their
+firmware without the device. It runs **unmodified firmware**: the stock
+firmware, CrossPoint, CrossInk, CrossDink, TRMNL, or your own ESP-IDF or
+Arduino app. The screen, SD card, keys, touch, clock, battery gauge and Wi-Fi
+behave like the real board. No firmware is ever patched to boot here; the
+hardware is modeled from datasheets and measurements of real devices.
+
+**Try it now in your browser:** https://serialx.github.io/eink-qemu/
 
 <img src="eink-qemu/ghosting/sim-screenshots/05-menus-final-clean.png" width="240" alt="CrossDink Home screen in eink-qemu">
-
-Built on upstream **QEMU 11.1.2**, with the Espressif SoC models ported over.
-The rule is that no firmware is ever changed to make it boot here: the hardware is modeled from datasheets and
-from the real board instead.
 
 eink-qemu started as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
 by prokrypt, which first brought the Xteink X4 Pro up in QEMU: the board and its
 peripherals, and the e-ink panel with its refresh and ghosting model. This
-project builds on that work.
+project builds on that work. It is based on upstream QEMU 11.1.2, with
+Espressif's ESP32 SoC models ported over.
 
-## Xteink X4 / TRMNL
+## Supported boards
 
-Select **X4** in the browser before loading TRMNL's merged firmware `.bin`.
-X3 and X4 both use ESP32-C3, so the chip header cannot distinguish them.
-The browser remembers the selection; `?device=x4` also selects it.
+| Board | SoC | Machine | Emulator binary | Fidelity |
+| --- | --- | --- | --- | --- |
+| Xteink X4 Pro | ESP32-S3 | `x4pro` | `qemu-system-xtensa` | Full board, panel ghosting fitted to device photos |
+| Xteink X3 | ESP32-C3 | `x3` | `qemu-system-riscv32` | Full board, SD, panel and CPU timing calibrated on a real X3 |
+| Xteink X4 | ESP32-C3 | `x4` | `qemu-system-riscv32` | Runs firmware; panel refresh timing simplified, no ghosting |
+| BOOX Picco | ESP32-S3 | `picco` | `qemu-system-xtensa` | Runs firmware; panel waveforms and charging simplified |
 
-For native or Node runs, prepare a flash image and select the board explicitly:
+The launchers pick the board from the firmware's chip: an ESP32-S3 image runs
+as the X4 Pro and an ESP32-C3 image as the X3. **The X4 and the Picco must be
+selected explicitly**, because their chips match the other boards.
 
-```sh
-python3 eink-qemu/mkflash.py --machine x4 FW1.8.17.bin flash-x4.bin
-X4MACHINE=x4 eink-qemu/run.sh flash-x4.bin sd.img
-X4MACHINE=x4 eink-qemu/wasm/run-node.sh flash-x4.bin sd.img
-```
+## Try it in the browser
 
-Merged images preserve their bootloader, partition table, NVS and app bytes.
-App-only X4 images use the bundled bootloader and CrossPoint partitions without
-forcing X3 detection in NVS. CLI chip detection still defaults C3 to X3 for
-compatibility; use `X4MACHINE=x4` for X4.
+1. Open https://serialx.github.io/eink-qemu/ in Chrome. Firefox and Safari are
+   untested.
+2. Choose the **Device**. Auto works for the X4 Pro and the X3. Pick **X4** or
+   **BOOX Picco** for those boards.
+3. Choose the **Firmware**: an official CrossPoint release `.bin`, a merged
+   firmware `.bin`, an X4 Pro `.xota` update, or a 16 MiB flash dump. The
+   emulator starts as soon as the file loads.
 
-The X4 SSD1677 model supports framebuffer writes, RAM windows and active-high
-BUSY. Refresh timing is simplified and ghosting is not modeled. The console
-uses the device's 480×800 portrait orientation; TRMNL draws its setup interface
-in landscape.
+Use the arrow keys, Enter, Esc and `P` (Power). On boards with a touchscreen,
+click the screen to touch it. The SD card panel lets you add books, swap in
+your own card image, and download the card.
 
-## BOOX Picco
+The page starts with **Turbo** on, which runs fast but not with real device
+timing. Turn it off, or open the page with `?turbo=0`, for accurate timing.
+**Ghosting** is on to show real e-ink artifacts. Turn it off, or use
+`?ghosting=0`, when you need clean pixels.
 
-Select **BOOX Picco** before loading a Picco app `.bin` in the browser, or use
-`?device=picco`. ESP32-S3 chip detection alone defaults to X4 Pro, so Picco
-requires an explicit board selection.
+## Run it on your computer
 
-```sh
-python3 eink-qemu/mkflash.py --machine picco picco1.0.2920.bin flash-picco.bin
-X4MACHINE=picco eink-qemu/run.sh flash-picco.bin sd.img
-X4MACHINE=picco eink-qemu/wasm/run-node.sh flash-picco.bin sd.img
-```
+### Get the emulator
 
-The composer places the unchanged app at `0xE0000` using Picco's NVS, OTA,
-recovery-slot and app layout. The recovery slot stays erased because an app
-update does not contain recovery firmware. The remaining flash provides an
-empty `spiffs` partition for LittleFS; this allocation is for the simulator.
-Merged flash images retain their original layout and contents.
+Download an archive from [Releases](../../releases), or from the latest
+[Actions](../../actions) run (artifacts `dist-qemu-*`). Builds cover Linux
+(x86_64, arm64), macOS (Intel, Apple silicon) and Windows. Each archive holds
+one emulator: `xtensa-softmmu` for the X4 Pro and Picco, `riscv32-softmmu` for
+the X3 and X4. Linux and macOS need glib, pixman, SDL2, libslirp, libgcrypt and
+libpng installed; the Windows archives bundle them.
 
-The board includes the SSD1677 display, Up/Down/Power keys, TMA525C touch,
-SGM41562 charger, BM8563 RTC, QMI8658 motion sensor and SDMMC card. Display
-waveforms and charging are simplified; frontlight brightness, multitouch and
-touch-controller firmware updates are not simulated.
-
-Host pointer taps last at least 100 ms of guest time so slower emulation does
-not collapse a click between UI polls. Set `-global tma525c.host-touch-ms=0`
-to disable this input timing adjustment; scripted QOM `touch` events remain
-immediate.
-The browser also keeps Picco's guest clock paced in Turbo mode so ordinary
-clicks do not become long presses; display and bus timing still use the Turbo
-settings. `?sleep=off` permits unpaced benchmarks.
-
-## Porting layers
-
-See [eink-qemu/porting/README.md](eink-qemu/porting/README.md) for the QEMU 11.1.2
-porting branches, layer ownership, build command and commit rules.
-
-## Downloads
-
-CI builds every push for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and
-Windows, one archive per emulator (`xtensa-softmmu` = X4 Pro/Picco,
-`riscv32-softmmu` = X3/X4). Get them from the latest run under
-[Actions](../../actions) (artifacts `dist-qemu-*`), or from
-[Releases](../../releases) for tagged versions. Each archive has `bin/`, the
-`eink-qemu/` scripts and the docs; `eink-qemu/run.sh` finds `bin/` by itself.
-Linux and macOS archives need the runtime libraries (glib, pixman, SDL2,
-libslirp, libgcrypt, libpng) installed; the Windows one bundles them.
-
-## WebAssembly build
-
-The browser and Node builds use a wasm64 JIT, compiling hot guest blocks to
-WebAssembly while cold blocks run through TCI. Try the
-[browser demo](https://serialx.github.io/eink-qemu/), download the
-`eink-qemu-<version>-wasm` Actions artifact, or build with Emscripten 6.0.12:
-
-```sh
-eink-qemu/wasm/build-deps.sh
-eink-qemu/wasm/build.sh --web
-python3 eink-qemu/wasm/serve.py build-wasm-32limit/web-dist
-```
-
-The default `MEMORY64=2` mode uses 32-bit memory addressing for compatibility
-with modern Chrome, Firefox and Safari. `WASM64_MODE=64` selects native
-Memory64 (Chrome 133+, Firefox 134+, not Safari); both use 64-bit host pointers.
-Chrome 155 and Node 26 are verified; Firefox/Safari emulator runs are untested.
-Threads require cross-origin isolation, provided by the local server or the
-bundled service worker on HTTPS hosting.
-
-The browser page defaults to **Turbo (fast, not timing-accurate)**: the
-checkbox starts ticked, and unticking it or `?turbo=0` selects accurate timing
-(`?turbo=1` remains accepted). The Node launcher keeps accurate timing by
-default; `TURBO=1 eink-qemu/wasm/run-node.sh flash.bin sd.img` opts in.
-
-Five quiet alternating pairs on an Apple M5 Max (Node 26, Chrome 155,
-`MEMORY64=2`, `sleep=off`) compare `5ea1b8ef2e` with the six-change performance
-stack. CrossPoint 1.6.5 X3 accurate startup settles in **7.518 s in Node** and
-**8.961 s in Chrome**, with paired post-Home reductions of **20.8%** and **30.2%**.
-Chrome's gain includes settling before the ten-second autosave; the baseline
-incurred one 60–63 ms save pause. X3 waits, first MEM and whole SD contents are
-unchanged, and panels match at equal virtual time. Turbo changes guest timing
-and is measured separately.
-Official X4 Pro firmware also passed native, Node and Chrome acceptance;
-Safari/Firefox remain untested.
-See [the full WebAssembly guide](EINK-QEMU.md#webassembly-build) for build modes,
-measurement methods, limits and upstream candidates.
-
-## Quick start
-
-Use Python 3.9 or newer, GLib 2.66 or newer, and libgcrypt 1.9.4 or newer
-(Debian 12 satisfies these requirements). QEMU configure selects Meson 1.5 or
-newer, installing the bundled 1.11.1 wheel when needed. Rust is disabled by
-default in this QEMU 11.1.2 tree; no Rust toolchain is needed for these builds.
-A fresh configure needs network access for missing Python packages and subprojects.
+To build from source instead, use Python 3.9+, GLib 2.66+ and libgcrypt 1.9.4+
+(Debian 12 has all three). The first configure needs network access to fetch
+Python packages and subprojects. No Rust toolchain is needed.
 
 ```sh
 # deps (Debian/Ubuntu)
@@ -151,66 +80,48 @@ mkdir build && cd build
 ../configure --target-list=xtensa-softmmu,riscv32-softmmu --enable-gcrypt --enable-slirp --enable-sdl --enable-png \
   --disable-gnutls --disable-strip --disable-user --disable-capstone --disable-vnc --disable-gtk --disable-docs
 ninja qemu-system-xtensa qemu-system-riscv32 && cd ..
-
-eink-qemu/mkflash.sh <pio or idf build dir> flash.bin   # bootloader + partitions + app -> 16 MB image
-eink-qemu/run.sh flash.bin sd.img                       # SDL window, firmware log on stdout
 ```
 
-`run.sh`, `drive.py` and `mkflash.sh` pick the machine from the image's chip:
-an ESP32-S3 image runs on `x4pro`, an ESP32-C3 image (the CrossPoint X3/X4
-binary) defaults to `x3`. Set `X4MACHINE=x4` in the launchers and
-`--machine x4` in the composer for X4.
+### Run your firmware
 
-A flash dump of a real device works too, as long as it doesn't use flash
-encryption: `esptool.py --chip esp32s3 read_flash 0 0x1000000 flash.bin`.
-`sd.img` is created on first run (2050 MiB FAT32, 32 KiB clusters).
-`eink-qemu/mksd.py sd.img 2050 books/` creates an image populated from a folder.
-See [SD image geometry](#sd-image-geometry) before comparing hardware timings.
+Compose a 16 MiB flash image, then start the emulator. `mkflash.py` accepts an
+app `.bin`, a merged `.bin`, a PlatformIO or ESP-IDF build directory, or a flash
+dump. A merged image keeps its own bootloader, partitions and data; an app gets
+the bundled bootloader and the board's partition table.
 
-**Controls:** arrow keys are Up/Down and `P` is Power. Click in the window to
-touch. On the X3, Left/Right, Enter (Confirm) and Backspace (Back) are keys too.
-Monitor: `socat - unix:/tmp/eink-qemu-mon.sock`.
+```sh
+python3 eink-qemu/mkflash.py crosspoint-1.6.5-x3-x4.bin flash.bin
+eink-qemu/run.sh flash.bin sd.img        # SDL window, firmware log on stdout
+```
 
-**Headless / scripted:**
+For the X4 or the Picco, name the board in both steps:
+
+```sh
+python3 eink-qemu/mkflash.py --machine picco picco1.0.2920.bin flash-picco.bin
+X4MACHINE=picco eink-qemu/run.sh flash-picco.bin sd.img
+```
+
+A dump of a real device works too, as long as it doesn't use flash encryption:
+`esptool.py --chip esp32s3 read_flash 0 0x1000000 flash.bin`.
+
+`run.sh` creates `sd.img` on first run, an empty card shaped like the stock X3
+card. To start with books on it, build one from a folder with
+`python3 eink-qemu/mksd.py sd.img 2050 books/`.
+
+**Controls:** arrow keys are Up and Down, and `P` is Power. Click in the window
+to touch. On the X3, Left, Right, Enter (Confirm) and Backspace (Back) work too.
+The QEMU monitor is at `socat - unix:/tmp/eink-qemu-mon.sock`.
+
+**Scripted runs** take key presses, touches and screenshots without a window:
+
 ```sh
 eink-qemu/drive.py flash.bin sd.img log.txt wait:30 press:down shot:home.png \
   "hmp:qom-set /machine/gt911 tap 240,529" wait:5 shot:settings.png
 ```
 
-## SD image geometry
-
-```sh
-python3 eink-qemu/mksd.py sd.img [size_mb] [dir_to_copy] [--cluster-size BYTES]
-```
-
-The default is a 2050 MiB image with an MBR, a FAT32 partition starting at
-1 MiB, and **32 KiB clusters** (64 sectors of 512 bytes). This cluster size
-matches the stock SD card supplied with the Xteink X3 that was measured on
-hardware. Sizes are in MiB despite the `size_mb` argument name. The image is
-sparse on supporting host filesystems; copying or loading it into memory can
-still consume its full logical size. Existing images are not converted.
-
-For hardware timing comparisons, match the card's filesystem geometry as
-well as its book, font and settings files. Small clusters require more FAT
-chain traversal when firmware seeks within large font files. A 128 MiB image
-with automatically chosen 512-byte clusters made font prewarming slower in
-simulated time than on the stock card. Check geometry before tuning CPU or
-SD latency parameters; identical file contents alone are insufficient.
-
-FAT32 needs at least 65,525 data clusters. With 32 KiB clusters this helper
-requires at least 2050 MiB and rejects smaller requests before writing the
-image. Compact functional-test images must opt into another cluster size:
-
-```sh
-python3 eink-qemu/mksd.py compact-sd.img 64 --cluster-size 512
-```
-
-The browser's bundled 64 MiB card and ROM/filesystem smoke fixtures use this
-explicit exception to keep their memory and download sizes small. They do
-**not** represent the stock X3 card's filesystem timing. Use a suitable image
-for timing measurements, and record its filesystem type and cluster size.
-
 ## What's emulated
+
+The X4 Pro:
 
 | Part | Model | Status |
 | --- | --- | --- |
@@ -225,52 +136,95 @@ for timing measurements, and record its filesystem type and cluster size.
 | Light sleep | RTC timer and GPIO wake | done |
 | Frontlight, charger STAT, deep sleep, USB OTG | | not yet |
 
-The **X3** (`-machine x3`, `qemu-system-riscv32`): UC8279d or UC8253 792x528
-e-ink, SD card in SPI mode, the six keys on their ADC ladder plus Power,
-BQ27220 gauge, DS3231 clock, QMI8658 IMU, the same Wi-Fi, and deep sleep with
-power-button wake. The panel uses the X4 Pro's ink and ghosting model,
-including animated refreshes, with X3 waveform decoding and calibrated
-refresh timing. Details in [EINK-QEMU.md](EINK-QEMU.md).
+**The X3** has a UC8279d or UC8253 792x528 panel, an SD card in SPI mode, six
+keys on an ADC ladder plus Power, a BQ27220 gauge, a DS3231 clock, a QMI8658
+IMU, the same Wi-Fi, and deep sleep with power-button wake. Its panel uses the
+X4 Pro's ink and ghosting model with X3 waveforms. SD card and SPI bus
+latencies, panel refresh times and CPU instruction costs were measured on a
+real X3 and fitted; see [eink-qemu/sdcal](eink-qemu/sdcal/README.md).
 
-**Wi-Fi.** Join `PICSimLabWifi` on the device. By default it uses QEMU's NAT:
-the device gets 10.0.2.15, and `curl localhost:8080` reaches its port 80. To
-put it on your LAN, so it gets an address from your router, run with
-`X4BR=br0` on a host bridge (setup in [EINK-QEMU.md](EINK-QEMU.md)).
+**The X4 and the Picco** are covered in their own sections of
+[EINK-QEMU.md](EINK-QEMU.md), with their peripherals and limits.
 
-**Panel.** Ghosting is **off by default in native and Node CLI runs** for stable
-pixel comparisons. Enable it with `-global uc8179.ghosting=on` (X4 Pro) or
-`-global uc8279.ghosting=on` (X3). The web page defaults to **Ghosting on**;
-untick the switch before starting, or use `?ghosting=0`, for clean pixels.
-Ghosting off removes physical ink artifacts and idle drift while retaining LUT
-grayscale and refresh timing. `-global uc8179.animate=false` independently skips
-animation; use the `uc8279` prefix for X3. Capture after refresh completion when
-comparing pixels. See [eink-qemu/ghosting/README.md](eink-qemu/ghosting/README.md).
+**Wi-Fi.** Join `PICSimLabWifi` on the device. By default it sits behind QEMU's
+NAT: the device gets 10.0.2.15, and `curl localhost:8080` reaches its port 80.
+To put it on your LAN with an address from your router, run with `X4BR=br0` on
+a host bridge, set up as described in [EINK-QEMU.md](EINK-QEMU.md).
+
+**Ghosting** is off by default in native and Node runs, so screenshots compare
+pixel for pixel. Turn it on with `-global uc8179.ghosting=on` on the X4 Pro or
+`-global uc8279.ghosting=on` on the X3. With ghosting off the panel still
+renders LUT grayscale and keeps real refresh timing. `-global uc8179.animate=false`
+skips the refresh animation, with the `uc8279` prefix on the X3. When comparing
+pixels, capture after the refresh completes. The model is explained in
+[eink-qemu/ghosting](eink-qemu/ghosting/README.md).
+
+## Comparing timing with a real device
+
+Match the SD card's filesystem, not just its files. The firmware walks FAT
+cluster chains when it seeks in large font files, so smaller clusters make it
+slower. A 128 MiB image with 512-byte clusters made font prewarming slower than
+on the stock card.
+
+`mksd.py` defaults to a 2050 MiB FAT32 image with **32 KiB clusters**, the
+geometry of the stock X3 card. FAT32 needs at least 65,525 clusters, so that is
+also the smallest size it accepts at 32 KiB. Smaller test images must choose a
+smaller cluster size and are not valid for timing:
+
+```sh
+python3 eink-qemu/mksd.py compact-sd.img 64 --cluster-size 512
+```
+
+The browser's bundled 64 MiB card is one of these compact images. Sizes are in
+MiB. Images are sparse where the host filesystem supports it, but copying one
+can still take its full size. Use accurate timing, not Turbo, and record the
+card's geometry with any measurement.
+
+## Building for the browser and Node
+
+The WebAssembly build compiles hot guest code to WebAssembly with a JIT and
+runs cold code in an interpreter. Download the `eink-qemu-<version>-wasm`
+Actions artifact, or build it with Emscripten 6.0.12:
+
+```sh
+eink-qemu/wasm/build-deps.sh
+eink-qemu/wasm/build.sh --web
+python3 eink-qemu/wasm/serve.py build-wasm-32limit/web-dist
+```
+
+`eink-qemu/wasm/run-node.sh flash.bin sd.img` runs the same build in Node 26,
+with accurate timing unless you set `TURBO=1`. Chrome 155 and Node 26 are
+verified; Firefox and Safari runs are untested. Build modes, browser
+requirements, benchmarks and limits are in the
+[WebAssembly guide](EINK-QEMU.md#webassembly-build).
 
 ## Docs
 
-- [EINK-QEMU.md](EINK-QEMU.md): the full guide. It covers building firmware for
-  the sim, debugging a hang with gdb, every model and its options, the X4 Pro
-  pin map, what's still missing, and how to contribute a peripheral.
-- [eink-qemu/testdata/](eink-qemu/testdata/README.md): real device logs, the
-  panel OTP and battery history, for checking a simulated run against the
-  device.
-- [eink-qemu/ghosting/](eink-qemu/ghosting/README.md): how the e-ink model works,
-  its calibration against photos, and step files and tools for repeating it.
+- [EINK-QEMU.md](EINK-QEMU.md): the full guide. It covers building firmware
+  for the emulator, debugging a hang with gdb, every model and its options, the
+  X4 Pro pin map, the WebAssembly build, and what's still missing.
+- [eink-qemu/sdcal](eink-qemu/sdcal/README.md): how the X3's SD, panel and CPU
+  timing was measured and fitted.
+- [eink-qemu/ghosting](eink-qemu/ghosting/README.md): how the e-ink model
+  works, its calibration against photos, and tools for repeating it.
+- [eink-qemu/testdata](eink-qemu/testdata/README.md): real device logs, the
+  panel OTP and battery history, for checking a run against the device.
 
 ## Contributing
 
-Branch off `main`, keep one peripheral per PR, and use commit messages of
-the form `eink-qemu: <what>`. Read the workflow section of
-[EINK-QEMU.md](EINK-QEMU.md) first.
+Read the workflow section of [EINK-QEMU.md](EINK-QEMU.md) first. Branch off
+`main`, keep one peripheral per pull request, and write commit messages as
+`eink-qemu: <what>`. How the QEMU 11.1.2 port is layered is in
+[eink-qemu/porting](eink-qemu/porting/README.md).
 
 ## License and credits
 
 - This project began as a fork of [prokrypt/x4prosim](https://github.com/prokrypt/x4prosim)
   by prokrypt: the X4 Pro machine, its peripherals and the UC8179 panel model.
-- The cow logo is in [eink-qemu/logo](eink-qemu/logo).
 - QEMU is GPL-2.0; see [COPYING](COPYING) and [LICENSE](LICENSE). The original
   QEMU README is [README.rst](README.rst).
 - The ESP32 SoC models come from Espressif's QEMU fork.
 - The Wi-Fi MAC and access-point emulation is adapted from lcgamboa's ESP32
-  QEMU work. The AP code is by Clemens Kolbitsch, modified for the ESP32 by Martin
-  Johnson (MIT); see the file headers.
+  QEMU work. The AP code is by Clemens Kolbitsch, modified for the ESP32 by
+  Martin Johnson (MIT); see the file headers.
+- The cow logo is in [eink-qemu/logo](eink-qemu/logo).
