@@ -83,6 +83,29 @@ class SdmmcTiming(unittest.TestCase):
         self.assertFalse(self.read(0x3fc90000)&(1<<31))
         self.assertTrue(self.r(0x8c)&2)
 
+    def test_stop_abort_cancels_pending_data_and_recovers(self):
+        for waiting_dma in (False, True):
+            with self.subTest(waiting_dma=waiting_dma):
+                self.init_card()
+                if waiting_dma:
+                    self.write(0x3fc90000, 0x0c)
+                self.issue(18, flags=0x240)
+                self.command('clock_step ' + ('105250' if waiting_dma else '2400'))
+                self.issue(12, flags=0x4040)
+                self.command('clock_step 2400')
+                self.assertFalse(self.r(0x48) & 0x600)
+                self.assertEqual(self.r(0x44) & 0x1104, 4)
+                self.command('clock_step 1000000')
+                self.assertEqual(self.read(0x3fc91000), 0)
+                self.w(0x20, 512)
+                self.w(0x88, 0x3fc90000)
+                self.write(0x3fc90000, 0x8000000c)
+                self.issue(17, flags=0x240)
+                self.command('clock_step 105250')
+                self.assertTrue(self.r(0x44) & 8)
+                self.assertEqual(self.read(0x3fc91000), 0x03020100)
+                self.write(0x3fc91000, 0)
+
     def test_stale_response_error_does_not_suppress_next_data(self):
         self.init_card()
         self.issue(63)  # unsupported command, response timeout

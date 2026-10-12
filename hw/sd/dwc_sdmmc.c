@@ -537,9 +537,18 @@ static void dwc_sdmmc_write(void *opaque, hwaddr offset,
 
         case A_SDMMC_CMD: {
             if (s->timing && s->pending) {
-                s->rintsts |= SDMMC_INTMASK_HLE;
-                dwc_sdmmc_update_irq(s);
-                break;
+                /* STOP_ABORT may interrupt the data phase, including a DMA
+                 * ownership wait. Ordinary overlapping commands remain HLE. */
+                if (s->data_phase && (value & BIT(14)) &&
+                    FIELD_EX32(value, SDMMC_CMD, START)) {
+                    timer_del(&s->transfer_timer);
+                    s->pending = s->data_phase = s->waiting_dma = false;
+                    s->bytes_left = 0;
+                } else {
+                    s->rintsts |= SDMMC_INTMASK_HLE;
+                    dwc_sdmmc_update_irq(s);
+                    break;
+                }
             }
             s->cmd = value;
             if (FIELD_EX32(value, SDMMC_CMD, START)) {
