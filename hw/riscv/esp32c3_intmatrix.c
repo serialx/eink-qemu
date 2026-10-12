@@ -13,6 +13,7 @@
 #include "qemu/queue.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
+#include "qemu/host-utils.h"
 #include "qapi/error.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
@@ -31,17 +32,17 @@
 
 static int esp32c3_get_output_line_level(ESP32C3IntMatrixState *s, int line)
 {
-    int level_shared = 0;
+    uint64_t pending = s->irq_levels;
 
-    for (int i = 0; level_shared == 0 && i < ESP32C3_INT_MATRIX_INPUTS; i++) {
-        const uint_fast8_t mapped = s->irq_map[i];
-        if (mapped == line && (s->irq_levels & BIT_ULL(i)))
-        {
-            level_shared |= 1;
+    while (pending) {
+        int input = ctz64(pending);
+        pending &= pending - 1;
+        if (s->irq_map[input] == line) {
+            return 1;
         }
     }
 
-    return level_shared;
+    return 0;
 }
 
 static bool esp32c3_intmatrix_line_should_assert(ESP32C3IntMatrixState *s, int line)
@@ -51,8 +52,8 @@ static bool esp32c3_intmatrix_line_should_assert(ESP32C3IntMatrixState *s, int l
     }
 
     return BIT_SET(s->irq_enabled, line) &&
-           esp32c3_get_output_line_level(s, line) != 0 &&
-           (s->irq_prio[line] >= s->irq_thres);
+           (s->irq_prio[line] >= s->irq_thres) &&
+           esp32c3_get_output_line_level(s, line) != 0;
 }
 
 static void esp32c3_intmatrix_update_line(ESP32C3IntMatrixState *s, int line)
@@ -63,9 +64,15 @@ static void esp32c3_intmatrix_update_line(ESP32C3IntMatrixState *s, int line)
 
     const bool assert_line = esp32c3_intmatrix_line_should_assert(s, line);
 
+    /* Threshold writes often leave all CPU lines at their previous levels. */
+    if (assert_line == !!BIT_SET(s->irq_outputs, line)) {
+        return;
+    }
     if (assert_line) {
+        SET_BIT(s->irq_outputs, line);
         qemu_irq_raise(s->out_irqs[line]);
     } else {
+        CLEAR_BIT(s->irq_outputs, line);
         qemu_irq_lower(s->out_irqs[line]);
     }
 }
@@ -230,6 +237,7 @@ static void esp32c3_intmatrix_reset_hold(Object *obj, ResetType type)
     s->irq_levels = 0;
     s->irq_trigger = 0;
     s->irq_enabled = 0;
+    s->irq_outputs = 0;
     for (int i = 0; i <= ESP32C3_CPU_INT_COUNT; i++) {
         qemu_irq_lower(s->out_irqs[i]);
     }

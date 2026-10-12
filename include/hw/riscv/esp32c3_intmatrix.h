@@ -81,6 +81,8 @@ typedef struct ESP32C3IntMatrixState {
 
     /* Fast mirror to access IRQ levels */
     uint64_t irq_levels;
+    /* Last levels delivered to the CPU; reset explicitly lowers every line. */
+    uint32_t irq_outputs;
     EspRISCVCPU *cpu;
 
     /* Output IRQ used to notify the CPU, indexed from 1 to 31, so allocate one more */
