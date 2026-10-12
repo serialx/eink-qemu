@@ -126,6 +126,12 @@ static void esp_systimer_comparator_reprogram(ESPSysTimerComp* comparator)
 
     /* If the counter we have to compare it to is not enabled, do not program any timer */
     if (!counter->enabled || counter->suspended) {
+        if (counter->suspended && comparator->period_mode) {
+            /* A guest reprogram during sleep starts a new period on resume. */
+            comparator->sleep_remaining_ns = comparator->period ?
+                DIV_ROUND_UP((uint64_t)comparator->period * 1000 -
+                             counter->fraction, ESP_SYSTIMER_CNT_PER_US) : 0;
+        }
         /* "Disable" the timer */
         timer_del(&comparator->qtimer);
         return;
@@ -636,11 +642,30 @@ static void esp_systimer_realize(DeviceState *dev, Error **errp)
 static void esp_systimer_set_sleep(void *opaque, int n, int level)
 {
     ESPSysTimerState *s = opaque;
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->counter[0].suspended == (level != 0)) {
+        return;
+    }
     for (int i = 0; i < ESP_SYSTIMER_COUNTER_COUNT; i++) {
         esp_systimer_update_counter(&s->counter[i]);
         s->counter[i].suspended = level != 0;
     }
-    esp_systimer_comparator_reprogram_all(s);
+    for (int i = 0; i < ESP_SYSTIMER_COMP_COUNT; i++) {
+        ESPSysTimerComp *comp = &s->comparators[i];
+        if (level) {
+            comp->sleep_remaining_ns = comp->expire_time > now ?
+                                       comp->expire_time - now : 0;
+            timer_del(&comp->qtimer);
+        } else if (comp->enabled) {
+            if (comp->period_mode && comp->period &&
+                s->counter[comp->counter].enabled) {
+                comp->expire_time = now + comp->sleep_remaining_ns;
+                timer_mod_ns(&comp->qtimer, comp->expire_time);
+            } else {
+                esp_systimer_comparator_reprogram(comp);
+            }
+        }
+    }
 }
 
 static void esp_systimer_init(Object *obj)

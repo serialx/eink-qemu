@@ -55,6 +55,20 @@ class S3Sleep(unittest.TestCase):
         self.command('clock_step 1000')
         self.assertEqual(self.systimer_value(), sys_before + 16)
 
+    def test_periodic_alarm_preserves_phase_across_sleep(self):
+        self.write(0x60023034, (1 << 30) | 16000)
+        self.write(0x60023050, 1)
+        self.write(0x60023000, (1 << 30) | (1 << 24))
+        self.command('clock_step 250000')
+        self.sleep_until(self.rtc() + 13600)
+        self.command('clock_step 100000000')
+        self.assertEqual(self.systimer_value(), 4000)
+        self.command('clock_step 749999')
+        self.assertEqual(self.read(0x60023068), 0)
+        self.command('clock_step 1')
+        self.assertEqual(self.read(0x60023068), 1)
+        self.assertEqual(self.systimer_value(), 16000)
+
     def test_mux_preserves_counter_and_reserved_selector_is_safe(self):
         self.command('clock_step 1000000000')
         before = self.rtc()

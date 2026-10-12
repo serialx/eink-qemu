@@ -102,6 +102,7 @@ typedef struct {
     /* The easiest way to implement timeout is by using one timer per comparator */
     QEMUTimer qtimer;
     uint64_t expire_time;
+    uint64_t sleep_remaining_ns;
     qemu_irq irq;
     int cur_irq_level;
     /* Pointer to the owner */
