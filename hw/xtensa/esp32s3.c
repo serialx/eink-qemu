@@ -731,6 +731,12 @@ static void esp32s3_machine_init(MachineState *machine)
         }
         ss->cache.xts_aes = &ss->xts_aes;
         sysbus_realize(SYS_BUS_DEVICE(&ss->cache), &error_fatal);
+        if (ss->cache.psram_read_ns) {
+            for (unsigned i = 0; i < ESP32S3_CPU_COUNT; i++) {
+                ss->cpu[i].memory_access_ns = esp32s3_cache_access_ns;
+                ss->cpu[i].memory_access_opaque = &ss->cache;
+            }
+        }
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->cache), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_EXTMEM_BASE, mr, 0);
 
@@ -1218,6 +1224,11 @@ static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
 {
     static GlobalProperty x4pro_globals[] = {
         { "ssi_psram", "is_octal", "true" },
+        { TYPE_ESP32S3_CACHE, "psram-read-ns", "305" },
+        { TYPE_ESP32S3_CACHE, "psram-write-ns", "390" },
+        { TYPE_ESP32S3_CACHE, "psram-read-tail-ns", "170" },
+        { TYPE_ESP32S3_CACHE, "psram-read-cycles", "8" },
+        { TYPE_ESP32S3_CACHE, "psram-write-cycles", "4" },
         /* Same diagnostic image on the reader and QEMU: x4cal/README.md. */
         { "xtensa-cpu", "cost-rom-ns", "4" },
         { "xtensa-cpu", "cost-sram-ns", "4" },

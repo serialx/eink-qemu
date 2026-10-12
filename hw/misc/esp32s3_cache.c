@@ -10,6 +10,7 @@
 
 
 #include "qemu/osdep.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -53,6 +54,97 @@ static inline uint32_t esp32s3_read_mmu_value(ESP32S3CacheState *s, hwaddr reg_a
     /* Make the assumption that the address is aligned on sizeof(uint32_t) */
     const uint32_t index = reg_addr / sizeof(uint32_t);
     return (uint32_t) s->mmu[index].val;
+}
+
+uint64_t esp32s3_cache_access_ns(void *opaque, uint32_t addr,
+                                unsigned size, bool write, int64_t now, uint32_t cpu_hz)
+{
+    ESP32S3CacheState *s = opaque;
+    uint64_t ns = 0;
+    uint32_t ctrl = s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_CTRL)];
+    unsigned line_size = 16 << MIN((ctrl >> 3) & 3, 2);
+    unsigned sets = ((ctrl & 4) ? 65536 : 32768) / (4 * line_size);
+
+    if (!s->psram_read_ns || !s->dcache_enable || !s->psram ||
+        addr < ESP32S3_DCACHE_BASE ||
+        addr >= ESP32S3_DCACHE_BASE + ESP32S3_EXTMEM_REGION_SIZE) {
+        return 0;
+    }
+    for (uint64_t a = addr; a < (uint64_t)addr + size;) {
+        uint32_t offset = a - ESP32S3_DCACHE_BASE;
+        if (offset >= ESP32S3_EXTMEM_REGION_SIZE) {
+            break;
+        }
+        ESP32S3MMUEntry e = s->mmu[offset / ESP32S3_PAGE_SIZE];
+        if (!e.invalid && e.type == ESP32S3_MMU_TYPE_PSRAM) {
+            uint32_t phys = e.page_number * ESP32S3_PAGE_SIZE +
+                            offset % ESP32S3_PAGE_SIZE;
+            uint32_t tag = phys / line_size;
+            ESP32S3CacheLine *set = s->timing_lines[tag % sets];
+            ESP32S3CacheLine *line = NULL, *victim = &set[0];
+            for (unsigned way = 0; way < 4; way++) {
+                if (set[way].valid && set[way].tag == tag) {
+                    line = &set[way];
+                    break;
+                }
+                if (!set[way].valid ||
+                    (victim->valid && set[way].age < victim->age)) {
+                    victim = &set[way];
+                }
+            }
+            if (!line) {
+                /* The requested word resumes the CPU before the refill tail
+                 * releases the bus. Hits overlap that tail and any queued
+                 * dirty writeback; the next miss waits for bus ownership. */
+                ns += MAX(s->bus_until_ns - now - (int64_t)ns, 0);
+                ns += s->psram_read_ns +
+                      ((uint64_t)s->psram_read_cycles * 1000000000 + cpu_hz - 1) / cpu_hz;
+                s->bus_until_ns = now + ns + s->psram_read_tail_ns;
+                if (victim->valid && victim->dirty) {
+                    s->bus_until_ns += s->psram_write_ns +
+                        ((uint64_t)s->psram_write_cycles * 1000000000 + cpu_hz - 1) / cpu_hz;
+                }
+                line = victim;
+                *line = (ESP32S3CacheLine) { .tag = tag, .valid = true };
+            }
+            line->dirty |= write;
+            line->age = ++s->timing_age;
+        }
+        a = (a & ~(uint64_t)(line_size - 1)) + line_size;
+    }
+    return ns;
+}
+
+static void esp32s3_cache_sync(ESP32S3CacheState *s, uint32_t value)
+{
+    uint32_t addr = s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_SYNC_ADDR)];
+    uint32_t size = s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_SYNC_SIZE)] & 0x7fffff;
+    unsigned line_size = 16 << MIN((s->regs[0] >> 3) & 3, 2);
+
+    uint64_t begin = addr & ~(line_size - 1);
+    uint64_t end = MIN(begin + (uint64_t)size * line_size,
+                       ESP32S3_DCACHE_BASE + ESP32S3_EXTMEM_REGION_SIZE);
+    for (uint64_t a = MAX(begin, ESP32S3_DCACHE_BASE); a < end; a += line_size) {
+        uint32_t off = a - ESP32S3_DCACHE_BASE;
+        ESP32S3MMUEntry e = s->mmu[off / ESP32S3_PAGE_SIZE];
+        if (e.invalid || e.type != ESP32S3_MMU_TYPE_PSRAM) {
+            continue;
+        }
+        uint32_t tag = (e.page_number * ESP32S3_PAGE_SIZE +
+                        off % ESP32S3_PAGE_SIZE) / line_size;
+        unsigned sets = ((s->regs[0] & 4) ? 65536 : 32768) / (4 * line_size);
+        for (unsigned way = 0; way < 4; way++) {
+            ESP32S3CacheLine *line = &s->timing_lines[tag % sets][way];
+            if (line->valid && line->tag == tag) {
+                if (value & 6) {
+                    line->dirty = false;
+                }
+                if (value & 1) {
+                    line->valid = false;
+                }
+            }
+        }
+    }
 }
 
 
@@ -130,7 +222,7 @@ static uint64_t esp32s3_cache_read(void *opaque, hwaddr addr, unsigned int size)
 
     switch(addr) {
         case A_EXTMEM_DCACHE_CTRL:
-            r = s->dcache_enable;
+            r = s->regs[index];
             break;
         case A_EXTMEM_DCACHE_CTRL1:
             r = s->regs[index];
@@ -194,7 +286,7 @@ static uint64_t esp32s3_cache_read(void *opaque, hwaddr addr, unsigned int size)
         case A_EXTMEM_DCACHE_SYNC_SIZE:
             break;
 
-        case ESP32S3_MMU_TABLE_OFFSET ... (ESP32S3_MMU_TABLE_OFFSET + ESP32S3_MMU_SIZE):
+        case ESP32S3_MMU_TABLE_OFFSET ... (ESP32S3_MMU_TABLE_OFFSET + ESP32S3_MMU_SIZE - 1):
 #if CACHE_WARNING
             info_report("[CACHE] Reading 0x%lx (0x%lx)", addr, r);
 #endif
@@ -224,7 +316,16 @@ static void esp32s3_cache_write(void *opaque, hwaddr addr, uint64_t value,
     if (index < ESP32S3_CACHE_REG_COUNT) {
         switch (addr) {
             case A_EXTMEM_DCACHE_CTRL:
+                if ((s->regs[index] ^ value) & 0x1c) {
+                    memset(s->timing_lines, 0, sizeof(s->timing_lines));
+                }
+                s->regs[index] = value & 0x1d;
                 s->dcache_enable = value & 1;
+                break;
+            case A_EXTMEM_DCACHE_SYNC_CTRL:
+                esp32s3_cache_sync(s, value);
+                /* Invalidate/writeback commands complete synchronously. */
+                s->regs[index] = 8;
                 break;
             case A_EXTMEM_DCACHE_CTRL1:
                 /* CTRL1 gates each core's bus; it does not disable cache. */
@@ -258,7 +359,8 @@ static void esp32s3_cache_write(void *opaque, hwaddr addr, uint64_t value,
                 s->regs[index] = value;
                 break;
         }
-    } else if (addr >= ESP32S3_MMU_TABLE_OFFSET) {
+    } else if (addr >= ESP32S3_MMU_TABLE_OFFSET &&
+               addr < ESP32S3_MMU_TABLE_OFFSET + ESP32S3_MMU_SIZE) {
         esp32s3_write_mmu_value(s, addr - ESP32S3_MMU_TABLE_OFFSET, value);
     }
 
@@ -278,6 +380,9 @@ static void esp32s3_cache_reset_hold(Object *obj, ResetType type)
 {
     ESP32S3CacheState *s = ESP32S3_CACHE(obj);
     memset(s->regs, 0, ESP32S3_CACHE_REG_COUNT * sizeof(*s->regs));
+    memset(s->timing_lines, 0, sizeof(s->timing_lines));
+    s->timing_age = 0;
+    s->bus_until_ns = 0;
     s->dcache_enable = false;
     s->icache_enable = false;
     s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_CTRL1)] = 3;
@@ -358,11 +463,19 @@ static void esp32s3_cache_init(Object *obj)
 
 static void esp32s3_cache_class_init(ObjectClass *klass, const void *data)
 {
+    static const Property props[] = {
+        DEFINE_PROP_UINT32("psram-read-ns", ESP32S3CacheState, psram_read_ns, 0),
+        DEFINE_PROP_UINT32("psram-write-ns", ESP32S3CacheState, psram_write_ns, 0),
+        DEFINE_PROP_UINT32("psram-read-tail-ns", ESP32S3CacheState, psram_read_tail_ns, 0),
+        DEFINE_PROP_UINT32("psram-read-cycles", ESP32S3CacheState, psram_read_cycles, 0),
+        DEFINE_PROP_UINT32("psram-write-cycles", ESP32S3CacheState, psram_write_cycles, 0),
+    };
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     rc->phases.hold = esp32s3_cache_reset_hold;
     dc->realize = esp32s3_cache_realize;
+    device_class_set_props(dc, props);
 }
 
 static const TypeInfo esp32s3_cache_info = {

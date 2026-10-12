@@ -194,3 +194,4 @@ DEF_HELPER_2(st_qacc_x_h_32_ip_s3, i32, env, i32)
 
 DEF_HELPER_4(ld_qacc_x_l_128_ip_s3, void, env, i32, i32, i64)
 DEF_HELPER_3(st_qacc_x_l_128_ip_s3, i64, env, i32, i32)
+DEF_HELPER_4(memory_access, void, env, i32, i32, i32)

@@ -91,6 +91,12 @@ _Static_assert(sizeof(ESP32S3MMUEntry) == sizeof(uint32_t), "MMU Entry size must
 #define ESP32S3_CACHE_REG_IDX(addr) ((addr) / sizeof(uint32_t))
 
 typedef struct {
+    uint32_t tag;
+    uint64_t age;
+    bool valid, dirty;
+} ESP32S3CacheLine;
+
+typedef struct {
     SysBusDevice parent;
     BlockBackend *flash_blk;
     SsiPsramState *psram;
@@ -116,7 +122,16 @@ typedef struct {
     ESP32S3XtsAesState *xts_aes;
     /* Define the MMU itself as an array, it shall be accessible from address ESP32S3_MMU_TABLE */
     ESP32S3MMUEntry mmu[ESP32S3_MMU_TABLE_ENTRY_COUNT];
+    /* Timing tags only: guest data remains in the coherent RAM region. */
+    ESP32S3CacheLine timing_lines[1024][4];
+    uint64_t timing_age;
+    int64_t bus_until_ns;
+    uint32_t psram_read_ns, psram_write_ns, psram_read_tail_ns;
+    uint32_t psram_read_cycles, psram_write_cycles;
 } ESP32S3CacheState;
+
+uint64_t esp32s3_cache_access_ns(void *opaque, uint32_t addr,
+                                unsigned size, bool write, int64_t now, uint32_t cpu_hz);
 
 /* Assert that the size of the MMU table in the structure is of size ESP32S3_MMU_SIZE */
 _Static_assert(sizeof(((ESP32S3CacheState*)0)->mmu) == ESP32S3_MMU_SIZE,
@@ -161,7 +176,7 @@ REG32(EXTMEM_DCACHE_LOCK_SIZE, 0x024)
     FIELD(EXTMEM_DCACHE_LOCK_SIZE, LOCK_SIZE, 0, 16)
 
 REG32(EXTMEM_DCACHE_SYNC_CTRL, 0x028)
-    FIELD(EXTMEM_DCACHE_SYNC_CTRL, SYNC_DONE, 1, 1)
+    FIELD(EXTMEM_DCACHE_SYNC_CTRL, SYNC_DONE, 3, 1)
     FIELD(EXTMEM_DCACHE_SYNC_CTRL, INVALIDATE_ENA, 0, 1)
 
 REG32(EXTMEM_DCACHE_SYNC_ADDR, 0x02C)

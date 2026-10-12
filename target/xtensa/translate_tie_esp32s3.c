@@ -585,7 +585,7 @@ static void translate_vld_64_s3(DisasContext *dc, const OpcodeArg arg[], const u
 
     TCGv_i64 data = tcg_temp_new_i64();
     // Read data from memory
-    tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+    gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
     TCGv_i32 index;
     index = tcg_constant_i32((uint32_t)arg[0].imm);
@@ -623,7 +623,7 @@ static void translate_vldhbc_s3(DisasContext *dc, const OpcodeArg arg[], const u
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 index;
         index = tcg_constant_i32((uint32_t)arg[i].imm);
@@ -665,7 +665,7 @@ static void translate_vldbc_s3(DisasContext *dc, const OpcodeArg arg[], const ui
     }
     TCGv_i32 data = tcg_temp_new_i32();
     // Read data from memory
-    tcg_gen_qemu_ld_i32(data, addr, dc->cring, mop);
+    gen_timed_ld_i32(dc, data, addr, dc->cring, mop);
 
     gen_helper_vldbc_s3(tcg_env, index, data, ldbc_type);
 
@@ -704,7 +704,7 @@ static void translate_vst_64_s3(DisasContext *dc, const OpcodeArg arg[], const u
     TCGv_i32 low_high = tcg_constant_i32(par[1]);
 
     gen_helper_vst_64_s3(data, tcg_env, index, low_high);
-    tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+    gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -738,7 +738,7 @@ static void translate_vld_128_s3(DisasContext *dc, const OpcodeArg arg[], const 
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 index;
         index = tcg_constant_i32((uint32_t)arg[0].imm);
@@ -780,7 +780,7 @@ static void translate_ld_qr_s3(DisasContext *dc, const OpcodeArg arg[], const ui
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 index;
         index = tcg_constant_i32((uint32_t)arg[0].imm);
@@ -809,7 +809,7 @@ static void translate_ld_usar_128_s3(DisasContext *dc, const OpcodeArg arg[], co
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 index;
         index = tcg_constant_i32((uint32_t)arg[0].imm);
@@ -856,7 +856,7 @@ static void translate_ldqa_128_s3(DisasContext *dc, const OpcodeArg arg[], const
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 data_type;
         data_type = tcg_constant_i32((uint32_t)par[1]);
@@ -904,7 +904,7 @@ static void translate_vst_128_s3(DisasContext *dc, const OpcodeArg arg[], const 
         TCGv_i32 low_high = tcg_constant_i32(i);
 
         gen_helper_vst_64_s3(data, tcg_env, index, low_high);
-        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+        gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -946,7 +946,7 @@ static void translate_st_qr_s3(DisasContext *dc, const OpcodeArg arg[], const ui
         TCGv_i32 low_high = tcg_constant_i32(i);
 
         gen_helper_vst_64_s3(data, tcg_env, index, low_high);
-        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+        gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -1018,8 +1018,8 @@ static void translate_fft_vst_decp_s3(DisasContext *dc, const OpcodeArg arg[], c
     low_high = tcg_constant_i32(1);
     gen_helper_fft_vst_64_s3(data_high, tcg_env, qv, sar2, low_high);
 
-    tcg_gen_qemu_st_i64(data_low, addr_low, dc->cring, mop_low);
-    tcg_gen_qemu_st_i64(data_high, addr_high, dc->cring, mop_high);
+    gen_timed_st_i64(dc, data_low, addr_low, dc->cring, mop_low);
+    gen_timed_st_i64(dc, data_high, addr_high, dc->cring, mop_high);
 
 
 
@@ -1047,7 +1047,7 @@ static void translate_ldf_128_ip(DisasContext *dc, const OpcodeArg arg[], const 
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_o1(arg, arg32, 3 - i);
-        tcg_gen_qemu_ld_tl(arg32[3 - i].out, addr, dc->cring, mop);
+        gen_timed_ld_i32(dc, arg32[3 - i].out, addr, dc->cring, mop);
         put_f32_o1(arg, arg32, 3 - i);
 
     }
@@ -1071,7 +1071,7 @@ static void translate_stf_128_ip(DisasContext *dc, const OpcodeArg arg[], const 
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_i1(arg, arg32, 3 - i);
-        tcg_gen_qemu_st_tl(arg32[3 - i].in, addr, dc->cring, mop);
+        gen_timed_st_i32(dc, arg32[3 - i].in, addr, dc->cring, mop);
         put_f32_i1(arg, arg32, 3 - i);
 
     }
@@ -1095,7 +1095,7 @@ static void translate_ldf_64_ip(DisasContext *dc, const OpcodeArg arg[], const u
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_o1(arg, arg32, 1 - i);
-        tcg_gen_qemu_ld_tl(arg32[1 - i].out, addr, dc->cring, mop);
+        gen_timed_ld_i32(dc, arg32[1 - i].out, addr, dc->cring, mop);
         put_f32_o1(arg, arg32, 1 - i);
 
     }
@@ -1119,7 +1119,7 @@ static void translate_stf_64_ip(DisasContext *dc, const OpcodeArg arg[], const u
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_i1(arg, arg32, 1 - i);
-        tcg_gen_qemu_st_tl(arg32[1 - i].in, addr, dc->cring, mop);
+        gen_timed_st_i32(dc, arg32[1 - i].in, addr, dc->cring, mop);
         put_f32_i1(arg, arg32, 1 - i);
 
     }
@@ -1144,7 +1144,7 @@ static void translate_ldf_128_xp(DisasContext *dc, const OpcodeArg arg[],
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_o1(arg, arg32, 3 - i);
-        tcg_gen_qemu_ld_tl(arg32[3 - i].out, addr, dc->cring, mop);
+        gen_timed_ld_i32(dc, arg32[3 - i].out, addr, dc->cring, mop);
         put_f32_o1(arg, arg32, 3 - i);
 
     }
@@ -1168,7 +1168,7 @@ static void translate_stf_128_xp(DisasContext *dc, const OpcodeArg arg[], const 
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_i1(arg, arg32, 3 - i);
-        tcg_gen_qemu_st_tl(arg32[3 - i].in, addr, dc->cring, mop);
+        gen_timed_st_i32(dc, arg32[3 - i].in, addr, dc->cring, mop);
         put_f32_i1(arg, arg32, 3 - i);
 
     }
@@ -1192,7 +1192,7 @@ static void translate_ldf_64_xp(DisasContext *dc, const OpcodeArg arg[], const u
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
             get_f32_o1(arg, arg32, 1-i);
-            tcg_gen_qemu_ld_tl(arg32[1-i].out, addr, dc->cring, mop);
+            gen_timed_ld_i32(dc, arg32[1-i].out, addr, dc->cring, mop);
             put_f32_o1(arg, arg32, 1-i);
 
     }
@@ -1216,7 +1216,7 @@ static void translate_stf_64_xp(DisasContext *dc, const OpcodeArg arg[], const u
         mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
         get_f32_i1(arg, arg32, 1-i);
-        tcg_gen_qemu_st_tl(arg32[1-i].in, addr, dc->cring, mop);
+        gen_timed_st_i32(dc, arg32[1-i].in, addr, dc->cring, mop);
         put_f32_i1(arg, arg32, 1-i);
 
     }
@@ -1563,7 +1563,7 @@ static void store_qreg_to_memory(DisasContext *dc, const OpcodeArg arg[])
         TCGv_i32 low_high = tcg_constant_i32(i);
 
         gen_helper_vst_64_s3(data, tcg_env, index, low_high);
-        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+        gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -1586,7 +1586,7 @@ static void load_qreg_from_memory(DisasContext *dc, const OpcodeArg arg[])
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 index;
         index = tcg_constant_i32((uint32_t)arg[0].imm);
@@ -2744,7 +2744,7 @@ static void translate_srcq_128_st_s3(DisasContext *dc, const OpcodeArg arg[], co
         TCGv_i32 low_high = tcg_constant_i32(i);
 
         gen_helper_srcq_64_rd_s3(data, tcg_env, qs0, qs1, low_high);
-        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+        gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -2915,11 +2915,11 @@ static void translate_r2bf_st_s3(DisasContext *dc, const OpcodeArg arg[], const 
 
     gen_helper_r2bf_st_low_s3(data_low, tcg_env, qa0, qx, qy, sar4);
     mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr_low);
-    tcg_gen_qemu_st_i64(data_low, addr_low, dc->cring, mop);
+    gen_timed_st_i64(dc, data_low, addr_low, dc->cring, mop);
 
     gen_helper_r2bf_st_high_s3(data_high, tcg_env, qa0, qx, qy, sar4);
     mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr_high);
-    tcg_gen_qemu_st_i64(data_high, addr_high, dc->cring, mop);
+    gen_timed_st_i64(dc, data_high, addr_high, dc->cring, mop);
 
     tcg_gen_addi_i32(arg[3].out, arg[3].in, 16);
 
@@ -3276,7 +3276,7 @@ static void translate_fft_cmul_st_s3(DisasContext *dc, const OpcodeArg arg[], co
     }
 
     mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr_low);
-    tcg_gen_qemu_st_i64(data_low, addr_low, dc->cring, mop);
+    gen_timed_st_i64(dc, data_low, addr_low, dc->cring, mop);
 
     if (dc->sar_m32_5bit)
     {
@@ -3287,7 +3287,7 @@ static void translate_fft_cmul_st_s3(DisasContext *dc, const OpcodeArg arg[], co
     }
 
     mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr_high);
-    tcg_gen_qemu_st_i64(data_high, addr_high, dc->cring, mop);
+    gen_timed_st_i64(dc, data_high, addr_high, dc->cring, mop);
 
 
 
@@ -3569,10 +3569,10 @@ static void translate_fft_ams_s16_st_incp(DisasContext *dc, const OpcodeArg arg[
     tcg_gen_addi_i32(addr_high, addr_high, 8);
 
     mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr_low);
-    tcg_gen_qemu_st_i64(data_low, addr_low, dc->cring, mop);
+    gen_timed_st_i64(dc, data_low, addr_low, dc->cring, mop);
 
     mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr_high);
-    tcg_gen_qemu_st_i64(data_high, addr_high, dc->cring, mop);
+    gen_timed_st_i64(dc, data_high, addr_high, dc->cring, mop);
 
 
 
@@ -3672,9 +3672,9 @@ static void translate_fft_ams_s16_ld_incp_uaup(DisasContext *dc, const OpcodeArg
 
         // Read data from memory
         TCGv_i64 data_low = tcg_temp_new_i64();
-        tcg_gen_qemu_ld_i64(data_low, addr_low, dc->cring, mop_low);
+        gen_timed_ld_i64(dc, data_low, addr_low, dc->cring, mop_low);
         TCGv_i64 data_high = tcg_temp_new_i64();
-        tcg_gen_qemu_ld_i64(data_high, addr_high, dc->cring, mop_high);
+        gen_timed_ld_i64(dc, data_high, addr_high, dc->cring, mop_high);
 
         TCGv_i32 qu = tcg_constant_i32((uint32_t)arg[0].imm);
 
@@ -3830,7 +3830,7 @@ static void translate_ld_accx_ip_s3(DisasContext *dc, const OpcodeArg arg[], con
 
     TCGv_i64 data = tcg_temp_new_i64();
     // Read data from memory
-    tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+    gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
     gen_helper_ld_accx_s3(tcg_env, data);
 
@@ -3870,7 +3870,7 @@ static void translate_ld_qacc_x_h_32_ip_s3(DisasContext *dc, const OpcodeArg arg
 
     TCGv_i32 data = tcg_temp_new_i32();
     // Read data from memory
-    tcg_gen_qemu_ld_i32(data, addr, dc->cring, mop);
+    gen_timed_ld_i32(dc, data, addr, dc->cring, mop);
 
     gen_helper_ld_qacc_x_h_32_ip_s3(tcg_env, data, op_type);
 
@@ -3957,7 +3957,7 @@ static void translate_st_qacc_x_h_32_ip_s3(DisasContext *dc, const OpcodeArg arg
     TCGv_i32 data = tcg_temp_new_i32();
     gen_helper_st_qacc_x_h_32_ip_s3(data, tcg_env, op_type);
 
-    tcg_gen_qemu_st_i32(data, addr, dc->cring, mop);
+    gen_timed_st_i32(dc, data, addr, dc->cring, mop);
 
     tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
 
@@ -3985,7 +3985,7 @@ static void translate_st_qacc_x_l_128_ip_s3(DisasContext *dc, const OpcodeArg ar
 
         gen_helper_st_qacc_x_l_128_ip_s3(data, tcg_env, op_type, index);
 
-        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+        gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -4012,7 +4012,7 @@ static void translate_ld_qacc_x_l_128_ip_s3(DisasContext *dc, const OpcodeArg ar
 
         TCGv_i64 data = tcg_temp_new_i64();
         // Read data from memory
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 index = tcg_constant_i32(i);
 
@@ -4044,7 +4044,7 @@ static void translate_st_accx_ip_s3(DisasContext *dc, const OpcodeArg arg[], con
     TCGv_i64 data = tcg_temp_new_i64();
     gen_helper_st_accx_s3(data, tcg_env);
 
-    tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+    gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
     tcg_gen_addi_i32(arg[0].out, arg[0].in, arg[1].imm);
 
@@ -4070,7 +4070,7 @@ static void translate_ld_ua_state_ip_s3(DisasContext *dc, const OpcodeArg arg[],
         MemOp mop = gen_load_store_alignment(dc, MO_64 | MO_TE, addr);
 
         TCGv_i64 data = tcg_temp_new_i64();
-        tcg_gen_qemu_ld_i64(data, addr, dc->cring, mop);
+        gen_timed_ld_i64(dc, data, addr, dc->cring, mop);
 
         TCGv_i32 low_high = tcg_constant_i32(i);
         gen_helper_ld_ua_state_s3(tcg_env, data, low_high);
@@ -4104,7 +4104,7 @@ static void translate_st_ua_state_ip_s3(DisasContext *dc, const OpcodeArg arg[],
         TCGv_i32 low_high = tcg_constant_i32(i);
         gen_helper_st_ua_state_s3(data, tcg_env, low_high);
 
-        tcg_gen_qemu_st_i64(data, addr, dc->cring, mop);
+        gen_timed_st_i64(dc, data, addr, dc->cring, mop);
 
 
 
@@ -4140,7 +4140,7 @@ static void translate_ldxq_32_s3(DisasContext *dc, const OpcodeArg arg[], const 
     MemOp mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
 
     TCGv_i32 data = tcg_temp_new_i32();
-    tcg_gen_qemu_ld_i32(data, addr, dc->cring, mop);
+    gen_timed_ld_i32(dc, data, addr, dc->cring, mop);
 
     TCGv_i32 qu_idx = tcg_constant_i32((uint32_t)arg[0].imm);
     TCGv_i32 sel4_val = tcg_constant_i32(sel4);
@@ -4193,7 +4193,7 @@ static void translate_stxq_32_s3(DisasContext *dc, const OpcodeArg arg[], const 
     tcg_gen_andi_i32(addr, addr, 0xfffffffc);
 
     MemOp mop = gen_load_store_alignment(dc, MO_32 | MO_TE, addr);
-    tcg_gen_qemu_st_i32(data, addr, dc->cring, mop);
+    gen_timed_st_i32(dc, data, addr, dc->cring, mop);
 
 
 

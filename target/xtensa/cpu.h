@@ -569,6 +569,10 @@ struct ArchCPU {
     uint8_t cost_branch, cost_call, cost_fpu, cost_fma;
     bool cost_clock_scaling;
     uint32_t cost_cpu_hz;
+    /* Optional board cache timing, called after successful data accesses. */
+    uint64_t (*memory_access_ns)(void *opaque, uint32_t addr,
+                                 unsigned size, bool write, int64_t now, uint32_t cpu_hz);
+    void *memory_access_opaque;
 };
 
 /**

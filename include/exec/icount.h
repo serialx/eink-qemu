@@ -43,6 +43,12 @@ extern ICountMode use_icount;
  */
 void icount_update(CPUState *cpu);
 
+/* Charge a synchronous device stall in ns and leave translated code at the
+ * next TB boundary so the scheduler can service newly expired deadlines. */
+void icount_add_stall(CPUState *cpu, uint64_t ns);
+/* vCPU-only timing snapshot, including the prepaid current TB. No I/O. */
+int64_t icount_get_progress_ns(CPUState *cpu);
+
 /* get raw icount value */
 int64_t icount_get_raw(void);
 

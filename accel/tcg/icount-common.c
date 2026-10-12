@@ -104,6 +104,36 @@ void icount_update(CPUState *cpu)
                          &timers_state.vm_clock_lock);
 }
 
+void icount_add_stall(CPUState *cpu, uint64_t ns)
+{
+    if (!icount_enabled() || !ns) {
+        return;
+    }
+    /* Keep runtime stalls separate from the prepaid TB instruction budget.
+     * Exception/MMIO refunds therefore cannot refund a completed RAM access.
+     * Nanoseconds also remain independent of the configured icount shift. */
+    seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                       &timers_state.vm_clock_lock);
+    qatomic_set(&timers_state.qemu_icount_bias,
+                timers_state.qemu_icount_bias + ns);
+    seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                         &timers_state.vm_clock_lock);
+    cpu_exit(cpu);
+}
+
+int64_t icount_get_progress_ns(CPUState *cpu)
+{
+    unsigned start;
+    int64_t ns;
+    do {
+        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
+        ns = qatomic_read(&timers_state.qemu_icount_bias) +
+             icount_to_ns(qatomic_read(&timers_state.qemu_icount) +
+                          icount_get_executed(cpu));
+    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
+    return ns;
+}
+
 static int64_t icount_get_raw_locked(void)
 {
     CPUState *cpu = current_cpu;

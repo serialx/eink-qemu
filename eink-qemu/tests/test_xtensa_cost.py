@@ -15,7 +15,8 @@ CC = Path(os.environ.get('XTENSA_CC', Path.home() / '.platformio/packages/toolch
 
 @unittest.skipUnless(QEMU.exists() and CC.exists(), 'requires Xtensa QEMU and compiler')
 class XtensaCosts(unittest.TestCase):
-    def execute(self, operations, props=(), clock=False, single=False):
+    def execute(self, operations, props=(), clock=False, single=False, setup=(), machine="esp32s3",
+                globals=(), iterations=10000):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / 'probe.S'
             elf = Path(tmp) / 'probe.elf'
@@ -24,6 +25,7 @@ class XtensaCosts(unittest.TestCase):
                     'movi a2, 1', 'wsr a2, CPENABLE', 'rsync',
                     'movi a8, 0x3fc90000', 'movi a9, 0x60023004',
                     'movi a6, 0x3fc91000', 'movi a7, 0x60023044']
+            code += list(setup)
             for i, op in enumerate(operations):
                 if clock:
                     # Same function/TBs at 240, 160, 80 and XTAL 40 MHz.
@@ -31,7 +33,7 @@ class XtensaCosts(unittest.TestCase):
                              's32i a3, a2, 0', 'movi a3, 0x28400' if i<3 else 'movi a3, 0x28000',
                              's32i a3, a2, 0x50', 'memw']
                 code += ['movi a2, 0x40000000', 's32i a2, a9, 0', 'memw',
-                         'l32i a4, a9, 0x40', 'movi a10, 10000', 'movi a11, 17', 'movi a12, 3']
+                         'l32i a4, a9, 0x40', f'movi a10, {iterations}', 'movi a11, 17', 'movi a12, 3']
                 if clock:
                     code += ['call0 common_loop']
                 else:
@@ -45,10 +47,11 @@ class XtensaCosts(unittest.TestCase):
             subprocess.run([str(CC), '-nostdlib', '-Wl,-Ttext=0x40380000',
                             '-Wl,-e,_start', '-Wl,--no-relax', '-o', str(elf), str(src)],
                            check=True, capture_output=True)
-            cmd=[str(QEMU), '-L', str(ROOT/'pc-bios'), '-M', 'esp32s3', '-kernel', str(elf),
+            cmd=[str(QEMU), '-L', str(ROOT/'pc-bios'), '-M', machine, '-kernel', str(elf),
                  '-icount', 'shift=0,sleep=off', '-display', 'none', '-serial', 'none',
                  '-monitor', 'none', '-nic', 'none', '-qmp', 'stdio']
             for prop in props: cmd += ['-global', 'xtensa-cpu.'+prop]
+            for prop in globals: cmd += ['-global', prop]
             if single: cmd += ['-accel', 'tcg,one-insn-per-tb=on']
             with tempfile.TemporaryFile() as err:
                 p=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)

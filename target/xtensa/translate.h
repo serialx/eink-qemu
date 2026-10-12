@@ -31,12 +31,22 @@ struct DisasContext {
     uint32_t op_flags;
     unsigned cost_extra;
     uint32_t cost_pc;
+    bool memory_timing;
     xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
     xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];
 };
 
 /* Shared translation helpers for Xtensa CPU extensions. */
 extern TCGv_i32 cpu_SR[256];
+
+void gen_timed_ld_i32(DisasContext *dc, TCGv_i32 data,
+                         TCGv_i32 addr, int mmu, MemOp mop);
+void gen_timed_ld_i64(DisasContext *dc, TCGv_i64 data,
+                         TCGv_i32 addr, int mmu, MemOp mop);
+void gen_timed_st_i32(DisasContext *dc, TCGv_i32 data,
+                         TCGv_i32 addr, int mmu, MemOp mop);
+void gen_timed_st_i64(DisasContext *dc, TCGv_i64 data,
+                         TCGv_i32 addr, int mmu, MemOp mop);
 
 void gen_exception_cause(DisasContext *dc, uint32_t cause);
 MemOp gen_load_store_alignment(DisasContext *dc, MemOp mop, TCGv_i32 addr);

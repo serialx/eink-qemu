@@ -28,6 +28,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "cpu.h"
+#include "exec/icount.h"
 #include "exec/cputlb.h"
 #include "exec/target_page.h"
 #include "gdbstub/helpers.h"
@@ -333,3 +334,18 @@ void xtensa_runstall(CPUXtensaState *env, bool runstall)
     }
 }
 #endif /* !CONFIG_USER_ONLY */
+
+/* Timing callbacks never exit in the middle of an instruction. */
+void HELPER(memory_access)(CPUXtensaState *env, uint32_t addr,
+                           uint32_t size, uint32_t write)
+{
+#ifndef CONFIG_USER_ONLY
+    XtensaCPU *cpu = env_archcpu(env);
+    if (icount_enabled() && cpu->memory_access_ns) {
+        icount_add_stall(CPU(cpu), cpu->memory_access_ns(
+            cpu->memory_access_opaque, addr, size, write,
+            icount_get_progress_ns(CPU(cpu)),
+            cpu->cost_cpu_hz ? cpu->cost_cpu_hz : 240000000));
+    }
+#endif
+}
