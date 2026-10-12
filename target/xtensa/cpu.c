@@ -36,6 +36,7 @@
 #include "qemu/module.h"
 #include "migration/vmstate.h"
 #include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
 #include "accel/tcg/cpu-ops.h"
 #ifndef CONFIG_USER_ONLY
 #include "system/memory.h"
@@ -334,12 +335,28 @@ static const TCGCPUOps xtensa_tcg_ops = {
 #endif /* !CONFIG_USER_ONLY */
 };
 
+static const Property xtensa_cpu_properties[] = {
+    DEFINE_PROP_UINT8("cost-rom-ns", XtensaCPU, cost_rom_ns, 1),
+    DEFINE_PROP_UINT8("cost-sram-ns", XtensaCPU, cost_sram_ns, 1),
+    DEFINE_PROP_UINT8("cost-flash-ns", XtensaCPU, cost_flash_ns, 1),
+    DEFINE_PROP_UINT8("cost-load", XtensaCPU, cost_load, 0),
+    DEFINE_PROP_UINT8("cost-store", XtensaCPU, cost_store, 0),
+    DEFINE_PROP_UINT8("cost-mul", XtensaCPU, cost_mul, 0),
+    DEFINE_PROP_UINT8("cost-div", XtensaCPU, cost_div, 0),
+    DEFINE_PROP_UINT8("cost-branch", XtensaCPU, cost_branch, 0),
+    DEFINE_PROP_UINT8("cost-call", XtensaCPU, cost_call, 0),
+    DEFINE_PROP_UINT8("cost-fpu", XtensaCPU, cost_fpu, 0),
+    DEFINE_PROP_UINT8("cost-fma", XtensaCPU, cost_fma, 0),
+    DEFINE_PROP_BOOL("cost-clock-scaling", XtensaCPU, cost_clock_scaling, false),
+};
+
 static void xtensa_cpu_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     CPUClass *cc = CPU_CLASS(oc);
     XtensaCPUClass *xcc = XTENSA_CPU_CLASS(cc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    device_class_set_props(dc, xtensa_cpu_properties);
 
     device_class_set_parent_realize(dc, xtensa_cpu_realizefn,
                                     &xcc->parent_realize);

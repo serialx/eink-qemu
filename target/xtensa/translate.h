@@ -29,6 +29,8 @@ struct DisasContext {
     unsigned cpenable;
 
     uint32_t op_flags;
+    unsigned cost_extra;
+    uint32_t cost_pc;
     xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
     xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];
 };

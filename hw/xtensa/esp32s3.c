@@ -231,6 +231,8 @@ static void esp32s3_soc_reset(DeviceState *dev)
 
 static void esp32s3_cpu_stall(void* opaque, int n, int level)
 {
+    Esp32s3SocState *s = ESP32S3_SOC(opaque);
+    esp32s3_clock_set_cpu_stall(&s->clock, n, level);
 }
 
 static void esp32s3_clk_update(void* opaque, int n, int level)
@@ -740,6 +742,9 @@ static void esp32s3_machine_init(MachineState *machine)
 
     /* System clock realization */
     {
+        for (unsigned i = 0; i < ESP32S3_CPU_COUNT; i++) {
+            ss->clock.cpus[i] = CPU(&ss->cpu[i]);
+        }
         sysbus_realize(SYS_BUS_DEVICE(&ss->clock), &error_fatal);
         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ss->clock), 0);
         memory_region_add_subregion_overlap(sys_mem, DR_REG_SYSTEM_BASE, mr, 0);

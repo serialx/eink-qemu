@@ -43,6 +43,7 @@ class StockBootPeripherals(unittest.TestCase):
             '-chardev', f'pipe,id=qmp,path={monitor}',
             '-mon', 'chardev=qmp,mode=control',
             '-drive', f'file={flash},if=mtd,format=raw',
+            *getattr(self, 'extra_qemu_args', []),
         ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
             text=True, bufsize=1)
         self.addCleanup(self.stop)
@@ -153,6 +154,26 @@ class StockBootPeripherals(unittest.TestCase):
         self.write(source, 0xFFFFFFFF)
         self.assertEqual(self.read(div), 0xFFF)
         self.assertEqual(self.read(source), 0x1FFFFFFF)
+
+    def test_cpu_clock_registers(self):
+        for value in (2, 1, 0, 7, 0xFFFFFFFF):
+            self.write(0x600C0010, value)
+            self.assertEqual(self.read(0x600C0010), value & 0xFF)
+        for value in (40 << 12, (40 << 12) | 1, 0xFFFFFFFF):
+            self.write(0x600C0060, value)
+            self.assertEqual(self.read(0x600C0060), value & 0xFFFFF)
+
+    def test_pll_calibration_completes(self):
+        self.write(0x6000E040, 8)
+        self.assertEqual(self.read(0x6000E040), (1 << 24) | 8)
+        self.write(0x6000E040, 4)
+        self.assertEqual(self.read(0x6000E040), (1 << 24) | 4)
+
+    def test_second_core_gate(self):
+        self.assertEqual(self.read(0x600C0000), 4)
+        for value in (6, 2, 3, 0, 4):
+            self.write(0x600C0000, value)
+            self.assertEqual(self.read(0x600C0000), value)
 
     def test_bluetooth_exchange_memory(self):
         for addr, value in [(0x3FC00000, 0xA55A0123),

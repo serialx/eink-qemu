@@ -563,6 +563,12 @@ struct ArchCPU {
 
     CPUXtensaState env;
     Clock *clock;
+    /* Effective instruction costs at 240 MHz; one tick is 1 ns at shift=0. */
+    uint8_t cost_rom_ns, cost_sram_ns, cost_flash_ns;
+    uint8_t cost_load, cost_store, cost_mul, cost_div;
+    uint8_t cost_branch, cost_call, cost_fpu, cost_fma;
+    bool cost_clock_scaling;
+    uint32_t cost_cpu_hz;
 };
 
 /**

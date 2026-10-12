@@ -802,6 +802,41 @@ static int arg_copy_compare(const void *a, const void *b)
         -1 : (pa->resource > pb->resource ? 1 : 0);
 }
 
+static unsigned xtensa_opcode_cost(XtensaCPU *cpu, const char *name,
+                                   const XtensaOpcodeOps *ops)
+{
+    if (!ops) {
+        return 0;
+    }
+    if (ops->op_flags & XTENSA_OP_STORE) {
+        return cpu->cost_store;
+    }
+    if (ops->op_flags & XTENSA_OP_LOAD) {
+        return cpu->cost_load;
+    }
+    if (g_str_has_prefix(name, "call") || g_str_has_prefix(name, "ret")) {
+        return cpu->cost_call;
+    }
+    if ((ops->op_flags & XTENSA_OP_CONTROL_FLOW) ||
+        (name[0] == 'b' && !g_str_has_prefix(name, "break"))) {
+        return cpu->cost_branch;
+    }
+    if (g_str_has_prefix(name, "quos") || g_str_has_prefix(name, "quou") ||
+        g_str_has_prefix(name, "rems") || g_str_has_prefix(name, "remu")) {
+        return cpu->cost_div;
+    }
+    if (!strcmp(name, "madd.s") || !strcmp(name, "msub.s")) {
+        return cpu->cost_fma;
+    }
+    if (ops->coprocessor) {
+        return cpu->cost_fpu;
+    }
+    if (g_str_has_prefix(name, "mul")) {
+        return cpu->cost_mul;
+    }
+    return 0;
+}
+
 static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
 {
     xtensa_isa isa = dc->config->isa;
@@ -900,6 +935,9 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
         }
         ops = dc->config->opcode_ops[opc];
         slot_prop[slot].ops = ops;
+        /* FLIX slots execute together; charge the longest slot, not their sum. */
+        dc->cost_extra = MAX(dc->cost_extra,
+            xtensa_opcode_cost(env_archcpu(env), xtensa_opcode_name(isa, opc), ops));
 
         if (ops) {
             op_flags |= ops->op_flags;
@@ -1116,9 +1154,38 @@ static void xtensa_tr_init_disas_context(DisasContextBase *dcbase,
     init_sar_tracker(dc);
 }
 
+static unsigned xtensa_scaled_cost(XtensaCPU *cpu, unsigned ns)
+{
+    uint32_t hz = cpu->cost_clock_scaling && cpu->cost_cpu_hz ?
+                  cpu->cost_cpu_hz : 240000000;
+    return MIN(UINT16_MAX, DIV_ROUND_UP((uint64_t)ns * 240000000, hz));
+}
+
+static unsigned xtensa_tr_insn_cost(DisasContextBase *db, CPUState *cs)
+{
+    DisasContext *dc = container_of(db, DisasContext, base);
+    XtensaCPU *cpu = XTENSA_CPU(cs);
+    unsigned base = cpu->cost_sram_ns;
+    if (dc->cost_pc >= 0x42000000 && dc->cost_pc < 0x44000000) {
+        base = cpu->cost_flash_ns;
+    } else if (dc->cost_pc >= 0x40000000 && dc->cost_pc < 0x40080000) {
+        base = cpu->cost_rom_ns;
+    }
+    return xtensa_scaled_cost(cpu, MAX(1, base) + dc->cost_extra);
+}
+
 static void xtensa_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
+    XtensaCPU *xcpu = XTENSA_CPU(cpu);
+    unsigned extra = MAX(MAX(xcpu->cost_load, xcpu->cost_store),
+                         MAX(xcpu->cost_mul, xcpu->cost_div));
+    extra = MAX(extra, MAX(MAX(xcpu->cost_branch, xcpu->cost_call), xcpu->cost_fpu));
+    extra = MAX(extra, xcpu->cost_fma);
+    unsigned base = MAX(xcpu->cost_rom_ns,
+                        MAX(xcpu->cost_sram_ns, xcpu->cost_flash_ns));
+    dcbase->max_insns = MIN(dcbase->max_insns, UINT16_MAX /
+                           xtensa_scaled_cost(xcpu, MAX(1, base) + extra));
 
     if (dc->icount) {
         dc->next_icount = tcg_temp_new_i32();
@@ -1135,6 +1202,8 @@ static void xtensa_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     DisasContext *dc = container_of(dcbase, DisasContext, base);
     CPUXtensaState *env = cpu_env(cpu);
     vaddr page_start;
+    dc->cost_pc = dc->pc;
+    dc->cost_extra = 0;
 
     /* These two conditions only apply to the first insn in the TB,
        but this is the first TranslateOps hook that allows exiting.  */
@@ -1193,6 +1262,7 @@ static const TranslatorOps xtensa_translator_ops = {
     .tb_start           = xtensa_tr_tb_start,
     .insn_start         = xtensa_tr_insn_start,
     .translate_insn     = xtensa_tr_translate_insn,
+    .insn_cost          = xtensa_tr_insn_cost,
     .tb_stop            = xtensa_tr_tb_stop,
 };
 

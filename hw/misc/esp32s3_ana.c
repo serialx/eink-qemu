@@ -15,6 +15,10 @@ static uint64_t esp32s3_ana_read(void *opaque, hwaddr addr, unsigned int size)
     Esp32S3AnaState *s = ESP32S3_ANA(opaque);
     uint32_t r = s->mem[addr/4];
     switch(addr) {
+        case 0x40:
+          /* BBPLL calibration completes immediately in the analog stub. */
+          r |= BIT(24);
+          break;
         case 0x00:
         case 0x48:
           r= 0x00FFFFFF;

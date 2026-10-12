@@ -30,8 +30,8 @@
 /**
  * Values for SYSTEM_PLL_FREQ_SEL
  */
-#define ESP32S3_FREQ_SEL_PLL_480    0
-#define ESP32S3_FREQ_SEL_PLL_320    1
+#define ESP32S3_FREQ_SEL_PLL_480    1
+#define ESP32S3_FREQ_SEL_PLL_320    0
 
 /**
  * Values for SYSTEM_CPUPERIOD_SEL
@@ -47,6 +47,10 @@ typedef struct ESP32S3ClockState {
     /* Registers for clocks configuration and frequency dividers */
     uint32_t cpuperconf;
     uint32_t sysclk;
+    CPUState *cpus[2];
+    uint32_t cpu_hz;
+    uint32_t core1_control;
+    bool rtc_stalled[2];
     uint32_t bt_lpck_div_int;
     uint32_t bt_lpck_div_frac;
 
@@ -61,6 +65,8 @@ typedef struct ESP32S3ClockState {
 
     uint32_t sys_ext_dev_enc_dec_ctrl;
 } ESP32S3ClockState;
+
+void esp32s3_clock_set_cpu_stall(ESP32S3ClockState *s, unsigned core, bool stalled);
 
 typedef struct ESP32S3ClockClass {
     SysBusDeviceClass parent_class;

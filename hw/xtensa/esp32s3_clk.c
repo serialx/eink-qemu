@@ -18,9 +18,79 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/xtensa/esp32s3_clk.h"
 #include "hw/xtensa/esp32s3_clk_defs.h"
+#include "cpu.h"
+#include "exec/tb-flush.h"
+#include "system/cpu-timers.h"
 
 #define CLOCK_DEBUG      0
 #define CLOCK_WARNING    0
+
+void esp32s3_clock_set_cpu_stall(ESP32S3ClockState *s, unsigned core, bool stalled)
+{
+    s->rtc_stalled[core] = stalled;
+    if (s->cpus[core]) {
+        bool gated = core == 1 &&
+                     ((s->core1_control & 5) || !(s->core1_control & 2));
+        XtensaCPU *cpu = XTENSA_CPU(s->cpus[core]);
+        if (cpu->env.runstall != (stalled || gated)) {
+            xtensa_runstall(&cpu->env, stalled || gated);
+        }
+    }
+}
+
+static void esp32s3_clock_update(ESP32S3ClockState *s)
+{
+    unsigned source = FIELD_EX32(s->sysclk, SYSTEM_SYSCLK_CONF, SOC_CLK_SEL);
+    unsigned divider = FIELD_EX32(s->sysclk, SYSTEM_SYSCLK_CONF, PRE_DIV_CNT) + 1;
+    unsigned period = FIELD_EX32(s->cpuperconf, SYSTEM_CPU_PER_CONF, CPUPERIOD_SEL);
+    uint32_t hz;
+
+    switch (source) {
+    case ESP32S3_CLK_SEL_PLL:
+        if (period > 2) {
+            return;
+        }
+        hz = (period + 1) * 80000000;
+        break;
+    case ESP32S3_CLK_SEL_XTAL:
+        hz = 40000000 / divider;
+        break;
+    case ESP32S3_CLK_SEL_RCFAST:
+        hz = 17500000 / divider;
+        break;
+    default:
+        return;
+    }
+    if (hz == s->cpu_hz) {
+        return;
+    }
+    s->cpu_hz = hz;
+    for (unsigned i = 0; i < ARRAY_SIZE(s->cpus); i++) {
+        if (!s->cpus[i]) {
+            continue;
+        }
+        XtensaCPU *cpu = XTENSA_CPU(s->cpus[i]);
+        CPUXtensaState *env = &cpu->env;
+        uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        /* Preserve CCOUNT at the switch, then count at the new frequency. */
+        env->ccount_base += clock_ns_to_ticks(cpu->clock, now - env->time_base);
+        env->time_base = env->ccount_time = now;
+        env->sregs[CCOUNT] = env->ccount_base;
+        clock_set_hz(cpu->clock, hz);
+        for (unsigned j = 0; j < env->config->nccompare; j++) {
+            if (timer_pending(env->ccompare[j].timer)) {
+                uint32_t ticks = env->sregs[CCOMPARE + j] - env->sregs[CCOUNT];
+                timer_mod_ns(env->ccompare[j].timer, now +
+                             clock_ticks_to_ns(cpu->clock, ticks ? ticks : (1ULL << 32)));
+            }
+        }
+        cpu->cost_cpu_hz = hz;
+        if (cpu->cost_clock_scaling) {
+            queue_tb_flush(s->cpus[i]);
+            cpu_interrupt(s->cpus[i], CPU_INTERRUPT_EXITTB);
+        }
+    }
+}
 
 static uint32_t esp32s3_read_cpu_intr(ESP32S3ClockState *s, uint32_t index)
 {
@@ -51,6 +121,9 @@ static uint64_t esp32s3_clock_read(void *opaque, hwaddr addr, unsigned int size)
     uint64_t r = 0;
 
     switch(addr) {
+        case A_SYSTEM_CORE_1_CONTROL_0_REG:
+            r = s->core1_control;
+            break;
         case A_SYSTEM_CORE_1_CONTROL_1_REG:
                 r = s->app_cpu_addr;
             break;
@@ -90,6 +163,21 @@ static void esp32s3_clock_write(void *opaque, hwaddr addr, uint64_t value,
     ESP32S3ClockState *s = ESP32S3_CLOCK(opaque);
 
     switch(addr) {
+        case A_SYSTEM_CORE_1_CONTROL_0_REG:
+            if ((value & 4) && !(s->core1_control & 4) && s->cpus[1]) {
+                cpu_reset(s->cpus[1]);
+            }
+            s->core1_control = value & 7;
+            esp32s3_clock_set_cpu_stall(s, 1, s->rtc_stalled[1]);
+            break;
+        case A_SYSTEM_CPU_PER_CONF:
+            s->cpuperconf = value & 0xff;
+            esp32s3_clock_update(s);
+            break;
+        case A_SYSTEM_SYSCLK_CONF:
+            s->sysclk = value & 0xfffff;
+            esp32s3_clock_update(s);
+            break;
         case A_SYSTEM_BT_LPCK_DIV_INT:
             s->bt_lpck_div_int = value & R_SYSTEM_BT_LPCK_DIV_INT_BT_LPCK_DIV_NUM_MASK;
             break;
@@ -125,6 +213,10 @@ static const MemoryRegionOps esp32s3_clock_ops = {
 static void esp32s3_clock_reset_hold(Object *obj, ResetType type)
 {
     ESP32S3ClockState *s = ESP32S3_CLOCK(obj);
+    s->core1_control = 4;
+    for (unsigned i = 0; i < ARRAY_SIZE(s->cpus); i++) {
+        esp32s3_clock_set_cpu_stall(s, i, false);
+    }
     s->bt_lpck_div_int = 255;
     s->bt_lpck_div_frac = R_SYSTEM_BT_LPCK_DIV_FRAC_LPCLK_SEL_8M_MASK |
                         (1 << R_SYSTEM_BT_LPCK_DIV_FRAC_BT_LPCK_DIV_A_SHIFT) | 1;
@@ -137,6 +229,7 @@ static void esp32s3_clock_reset_hold(Object *obj, ResetType type)
     /* Divider for PLL clock and APB  frequency */
     s->cpuperconf = (ESP32S3_PERIOD_SEL_80 << R_SYSTEM_CPU_PER_CONF_CPUPERIOD_SEL_SHIFT) |
                     (ESP32S3_FREQ_SEL_PLL_480 << R_SYSTEM_CPU_PER_CONF_PLL_FREQ_SEL_SHIFT);
+    esp32s3_clock_update(s);
 
     /* Initialize the IRQs */
     s->levels = 0;
