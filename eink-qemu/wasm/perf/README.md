@@ -164,3 +164,39 @@ RISC-V bare-metal GCC and `WASM_BUILD_DIR` to the default Wasm build. This
 container requires `ASAN_OPTIONS=detect_leaks=0` for the panel test; address and
 undefined-behavior checks remain enabled, but leak detection was not tested.
 Browser and Apple-host performance were not measured in this series.
+
+### Further Node measurements: interrupt notifications
+
+The next pass compares `5c659ab024` with `ea5a49ceda` on the same i3-N305,
+Node version and two-book X3 fixture. Three interleaved pairs use fresh image
+copies, accurate timing, `sleep=off` and no profiler during timing runs.
+
+| Node phase | Before | After | Time reduction |
+| --- | ---: | ---: | ---: |
+| Home | 4.541 s | 4.361 s | 4.0% |
+| Home to settled | 3.624 s | 3.158 s | 12.9% |
+| Settled, from launch | 8.121 s | 7.479 s | 7.9% |
+
+These are independent phase medians. The settled pairs are `8.121/7.725`,
+`8.213/7.431`, and `8.092/7.479` seconds. All six runs match the preceding
+native reference's panel hash and all five guest wait lines exactly.
+
+The C3 interrupt matrix now tracks the last level sent to each CPU line.
+Threshold changes and shared-source updates notify the CPU only on a level
+transition. Source lookup scans asserted input bits, with masked priorities
+rejected first. Reset still lowers every output explicitly. Separate Node
+profiles confirm a substantial reduction in interrupt-dispatch samples.
+This improves the X3 device model in both runtimes; no extra Node flags are
+needed, and it does not change the X4 Pro interrupt model.
+
+A follow-up that computed the entire output bitmap on threshold changes
+improved settled time by only 0.4% and slightly worsened Home time in three
+direct pairs. It was discarded. The retained variant and its measurements
+are under `build-wasm/evidence/amd64-node2/matrix{,-wasm}/`; the additional
+bitmap experiment is in `aggregate-probe/` and `final/` and is not shipped.
+
+Validation: 55 tests passed and one optional release fixture was skipped,
+including a new test of real matrix functions with counted CPU callbacks and
+50,000 randomized routing, priority, masking and reset changes. Weighted
+icount/deadline checks pass, as do X3 native accurate and native/Node turbo
+smoke tests. The same container leak-detection limitation noted above applies.
