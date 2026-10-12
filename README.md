@@ -96,6 +96,13 @@ python3 eink-qemu/mkflash.py crosspoint-1.6.5-x3-x4.bin flash.bin
 eink-qemu/run.sh flash.bin sd.img        # SDL window, firmware log on stdout
 ```
 
+For an X4 Pro with the UC8279 revision `0x68` panel, select its measured
+profile with `X4PANEL=uc8279-68 eink-qemu/run.sh flash.bin sd.img`. The same
+variable works with `drive.py` and the Node launcher. In the browser, choose
+**X4 Pro panel → UC8279 (0x68)**; turn off Turbo to use measured panel delays.
+The default remains UC8179. See the [calibration report](eink-qemu/x4pro-calibration-report.md)
+for measured coverage and remaining CPU, SDMMC, and optical work.
+
 For the X4 or the Picco, name the board in both steps:
 
 ```sh

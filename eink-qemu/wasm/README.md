@@ -54,6 +54,14 @@ To enable it in Node, append `-global uc8179.ghosting=on` (X4 Pro) or
 Ghosting off preserves LUT grayscale and refresh timing, but removes physical
 ink artifacts and idle drift; capture after refresh completion.
 
+For the X4 Pro UC8279 revision `0x68`, use
+`X4PANEL=uc8279-68 eink-qemu/wasm/run-node.sh flash.bin sd.img`, or choose
+**X4 Pro panel → UC8279 (0x68)** in the browser. The URL equivalent is
+`?panel=uc8279-68&turbo=0`. Panel selection is separate from chip detection;
+Auto cannot determine a panel revision from a flash image. The default is
+UC8179. See the [calibration report](../x4pro-calibration-report.md) before
+using timing or ghosting results as hardware predictions.
+
 The browser page defaults to turbo (checkbox ticked); `?turbo=0` or unticking
 it selects accurate timing, and `?turbo=1` remains accepted. `run-node.sh` keeps
 accurate timing by default; opt in with `TURBO=1 eink-qemu/wasm/run-node.sh
