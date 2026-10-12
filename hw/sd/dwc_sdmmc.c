@@ -235,9 +235,10 @@ static void dwc_sdmmc_update_irq(DWCSDMMCState *s)
     qemu_set_irq(s->irq, irq);
 }
 
-static void dwc_sdmmc_handle_cmd(DWCSDMMCState *s)
+static bool dwc_sdmmc_handle_cmd(DWCSDMMCState *s)
 {
     SDRequest request;
+    bool success = true;
     uint8_t resp[16];
     size_t rlen;
     DEBUG("%s: hw_cmd=0x%08x\n", __func__, s->cmd);
@@ -263,6 +264,7 @@ static void dwc_sdmmc_handle_cmd(DWCSDMMCState *s)
             s->resp[3] = ldl_be_p(&resp[0]);
         } else {
             s->rintsts |= SDMMC_INTMASK_RTO;
+            success = false;
             goto done;
         }
     }
@@ -271,6 +273,7 @@ done:
     DEBUG("%s: ending with rinsts=0x%04x\n", __func__, s->rintsts);
     s->cmd = FIELD_DP32(s->cmd, SDMMC_CMD, START, 0);
     dwc_sdmmc_update_irq(s);
+    return success;
 }
 
 static void dwc_sdmmc_update_bytes_left(DWCSDMMCState *s, size_t bytes_done)
@@ -462,8 +465,8 @@ static void dwc_sdmmc_transfer_complete(void *opaque)
         s->waiting_dma = s->bytes_left != 0;
         s->pending = s->waiting_dma;
     } else {
-        dwc_sdmmc_handle_cmd(s);
-        if (!(s->rintsts & SDMMC_INTMASK_RTO) && cmd.data_expected &&
+        bool success = dwc_sdmmc_handle_cmd(s);
+        if (success && cmd.data_expected &&
             s->bytcnt && s->blksiz && FIELD_EX32(s->ctrl, SDMMC_CTRL, DMAEN)) {
             s->data_phase = true;
             uint32_t hz = dwc_sdmmc_card_hz(s);

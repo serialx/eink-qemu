@@ -83,6 +83,18 @@ class SdmmcTiming(unittest.TestCase):
         self.assertFalse(self.read(0x3fc90000)&(1<<31))
         self.assertTrue(self.r(0x8c)&2)
 
+    def test_stale_response_error_does_not_suppress_next_data(self):
+        self.init_card()
+        self.issue(63)  # unsupported command, response timeout
+        self.command('clock_step 2400')
+        self.assertTrue(self.r(0x44) & 0x100)
+        # Intentionally leave the previous sticky error uncleared.
+        self.w(0x28, 0)
+        self.w(0x2c, (1 << 31) | (1 << 16) | 0x240 | 17)
+        self.command('clock_step 105250')
+        self.assertTrue(self.r(0x44) & 8)
+        self.assertEqual(self.read(0x3fc91000), 0x03020100)
+
     def test_reset_cancels_pending_dma(self):
         self.init_card();self.issue(17,flags=0x240)
         self.command('clock_step 2400');self.w(0,1)
