@@ -77,7 +77,7 @@ static void timing(void)
     int busy = 1; s->busy_n = &busy;
     command(s, 0x04, NULL, 0);
     assert(busy == 0);
-    assert(s->busy_timer.deadline == now_ns + 40000000);
+    assert(s->busy_timer.deadline == now_ns + 39398000);
     finish(s); assert(busy == 1);
     command(s, 0x00, (uint8_t[]){0x17,0x4d}, 2);
     command(s, 0x12, NULL, 0);
@@ -93,13 +93,35 @@ static void timing(void)
     uint8_t gray[49] = {1,2,3,1,1,1,1};
     for (int r = 0; r < 5; r++) command(s, 0x20+r, gray, sizeof(gray));
     command(s, 0x12, NULL, 0);
-    assert(s->busy_timer.deadline == now_ns + 228998000);
+    assert(s->busy_timer.deadline == now_ns + 228191000);
     finish(s);
     uint8_t settle[42] = {1,6,1,6,6,1,1,1,2,4,0,0,1,1};
     for (int r = 0; r < 5; r++) command(s, 0x20+r, settle, sizeof(settle));
     command(s, 0x12, NULL, 0);
-    assert(s->busy_timer.deadline == now_ns + 558992000);
-    finish(s); drop(s);
+    assert(s->busy_timer.deadline == now_ns + 568445000);
+    finish(s);
+    /* An explicit PLL write clears the OTP clock; each measured PLL differs. */
+    for (int pll = 13; pll <= 15; pll++) {
+        const uint32_t frame[] = {13378, 12506, 11632};
+        const uint32_t overhead[] = {84348, 82510, 80690};
+        const uint32_t pof[] = {53625, 50120, 46624};
+        command(s, 0x30, (uint8_t[]){pll}, 1);
+        assert(uc8179_refresh_us(s, 25) == 25 * frame[pll-13] + overhead[pll-13]);
+        command(s, 0x02, NULL, 0);
+        assert(s->busy_timer.deadline == now_ns + (int64_t)pof[pll-13] * 1000);
+        finish(s);
+    }
+    command(s, 0x00, (uint8_t[]){0x17}, 1);
+    command(s, 0x12, NULL, 0); finish(s);
+    command(s, 0x00, (uint8_t[]){0x37}, 1);
+    command(s, 0x91, NULL, 0);
+    assert(uc8179_refresh_us(s, 25) == 557160);
+    command(s, 0x92, NULL, 0);
+    assert(uc8179_refresh_us(s, 47) == 984311);
+    /* Explicit duration overrides retain their literal meaning. */
+    s->frame_us = 123; s->refresh_overhead_us = 456;
+    assert(uc8179_refresh_us(s, 25) == 3531);
+    drop(s);
 }
 static void lut(void)
 {
@@ -168,7 +190,7 @@ static void reset(void)
     assert(!s->busy_timer.pending);
     uc8179_set_rst(s, 0, 1);
     command(s, 0x04, NULL, 0);
-    assert(s->busy_timer.deadline == now_ns + 40000000);
+    assert(s->busy_timer.deadline == now_ns + 39398000);
     finish(s); drop(s);
 }
 static void orientation(void)
@@ -329,7 +351,7 @@ class PanelSelection(unittest.TestCase):
 
     def test_measured_profile(self):
         self.assertEqual(self.properties('x4pro,panel=uc8279-68'),
-                         ['uc8279-68', 18333, 40])
+                         ['uc8279-68', 0, 0])
 
     def test_default_profile(self):
         self.assertEqual(self.properties('x4pro'), ['uc8179', 25000, 2])
@@ -399,7 +421,7 @@ class PanelGPIO(unittest.TestCase):
                     '00 00 00 00 00 00 00 00 05 0a 0f 14 50 5f 64 7f'))
                 pin('dc', 0); send(0x04)
                 self.assertEqual(read_register(0x71, 1), b'\x12')
-                command('clock_step 39999999')
+                command('clock_step 39397999')
                 self.assertEqual(read_register(0x71, 1), b'\x12')
                 command('clock_step 1')
                 self.assertEqual(read_register(0x71, 1), b'\x13')

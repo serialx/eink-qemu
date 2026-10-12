@@ -136,6 +136,7 @@ struct Uc8179State {
     uint8_t lut_n[LUT_ROWS];
     uint8_t args[9];
     uint8_t pll;
+    bool otp_clock;
     uint16_t width, height;
     uint16_t win[4];        /* x start/end, y start/end in controller RAM */
     bool window_valid;
@@ -536,6 +537,22 @@ static uint64_t uc8179_refresh_us(Uc8179State *s, unsigned frames)
             return otp_us;
         }
     }
+    if (s->uc8279_68 && !s->frame_us && !s->refresh_overhead_us) {
+        /* Measured electrical BUSY, x4cal panel/matrix/vendor sweeps.
+         * OTP refresh changes the internal clock until the next PLL write.
+         * Only the observed 480-row partial window has a measured correction.
+         * Other PLL/window values use the nearest measured baseline. */
+        if (s->otp_clock) {
+            uint32_t overhead = s->partial && s->window_valid &&
+                s->win[3] - s->win[2] + 1 == 480 ? 84585 : 95870;
+            return (uint64_t)frames * 18903 + overhead;
+        }
+        switch (s->pll) {
+        case 0x0d: return (uint64_t)frames * 13378 + 84348;
+        case 0x0f: return (uint64_t)frames * 11632 + 80690;
+        default:   return (uint64_t)frames * 12506 + 82510;
+        }
+    }
     return MAX(1000, (uint64_t)frames * s->frame_us + s->refresh_overhead_us);
 }
 
@@ -578,6 +595,9 @@ static uint64_t uc8179_refresh(Uc8179State *s)
                  uc8179_lut_frames(s) : uc8179_otp_frames(s);
     }
     us = uc8179_refresh_us(s, frames);
+    if (s->uc8279_68 && !(s->psr & PSR_REG)) {
+        s->otp_clock = true;
+    }
     us = MIN(us, (INT64_MAX - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) / 1000);
     s->anim_f = 0;
     s->anim_t0 = now;
@@ -600,10 +620,19 @@ static void uc8179_command(Uc8179State *s, uint8_t c)
 
     switch (c) {
     case 0x02:  /* POF */
-        uc8179_set_busy(s, s->pof_ms);
+        if (s->uc8279_68 && !s->pof_ms) {
+            uc8179_set_busy_us(s, s->pll == 0x0d ? 53625 :
+                                 s->pll == 0x0f ? 46624 : 50120);
+        } else {
+            uc8179_set_busy(s, s->pof_ms);
+        }
         break;
     case 0x04:  /* PON */
-        uc8179_set_busy(s, s->pon_ms);
+        if (s->uc8279_68 && !s->pon_ms) {
+            uc8179_set_busy_us(s, 39398);
+        } else {
+            uc8179_set_busy(s, s->pon_ms);
+        }
         break;
     case 0x07:  /* DSLP; the check code 0xA5 follows as data */
         break;
@@ -658,6 +687,7 @@ static void uc8179_data(Uc8179State *s, uint8_t v)
     case 0x30:
         if (s->pos++ == 0) {
             s->pll = v;
+            s->otp_clock = false;
         }
         break;
     case 0x61:
@@ -828,6 +858,7 @@ static void uc8179_reset_regs(Uc8179State *s)
     s->width = W;
     s->height = H_ADDR;
     s->pll = s->uc8279_68 ? 0x0e : 0;
+    s->otp_clock = false;
     s->anim_frame_us = MAX(1, s->frame_us);
     memset(s->lut, 0, sizeof(s->lut));
     memset(s->lut_n, 0, sizeof(s->lut_n));
@@ -1005,9 +1036,12 @@ static void uc8279_68_init(Object *obj)
     Uc8179State *s = UC8179(obj);
 
     s->uc8279_68 = true;
-    s->frame_us = 18333;
-    s->pon_ms = 40;
-    s->refresh_overhead_us = 100667;
+    /* Zero selects the measured state-dependent timing; nonzero overrides
+     * select literal frame/overhead or millisecond power durations. */
+    s->frame_us = 0;
+    s->pon_ms = 0;
+    s->pof_ms = 0;
+    s->refresh_overhead_us = 0;
     s->otp_fast_us = 483000;
     s->otp_full_us = 1328000;
 }
