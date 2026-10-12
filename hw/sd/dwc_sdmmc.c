@@ -41,7 +41,7 @@
  * - FIFO is not implemented.
  * - No error interrupts or conditions are generated.
  * - Boot mode is not implemented.
- * - Clock settings are ignored.
+ * - Optional command/data timing uses the ESP clock divider extension.
  *
  * The hardware seems to work in a manner very similar to Allwinner SD Host controller (allwinner-sdhost.c),
  * notable exceptions being:
@@ -162,6 +162,7 @@ REG32(SDMMC_BACK_END_POWER, 0x104)
 REG32(SDMMC_UHS_REG_EXT, 0x108)
 REG32(SDMMC_EMMC_DDR_REG, 0x10c)
 REG32(SDMMC_ENABLE_SHIFT, 0x110)
+REG32(SDMMC_CLOCK, 0x800)
 
 #define SDMMC_INTMASK_IO_SLOT1  BIT(17)
 #define SDMMC_INTMASK_IO_SLOT0  BIT(16)
@@ -193,6 +194,9 @@ REG32(SDMMC_ENABLE_SHIFT, 0x110)
 
 #define SDMMC_DMA_MAX_BUF_LEN 4096
 
+static void dwc_sdmmc_reset(DeviceState *dev);
+static void dwc_sdmmc_schedule_command(DWCSDMMCState *s);
+
 static bool dwc_sdmmc_ctrl_interrupts_enabled(uint32_t ctrl_reg)
 {
     return FIELD_EX32(ctrl_reg, SDMMC_CTRL, INTEN) == 1;
@@ -209,8 +213,14 @@ static void dwc_sdmmc_handle_reset(DWCSDMMCState *s)
 {
     const uint32_t reset_mask = R_SDMMC_CTRL_FIFO_RST_MASK | R_SDMMC_CTRL_RST_MASK | R_SDMMC_CTRL_DMA_RST_MASK;
     if (s->ctrl & reset_mask) {
-        /* just clear it */
+        timer_del(&s->transfer_timer);
+        s->pending = s->data_phase = s->waiting_dma = false;
+        if (s->ctrl & R_SDMMC_CTRL_RST_MASK) {
+            dwc_sdmmc_reset(DEVICE(s));
+            return;
+        }
         s->ctrl &= ~reset_mask;
+        s->cmd &= ~R_SDMMC_CMD_START_MASK;
     }
 }
 
@@ -237,7 +247,7 @@ static void dwc_sdmmc_handle_cmd(DWCSDMMCState *s)
     }
 
     request.cmd = hw_cmd.cmd_index;
-    request.arg = s->cmdarg;
+    request.arg = s->pending ? s->active_cmdarg : s->cmdarg;
 
     rlen = sdbus_do_command(&s->sdbus, &request, resp, sizeof(resp));
     s->rintsts |= SDMMC_INTMASK_CMD_DONE;
@@ -284,13 +294,19 @@ static size_t dwc_sdmmc_handle_one_desc(DWCSDMMCState *s, hwaddr desc_addr, sdmm
     uint8_t buf[4096];
 
     /* Read descriptor */
-    dma_memory_read(&address_space_memory, desc_addr, desc, sizeof(*desc), MEMTXATTRS_UNSPECIFIED);
+    memset(desc, 0, sizeof(*desc));
+    if (dma_memory_read(&address_space_memory, desc_addr, desc, sizeof(*desc),
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        s->idsts |= SDMMC_IDMAC_INTMASK_FBE | SDMMC_IDMAC_INTMASK_AI;
+        return 0;
+    }
     if (desc->buffer1_size < num_bytes) {
         num_bytes = desc->buffer1_size;
     }
 
     if (desc->owned_by_idmac == 0) {
         /* ran into a descriptor owned by software */
+        s->idsts |= SDMMC_IDMAC_INTMASK_DU | SDMMC_IDMAC_INTMASK_AI;
         return 0;
     }
 
@@ -303,17 +319,23 @@ static size_t dwc_sdmmc_handle_one_desc(DWCSDMMCState *s, hwaddr desc_addr, sdmm
         DEBUG("%s: %sing %d bytes from descr 0x%08x\n", __func__, is_write?"write":"read", buf_bytes, (uint32_t) desc_addr);
         /* Write to SD bus */
         if (is_write) {
-            dma_memory_read(&address_space_memory,
+            if (dma_memory_read(&address_space_memory,
                             desc->buffer1_ptr + num_done,
-                            buf, buf_bytes, MEMTXATTRS_UNSPECIFIED);
+                            buf, buf_bytes, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                s->idsts |= SDMMC_IDMAC_INTMASK_FBE | SDMMC_IDMAC_INTMASK_AI;
+                return 0;
+            }
             sdbus_write_data(&s->sdbus, buf, buf_bytes);
 
             /* Read from SD bus */
         } else {
             sdbus_read_data(&s->sdbus, buf, buf_bytes);
-            dma_memory_write(&address_space_memory,
+            if (dma_memory_write(&address_space_memory,
                              desc->buffer1_ptr + num_done,
-                             buf, buf_bytes, MEMTXATTRS_UNSPECIFIED);
+                             buf, buf_bytes, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                s->idsts |= SDMMC_IDMAC_INTMASK_FBE | SDMMC_IDMAC_INTMASK_AI;
+                return 0;
+            }
         }
         num_done += buf_bytes;
     }
@@ -351,6 +373,10 @@ static void dwc_sdmmc_handle_dma(DWCSDMMCState *s)
     while (s->bytcnt > 0) {
         DEBUG("%s: handling descriptor @0x%0x, bytcnt=%d\n", __func__, (uint32_t) desc_addr, s->bytcnt);
         bytes_done = dwc_sdmmc_handle_one_desc(s, desc_addr, &desc, is_write, s->bytcnt);
+        if (!bytes_done) {
+            s->idsts |= SDMMC_IDMAC_INTMASK_DU | SDMMC_IDMAC_INTMASK_AI;
+            break;
+        }
         dwc_sdmmc_update_bytes_left(s, bytes_done);
 
         if (bytes_done <= s->bytcnt) {
@@ -395,6 +421,81 @@ static void dwc_sdmmc_maybe_autostop(DWCSDMMCState *s)
     }
 }
 
+static uint32_t dwc_sdmmc_card_hz(DWCSDMMCState *s)
+{
+    unsigned slot = (s->cmd >> 16) & 0x1f;
+    if (slot >= 2 || !(s->clkena & BIT(slot))) {
+        return 0;
+    }
+    unsigned divider_index = (s->clksrc >> (slot * 2)) & 3;
+    unsigned divider = (s->clkdiv >> (divider_index * 8)) & 0xff;
+    unsigned source = (s->clock & BIT(23)) ? 160000000 : 40000000;
+    unsigned module_divider = ((s->clock >> 13) & 15) + 1;
+    return source / module_divider / (divider ? 2 * divider : 1);
+}
+
+static uint64_t dwc_sdmmc_data_ns(DWCSDMMCState *s, uint32_t hz)
+{
+    unsigned slot = (s->cmd >> 16) & 1;
+    unsigned width = (s->ctype & BIT(slot + 16)) ? 8 :
+                     (s->ctype & BIT(slot)) ? 4 : 1;
+    uint64_t blocks = DIV_ROUND_UP(s->bytcnt, MAX(1, s->blksiz));
+    /* Start/end bits and 16 CRC bits on each data line, for every block. */
+    uint64_t clocks = DIV_ROUND_UP((uint64_t)s->bytcnt * 8, width) + blocks * 18;
+    /* Empirical card service time, separate from the bus and guest CPU.
+     * Read startup saturates at four sectors; long writes add a tail beyond
+     * eight sectors. Zero defaults preserve a wire-only controller model. */
+    uint64_t latency = (s->cmd & BIT(10)) ?
+        s->write_latency_us + (blocks > 8 ? blocks - 8 : 0) * s->write_tail_us :
+        s->read_latency_us + MIN(blocks ? blocks - 1 : 0, 3) * s->read_ramp_us;
+    return DIV_ROUND_UP(clocks * NANOSECONDS_PER_SECOND, hz) +
+           (uint64_t)latency * 1000;
+}
+
+static void dwc_sdmmc_transfer_complete(void *opaque)
+{
+    DWCSDMMCState *s = opaque;
+    sdmmc_hw_cmd_t cmd = dwc_sdmmc_get_hw_cmd(s);
+    if (s->data_phase) {
+        dwc_sdmmc_handle_dma(s);
+        dwc_sdmmc_maybe_autostop(s);
+        s->waiting_dma = s->bytes_left != 0;
+        s->pending = s->waiting_dma;
+    } else {
+        dwc_sdmmc_handle_cmd(s);
+        if (!(s->rintsts & SDMMC_INTMASK_RTO) && cmd.data_expected &&
+            s->bytcnt && s->blksiz && FIELD_EX32(s->ctrl, SDMMC_CTRL, DMAEN)) {
+            s->data_phase = true;
+            uint32_t hz = dwc_sdmmc_card_hz(s);
+            if (hz) {
+                timer_mod_ns(&s->transfer_timer,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + dwc_sdmmc_data_ns(s, hz));
+            }
+        } else {
+            s->pending = false;
+        }
+    }
+    dwc_sdmmc_update_irq(s);
+}
+
+static void dwc_sdmmc_schedule_command(DWCSDMMCState *s)
+{
+    uint32_t hz = dwc_sdmmc_card_hz(s);
+    if (!s->pending || !hz || timer_pending(&s->transfer_timer)) {
+        return;
+    }
+    uint64_t ns;
+    if (s->data_phase) {
+        ns = dwc_sdmmc_data_ns(s, hz);
+    } else {
+        sdmmc_hw_cmd_t cmd = dwc_sdmmc_get_hw_cmd(s);
+        unsigned clocks = 48 + (cmd.response_expect ? (cmd.response_long ? 136 : 48) : 0);
+        clocks += cmd.send_init ? 80 : 0;
+        ns = DIV_ROUND_UP((uint64_t)clocks * NANOSECONDS_PER_SECOND, hz);
+    }
+    timer_mod_ns(&s->transfer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ns);
+}
+
 
 static void dwc_sdmmc_write(void *opaque, hwaddr offset,
                                    uint64_t value, unsigned size)
@@ -411,18 +512,58 @@ static void dwc_sdmmc_write(void *opaque, hwaddr offset,
         case A_SDMMC_CLKSRC:
             s->clksrc = value;
             break;
+        case A_SDMMC_CLKDIV:
+            s->clkdiv = value;
+            break;
+        case A_SDMMC_CLKENA:
+            s->clkena = value;
+            if (s->timing) {
+                if (!dwc_sdmmc_card_hz(s)) {
+                    timer_del(&s->transfer_timer);
+                } else {
+                    dwc_sdmmc_schedule_command(s);
+                }
+            }
+            break;
+        case A_SDMMC_CTYPE:
+            s->ctype = value;
+            break;
+        case A_SDMMC_CLOCK:
+            s->clock = value;
+            break;
 
         case A_SDMMC_CMD: {
+            if (s->timing && s->pending) {
+                s->rintsts |= SDMMC_INTMASK_HLE;
+                dwc_sdmmc_update_irq(s);
+                break;
+            }
             s->cmd = value;
             if (FIELD_EX32(value, SDMMC_CMD, START)) {
+                if (s->timing && !(value & BIT(21))) {
+                    s->pending = true;
+                    s->data_phase = s->waiting_dma = false;
+                    s->active_cmdarg = s->cmdarg;
+                    dwc_sdmmc_schedule_command(s);
+                    break;
+                }
                 dwc_sdmmc_handle_cmd(s);
-                dwc_sdmmc_handle_dma(s);
-                dwc_sdmmc_maybe_autostop(s);
+                if (!(value & BIT(21))) {
+                    dwc_sdmmc_handle_dma(s);
+                    dwc_sdmmc_maybe_autostop(s);
+                }
                 dwc_sdmmc_update_irq(s);
             }
             break;
         }
         case A_SDMMC_PLDMND:
+            if (s->timing) {
+                if (s->waiting_dma) {
+                    s->waiting_dma = false;
+                    dwc_sdmmc_schedule_command(s);
+                }
+                break;
+            }
             dwc_sdmmc_handle_dma(s);
             dwc_sdmmc_maybe_autostop(s);
             dwc_sdmmc_update_irq(s);
@@ -465,6 +606,14 @@ static void dwc_sdmmc_write(void *opaque, hwaddr offset,
         case A_SDMMC_BLKSIZ:
             s->blksiz = value;
             break;
+        case A_SDMMC_BMOD:
+            if (value & 1) {
+                timer_del(&s->transfer_timer);
+                s->pending = s->data_phase = s->waiting_dma = false;
+                s->idsts = 0;
+                dwc_sdmmc_update_irq(s);
+            }
+            break;
 
         default:
             qemu_log_mask(LOG_UNIMP, "%s: write@0x%02x value=0x%08x\n", __func__, (uint32_t) offset, (uint32_t) value);
@@ -481,6 +630,16 @@ static uint64_t dwc_sdmmc_read(void *opaque, hwaddr offset,
             return s->ctrl;
         case A_SDMMC_CLKSRC:
             return s->clksrc;
+        case A_SDMMC_CLKDIV:
+            return s->clkdiv;
+        case A_SDMMC_CLKENA:
+            return s->clkena;
+        case A_SDMMC_CTYPE:
+            return s->ctype;
+        case A_SDMMC_CLOCK:
+            return s->clock;
+        case A_SDMMC_STATUS:
+            return s->pending && s->data_phase ? BIT(9) | BIT(10) : 0;
         case A_SDMMC_INTMASK:
             return s->intmask;
         case A_SDMMC_CMD:
@@ -535,11 +694,16 @@ static void dwc_sdmmc_init(Object *obj)
                           TYPE_DWC_SDMMC, 4 * KiB);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq);
+    timer_init_ns(&s->transfer_timer, QEMU_CLOCK_VIRTUAL,
+                  dwc_sdmmc_transfer_complete, s);
 }
 
 static void dwc_sdmmc_reset(DeviceState *dev)
 {
     DWCSDMMCState *s = DWC_SDMMC(dev);
+    timer_del(&s->transfer_timer);
+    s->pending = s->data_phase = s->waiting_dma = false;
+    s->clkdiv = s->clksrc = s->clkena = s->ctype = s->clock = 0;
     s->cmd = 0;
     s->cmdarg = 0;
     s->intmask = 0;
@@ -553,13 +717,23 @@ static void dwc_sdmmc_reset(DeviceState *dev)
     s->dbaddr = 0;
     s->pldmnd = 0;
     memset(s->resp, 0, sizeof(s->resp));
+    dwc_sdmmc_update_irq(s);
 }
+
+static const Property dwc_sdmmc_properties[] = {
+    DEFINE_PROP_BOOL("timing", DWCSDMMCState, timing, false),
+    DEFINE_PROP_UINT32("read-latency-us", DWCSDMMCState, read_latency_us, 0),
+    DEFINE_PROP_UINT32("write-latency-us", DWCSDMMCState, write_latency_us, 0),
+    DEFINE_PROP_UINT32("read-ramp-us", DWCSDMMCState, read_ramp_us, 0),
+    DEFINE_PROP_UINT32("write-tail-us", DWCSDMMCState, write_tail_us, 0),
+};
 
 static void dwc_sdmmc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, dwc_sdmmc_reset);
+    device_class_set_props(dc, dwc_sdmmc_properties);
 }
 
 static TypeInfo dwc_sdmmc_info = {

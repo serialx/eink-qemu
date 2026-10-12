@@ -23,6 +23,7 @@
 #include "qom/object.h"
 #include "hw/core/sysbus.h"
 #include "hw/sd/sd.h"
+#include "qemu/timer.h"
 
 
 typedef struct DWCSDMMCState {
@@ -36,6 +37,13 @@ typedef struct DWCSDMMCState {
 
     uint32_t ctrl;
     uint32_t clksrc;
+    uint32_t clkdiv, clkena, ctype, clock;
+    bool timing;
+    uint32_t read_latency_us, write_latency_us;
+    uint32_t read_ramp_us, write_tail_us;
+    QEMUTimer transfer_timer;
+    bool pending, data_phase, waiting_dma;
+    uint32_t active_cmdarg;
     uint32_t cmd;
     uint32_t cmdarg;
     uint32_t resp[4];
