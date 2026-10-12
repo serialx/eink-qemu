@@ -18,7 +18,7 @@ let frame, bootData, pending = false, running = false;
 // iframe owns it (MEMFS /sd.img) from boot until the stop snapshot returns it.
 let sdImage = null, sdLoading = null;
 let sdSaving = 0, sdSnapshotPending = false;
-let milestones = 0, startedAt;
+let milestones = 0, startedAt, lastDrawAt = 0;
 const held = new Set();
 const bindings = {Back: 'Backspace', Confirm: 'Enter', Left: 'ArrowLeft',
     Right: 'ArrowRight', Up: 'ArrowUp', Down: 'ArrowDown', Power: 'KeyP', Home: 'Home'};
@@ -148,17 +148,27 @@ function append(line) {
     if (/main_task: Returned from app_main\(\)/.test(line) && !window.bootTimeSeconds) {
         status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Firmware running`);
     }
-    if (/Wait complete:\s+(?:8179|8279|X3)_DRF/.test(line) && ++milestones === 3) {
-        const seconds = (performance.now() - startedAt) / 1000;
-        status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Home drawn in ${seconds.toFixed(2)} s · finishing startup…`);
-        window.bootTimeSeconds = seconds;
+    if (/Wait complete:\s+(?:8179|8279|X3)_DRF/.test(line)) {
+        lastDrawAt = performance.now();
+        if (++milestones === 3) {
+            const seconds = (lastDrawAt - startedAt) / 1000;
+            status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Home drawn in ${seconds.toFixed(2)} s · finishing startup…`);
+            window.bootTimeSeconds = seconds;
+        }
     }
-    if (line.includes('[MEM]') && window.bootTimeSeconds) {
-        status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Ready · Home drawn in ${window.bootTimeSeconds.toFixed(2)} s`);
+    if (line.includes('[MEM]')) {
+        if (window.bootTimeSeconds) {
+            status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Ready · Home drawn in ${window.bootTimeSeconds.toFixed(2)} s`);
+        } else if (milestones && performance.now() - lastDrawAt > 3000) {
+            // Firmware that resumes a book or an app draws fewer full refreshes
+            // than a boot to Home. Once the screen has been quiet for a few
+            // seconds and the firmware still reports in, it is running.
+            status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Ready`);
+        }
     }
 }
 function resetting(prefix = '') {
-    milestones = 0; startedAt = performance.now(); window.bootTimeSeconds = null;
+    milestones = 0; lastDrawAt = 0; startedAt = performance.now(); window.bootTimeSeconds = null;
     status(`${prefix}Resetting…`);
 }
 function key(code, down) {
@@ -400,7 +410,7 @@ function adoptSD() {
 async function start() {
     if (frame || pending) return;
     pending = true;
-    startedAt = performance.now(); milestones = 0; window.bootTimeSeconds = null;
+    startedAt = performance.now(); milestones = 0; lastDrawAt = 0; window.bootTimeSeconds = null;
     $('start').disabled = true; clearConsole();
     for (const id of ['device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi', 'reset', 'stop', 'download']) $(id).disabled = true;
     try {
