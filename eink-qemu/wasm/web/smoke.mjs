@@ -227,7 +227,7 @@ smoke: try {
         window.addEventListener('message', ({origin, data}) => {
             if (origin !== location.origin || data.type !== 'log') return;
             window.smokeLogLines = (window.smokeLogLines || 0) + 1;
-            if (/Wait complete:\s+(?:8179|8279|X3)_DRF/.test(data.line)) {
+            if (/Wait complete:\s+(?:8179|8279|8279x4|X3)_DRF/.test(data.line)) {
                 window.smokeRefreshes = (window.smokeRefreshes || 0) + 1;
                 if (window.smokeRefreshes === 3) {
                     window.smokeHomeEpoch = Date.now();

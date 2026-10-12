@@ -47,9 +47,8 @@ function turboProperties(machine) {
         ...(machine === 'x3' ?
             [...['frame-us', 'refresh-overhead-us'].map(name => `uc8279.${name}=0`),
                 ...['pon-ms', 'pof-ms', 'busy-ms'].map(name => `uc8279.${name}=1`)] :
-            // Animation divides by frame-us; PON/POF remain fixed at 2 ms.
             (machine === 'x4' || machine === 'picco') ? ['ssd1677.busy-ms=1'] :
-            ['uc8179.frame-us=1', 'uc8179.busy-ms=1'])
+            ['uc8179.frame-us=1', ...['pon-ms', 'pof-ms', 'busy-ms'].map(name => `uc8179.${name}=1`)])
     ];
     return properties.flatMap(property => ['-global', property]);
 }
@@ -166,7 +165,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
     } else if (data.type === 'sd') {
         sdOperation(data);
     } else if (data.type === 'boot') {
-        const {machine, flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
+        const {machine, panel = 'uc8179', flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
         machineType = machine;
         // Picco distinguishes taps from long presses in guest time. Keep its
         // interactive clock paced even with faster peripheral timings, or an
@@ -186,7 +185,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
         window.Module = {
             browserNetwork,
             canvas,
-            arguments: ['-L', '/', '-machine', machine,
+            arguments: ['-L', '/', '-machine', machine === 'x4pro' ? `${machine},panel=${panel}` : machine,
                 '-accel', 'tcg,tb-size=64',
                 '-icount', `shift=${(machine === 'x3' || machine === 'x4') ? 0 : 2},sleep=${sleep}`,
                 ...(turbo ? turboProperties(machine) : []),

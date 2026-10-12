@@ -75,7 +75,7 @@ if turbo and not rom_only and not os.environ.get('NATIVE_QEMU') and not referenc
 def run(machine, flash, firmware=False):
     milestone = re.compile(os.environ.get('HOME_MILESTONE',
         r'Wait complete:\s+(?:8279|X3)_DRF' if machine == 'x3' else
-        r'Wait complete:\s+8179_DRF'))
+        r'Wait complete:\s+(?:8179|8279x4)_DRF'))
     milestone_count = int(os.environ.get('HOME_MILESTONE_COUNT', '3'))
     log_path = evidence / (machine + '.log')
     shot = evidence / (machine + '.ppm')
@@ -90,8 +90,11 @@ def run(machine, flash, firmware=False):
             timing += subprocess.check_output(
                 ['sh', str(root / 'eink-qemu/turbo-args.sh'), machine],
                 text=True).splitlines()
+        machine_args = machine
+        if machine == 'x4pro' and os.environ.get('X4PANEL'):
+            machine_args += ',panel=' + os.environ['X4PANEL']
         command = [str(Path(native) / ('qemu-system-' + arch)),
-            '-L', str(root / 'pc-bios'), '-machine', machine,
+            '-L', str(root / 'pc-bios'), '-machine', machine_args,
             *timing,
             '-drive', f'file={str(flash).replace(",", ",,")},if=mtd,format=raw',
             '-drive', f'file={str(evidence / "sd.img").replace(",", ",,")},if=sd,format=raw',

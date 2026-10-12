@@ -2,6 +2,7 @@
 # Headless Node launcher. Ctrl-a c switches between USB-CDC and the HMP monitor.
 # Accurate timing is the default; TURBO=1 opts into fast, non-accurate timing.
 # HMP screendump paths use /host followed by the absolute host path.
+# X4PANEL=uc8279-68 selects the measured X4 Pro panel revision.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 case "${WASM64_MODE:-32}" in
@@ -45,10 +46,14 @@ if [ "${TURBO:-0}" = 1 ]; then
         timing+=("$arg")
     done < <(sh "$ROOT/eink-qemu/turbo-args.sh" "$machine")
 fi
+machine_args=$machine
+if [ "$machine" = x4pro ] && [ -n "${X4PANEL:-}" ]; then
+    machine_args="$machine,panel=$X4PANEL"
+fi
 exec "${NODE:-node}" "${WASM_BUILD_DIR:-$build}/qemu-system-$arch.js" \
     -L "/host$ROOT/pc-bios" \
     -accel "${WASM_ACCEL:-$accel}" \
-    -machine "$machine" \
+    -machine "$machine_args" \
     "${timing[@]}" \
     -drive "file=/host${flash//,/,,}.run,if=mtd,format=raw,cache.direct=off" \
     -drive "file=/host${sd//,/,,},if=sd,format=raw,cache.direct=off" \

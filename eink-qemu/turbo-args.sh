@@ -29,9 +29,10 @@ case "$1" in
         printf '%s\n' -global ssd1677.busy-ms=1
         ;;
     x4pro)
-        # Zero would divide by zero in animation playback; 1 us is the minimum.
-        # PON/POF are fixed at 2 ms in this model, with no override properties.
-        printf '%s\n' -global uc8179.frame-us=1 -global uc8179.busy-ms=1
+        printf '%s\n' -global uc8179.frame-us=1
+        for property in pon-ms pof-ms busy-ms; do
+            printf '%s\n' -global "uc8179.$property=1"
+        done
         ;;
     *) echo "unsupported machine: $1" >&2; exit 2 ;;
 esac

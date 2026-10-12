@@ -9,7 +9,20 @@ try {
     const saved = params.get('device') || localStorage.getItem('eink-qemu-device');
     if (['auto', 'x3', 'x4', 'x4pro', 'picco'].includes(saved)) $('device').value = saved;
 } catch {}
+try {
+    const saved = params.get('panel') || localStorage.getItem('eink-qemu-panel');
+    if (['uc8179', 'uc8279-68'].includes(saved)) $('panel').value = saved;
+} catch {}
+function showPanelChoice() {
+    $('panel-choice').hidden = !['auto', 'x4pro'].includes($('device').value);
+}
+showPanelChoice();
+$('panel').addEventListener('change', () => {
+    try { localStorage.setItem('eink-qemu-panel', $('panel').value); } catch {}
+    if ($('flash').files[0] || params.has('flash')) start();
+});
 $('device').addEventListener('change', () => {
+    showPanelChoice();
     try { localStorage.setItem('eink-qemu-device', $('device').value); } catch {}
     if ($('flash').files[0] || params.has('flash')) start();
 });
@@ -148,7 +161,7 @@ function append(line) {
     if (/main_task: Returned from app_main\(\)/.test(line) && !window.bootTimeSeconds) {
         status(`${frame?.title.replace(' display', '') || 'Device'} · ${timingLabel()} · Firmware running`);
     }
-    if (/Wait complete:\s+(?:8179|8279|X3)_DRF/.test(line)) {
+    if (/Wait complete:\s+(?:8179|8279|8279x4|X3)_DRF/.test(line)) {
         lastDrawAt = performance.now();
         if (++milestones === 3) {
             const seconds = (lastDrawAt - startedAt) / 1000;
@@ -448,7 +461,7 @@ async function start() {
     pending = true;
     startedAt = performance.now(); milestones = 0; lastDrawAt = 0; window.bootTimeSeconds = null;
     $('start').disabled = true; clearConsole();
-    for (const id of ['device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi', 'reset', 'stop', 'download']) $(id).disabled = true;
+    for (const id of ['device', 'panel', 'flash', 'sd', 'turbo', 'ghosting', 'wifi', 'reset', 'stop', 'download']) $(id).disabled = true;
     try {
         if (!crossOriginIsolated) throw new Error('SharedArrayBuffer needs isolation headers. Serve this folder with serve.py on localhost or HTTPS.');
         status('Loading images…');
@@ -466,7 +479,7 @@ async function start() {
         const rom = await fetchImage((machine === 'x3' || machine === 'x4') ? 'esp32c3-rom.bin' : 'esp32s3_rev0_rom.bin');
         // The explorer waits for the runtime to own the card.
         sd.ready = false; sdSetEnabled(false); sdStatus('Starting the emulator…');
-        bootData = {type: 'boot', machine, flash, sd: sdImage.buffer, rom, wifi: $('wifi').checked, turbo: $('turbo').checked, ghosting: $('ghosting').checked};
+        bootData = {type: 'boot', machine, panel: $('panel').value, flash, sd: sdImage.buffer, rom, wifi: $('wifi').checked, turbo: $('turbo').checked, ghosting: $('ghosting').checked};
         sdImage = null;
         buttons(machine);
         $('screen').style.aspectRatio = machine === 'x3' ? '528 / 792' : '480 / 800';
@@ -488,7 +501,7 @@ async function start() {
 function fail(message) {
     status(message); append(`Error: ${message}`);
     if (!frame) {
-        for (const id of ['start', 'device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
+        for (const id of ['start', 'device', 'panel', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
         if (bootData) {
             // The boot never reached the runtime; take the card back.
             sdImage = new Uint8Array(bootData.sd); bootData = null;
@@ -537,7 +550,7 @@ window.addEventListener('message', ({source, origin, data}) => {
             $('screen').textContent = 'Stopped. Start again to use the current SD card.';
             $('keys').replaceChildren();
             for (const id of ['reset', 'stop']) $(id).disabled = true;
-            for (const id of ['start', 'device', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
+            for (const id of ['start', 'device', 'panel', 'flash', 'sd', 'turbo', 'ghosting', 'wifi']) $(id).disabled = false;
             status('Stopped. Start resumes from a fresh boot with your current SD image.');
             sdImage = data.bytes;
             sdSnapshotPending = false;
