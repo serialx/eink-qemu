@@ -14,7 +14,7 @@
   --brand-tint: #f0f5f3; --brand-tint-border: #d6e5de; --meter: #4a7a62;
   --invert-bg: #1c1917; --invert-fg: #fafaf9;
   --stage: #f5f5f4; --dots: #d6d3d1;
-  --console-bg: #1c1917; --console-fg: #e7e5e4; --console-border: #1c1917;
+  --console-bg: #f5f5f4; --console-fg: #292524; --console-border: #e7e5e4;
   --status-bg: #3d6652; --status-fg: #ffffff; --status-dim: #d6e5de;
   --switch-off: #d6d3d1; --knob-off: #ffffff;
   --danger: #b42318;
