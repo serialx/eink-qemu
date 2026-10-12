@@ -1,0 +1,74 @@
+{
+  "date": "2026-10-13",
+  "device": {
+    "model": "Xteink X4 Pro",
+    "soc": "ESP32-S3 revision 0.2",
+    "psram_bytes": 8388608,
+    "flash_bytes": 16777216,
+    "panel": "UC8279 revision 0x68",
+    "panel_addressable": [
+      800,
+      600
+    ],
+    "panel_visible": [
+      800,
+      480
+    ]
+  },
+  "card": {
+    "name": "ASTC",
+    "sectors": 30535680,
+    "sector_bytes": 512,
+    "cluster_sectors": 16,
+    "bus_width": 1
+  },
+  "toolchain": {
+    "platform": "pioarduino 55.03.311",
+    "arduino": "3.3.11",
+    "esp_idf": "5.5"
+  },
+  "binaries": {
+    "v2": {
+      "sha256": "a70c156337ff6475c76abcaff322ed61c955070bae3485e1311ef3140f22c6ec",
+      "bytes": 404592
+    },
+    "v4": {
+      "sha256": "40e73a553e149e5b29ff95a11ff86c8d5452636248e9e1d6af0bdbebdc36f47f",
+      "bytes": 406448
+    },
+    "v1": {
+      "sha256": "e2f131b142efcc3fc745436b2ae87484dc0e21e1f6253906bed58445b207e0ed",
+      "bytes": 403104
+    }
+  },
+  "source_sha256": {
+    "probe/platformio.ini": "64507112232e88095aac96ce2c607878a98df63259c89acf3907f3f32968eee8",
+    "probe/partitions.csv": "c23434071d22951d76771268ac32895ba9d4c7cfd103cc56f7c060d6c7a4e422",
+    "probe/src/main.cpp": "45ea56361423699e73517525daa33f6b6262bef871cc1319b7d4ce8d714d449d"
+  },
+  "restoration": {
+    "restored": true,
+    "readback_sha256": "4bf8abc4fe05fc1e7538c7912dfdabb65856423888fd676086d20a79481f42d7",
+    "offset": 65536,
+    "length": 409600
+  },
+  "sleep": {
+    "hardware_light_us": [
+      91652,
+      91649
+    ],
+    "emulator_light_us": 91850,
+    "hardware_deep_to_setup_us": 266197,
+    "emulator_deep_to_setup_us": 644636,
+    "hardware_timer_wake": 4,
+    "emulator_timer_wake": 4,
+    "hardware_result_retrieval": "USB disconnect/re-enumeration; INFO after USB reset reads RTC_NOINIT record"
+  },
+  "notes": [
+    "CPU fitting used first hardware run; v2 three-boot dataset is validation against identical frozen v2 emulator firmware.",
+    "v4 extends panel/SPI/sleep commands; CPU and SD workload bodies remain unchanged. Final source builds v4, not the earlier v2 image.",
+    "SD timing rows verify deterministic generated data; no user file contents or identifiers included.",
+    "panel.csv pof rows from command panel have a stale pll label; use pof_pll from matrix or vendor_pof instead.",
+    "Large PSRAM cache-miss costs and optical response remain unmodeled."
+  ]
+}
