@@ -232,3 +232,6 @@ apple_gfx_iosfc_raise_irq(uint32_t vector) "vector=0x%x"
 
 # UC8279/UC8253 complete RAM-plane transfer (command to final byte)
 uc8279_plane_write(uint8_t cmd, uint32_t bytes, int64_t ns) "cmd=0x%02x bytes=%u duration_ns=%" PRId64 ""
+
+# uc8179.c
+uc8179_refresh(bool uc8279_68, uint8_t psr, uint8_t pll, bool partial, unsigned frames, uint64_t us, int64_t start_ns) "uc8279_68=%d psr=0x%02x pll=0x%02x partial=%d frames=%u busy_us=%" PRIu64 " start_ns=%" PRId64

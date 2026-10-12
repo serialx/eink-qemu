@@ -322,6 +322,7 @@ struct Esp32s3MachineState {
 
     Esp32s3SocState esp32s3;
     DeviceState *flash_dev;
+    bool uc8279_68;
 };
 #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
 #define TYPE_X4PRO_MACHINE MACHINE_TYPE_NAME("x4pro")
@@ -1145,9 +1146,10 @@ static DeviceState *x4pro_add_i2c(I2CBus *bus, const char *type, uint8_t addr)
  */
 static void x4pro_board_init(Esp32s3SocState *ss, DeviceState *spi2)
 {
+    Esp32s3MachineState *machine = ESP32S3_MACHINE(qdev_get_machine());
     DeviceState *gpio = DEVICE(&ss->gpio);
     SSIBus *bus = (SSIBus *)qdev_get_child_bus(spi2, "spi");
-    DeviceState *panel = qdev_new("uc8179");
+    DeviceState *panel = qdev_new(machine->uc8279_68 ? "uc8279-68" : "uc8179");
     qdev_set_id(panel, g_strdup("panel"), &error_fatal);
     ssi_realize_and_unref(panel, bus, &error_fatal);
 
@@ -1180,6 +1182,24 @@ static void x4pro_board_init(Esp32s3SocState *ss, DeviceState *spi2)
     qdev_connect_gpio_out_named(gpio, ESP32S3_GPIO_OUT, 4, qdev_get_gpio_in_named(touch, "rst", 0));
 }
 
+static char *x4pro_get_panel(Object *obj, Error **errp)
+{
+    Esp32s3MachineState *s = ESP32S3_MACHINE(obj);
+
+    return g_strdup(s->uc8279_68 ? "uc8279-68" : "uc8179");
+}
+
+static void x4pro_set_panel(Object *obj, const char *value, Error **errp)
+{
+    Esp32s3MachineState *s = ESP32S3_MACHINE(obj);
+
+    if (strcmp(value, "uc8179") && strcmp(value, "uc8279-68")) {
+        error_setg(errp, "X4 Pro panel must be uc8179 or uc8279-68");
+        return;
+    }
+    s->uc8279_68 = !strcmp(value, "uc8279-68");
+}
+
 static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
 {
     static GlobalProperty x4pro_globals[] = {
@@ -1189,6 +1209,9 @@ static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
     mc->desc = "Xteink X4 Pro (ESP32-S3R8, UC8179 e-paper)";
     mc->default_ram_size = 8 * MiB;
     compat_props_add(mc->compat_props, x4pro_globals, ARRAY_SIZE(x4pro_globals));
+    object_class_property_add_str(oc, "panel", x4pro_get_panel, x4pro_set_panel);
+    object_class_property_set_description(oc, "panel",
+                                         "Panel: uc8179 (default) or uc8279-68");
 }
 
 /* BOOX Picco: SSD1677, SDMMC, and a shared I2C peripheral bus. */

@@ -24,6 +24,8 @@ DISPLAY = r'''
 #define PSR_UD 8
 #define PSR_SHL 4
 #define LUT_GROUPS (LUT_LEN / 6)
+#define trace_panel_refresh(...) ((void)0)
+static void qemu_set_irq(qemu_irq irq, int level) {}
 typedef struct DisplaySurface { uint32_t pixels[W * H]; } DisplaySurface;
 static DisplaySurface surface;
 static DisplaySurface *qemu_console_surface(QemuConsole *c) { return &surface; }
@@ -169,6 +171,10 @@ class PanelDriftTest(unittest.TestCase):
                     source += helpers.function(raw, 'lut_next')
                 names = (['row_frames', 'lut_level', 'lut_frames', 'pll_hz',
                           'frame_us'] if model == 'uc8279' else ['lut_frames'])
+                if model == 'uc8179':
+                    source += '\n'.join(helpers.function(raw, 'uc8279_68_' + name)
+                                        for name in ['row_frames', 'lut_level', 'lut_frames'])
+                    names += ['deadline', 'refresh_us', 'busy_done']
                 names += ['now', 'otp_frames', 'relax', 'drift_tick',
                           'run_frame', 'run_frames', 'refresh',
                           'update_display']
@@ -195,10 +201,9 @@ class PanelDriftTest(unittest.TestCase):
     panel_refresh(&a);
     assert(fabsf(a.ink[0].qf - qf * expf(-0.05f)) <= fabsf(qf) * 1e-6f);
 ''' if model == 'uc8179' else '').replace('RESET_PERIOD',
-                    'a.anim_frame_us = 25000;' if model == 'uc8279' else '')
+                    'a.anim_frame_us = 25000;')
                 source = source.replace('FRAME_PERIOD',
-                    's->anim_frame_us = s->frame_us;'
-                    if model == 'uc8279' else '')
+                    's->anim_frame_us = s->frame_us;')
                 source = source.replace('REFRESH',
                     'int rows[5]; panel_refresh(&a, rows);' if model == 'uc8279'
                     else 'panel_refresh(&a);')
