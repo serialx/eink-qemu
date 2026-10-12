@@ -22,6 +22,7 @@
 #include "tcg/tcg.h"
 #include "tcg/tcg-ldst.h"
 #include "tcg/helper-info.h"
+#include "exec/helper-proto-common.h"
 #include <ffi.h>
 #include <emscripten.h>
 #include "wasm64.h"
@@ -372,6 +373,18 @@ static uintptr_t tcg_qemu_tb_exec_tci(CPUArchState *env)
 
                 tci_args_nl(insn, tb_ptr, &len, &ptr);
                 func = ((void **)ptr)[0];
+
+                /*
+                 * Every interpreted indirect branch looks up its next TB.
+                 * Keep this common, fixed-signature call in Wasm instead of
+                 * marshalling its pointers through libffi's JavaScript ABI.
+                 */
+                tci_tb_ptr = (uintptr_t)tb_ptr;
+                if (func == HELPER(lookup_tb_ptr)) {
+                    regs[TCG_REG_R0] = (uintptr_t)HELPER(lookup_tb_ptr)(
+                        (CPUArchState *)(uintptr_t)stack[0]);
+                    break;
+                }
                 cif = ((void **)ptr)[1];
 
                 n = cif->nargs;
@@ -381,8 +394,6 @@ static uintptr_t tcg_qemu_tb_exec_tci(CPUArchState *env)
                     s += DIV_ROUND_UP(t->size, 8);
                 }
 
-                /* Helper functions may need to access the "return address" */
-                tci_tb_ptr = (uintptr_t)tb_ptr;
                 ffi_call(cif, func, stack, call_slots);
             }
 
