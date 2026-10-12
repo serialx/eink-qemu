@@ -40,7 +40,8 @@
 
 TBContext tb_ctx;
 
-#ifdef HOST_WASM64
+#if !defined(CONFIG_USER_ONLY) && \
+    (defined(HOST_WASM64) || defined(HOST_X86_64))
 /* A hint only limits TB length; stale mappings cannot change instructions. */
 #define IO_TB_HINTS 1024
 static __thread struct {
@@ -53,7 +54,7 @@ static __thread struct {
     unsigned insns;
 } io_tb_hints[IO_TB_HINTS];
 
-static unsigned io_tb_hint_index(vaddr pc)
+static unsigned io_tb_hint_index(tb_page_addr_t pc)
 {
     return (pc ^ (pc >> 10)) & (IO_TB_HINTS - 1);
 }
@@ -335,12 +336,13 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
     if (max_insns == 0) {
         max_insns = TCG_MAX_INSNS;
     }
-#ifdef HOST_WASM64
+#ifdef IO_TB_HINTS
     if (s.cflags & CF_USE_ICOUNT) {
-        unsigned h = io_tb_hint_index(s.pc);
+        unsigned h = io_tb_hint_index(phys_pc);
         unsigned flush_count = qatomic_read(&tb_ctx.tb_flush_count);
 
-        if (io_tb_hints[h].insns && io_tb_hints[h].pc == s.pc &&
+        if (io_tb_hints[h].insns &&
+            (s.cflags & CF_PCREL || io_tb_hints[h].pc == s.pc) &&
             io_tb_hints[h].cs_base == s.cs_base &&
             io_tb_hints[h].phys_pc == phys_pc &&
             io_tb_hints[h].flags == s.flags &&
@@ -653,16 +655,17 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
     }
     cpu_restore_state_from_tb(cpu, tb, retaddr);
 
-#ifdef HOST_WASM64
+#ifdef IO_TB_HINTS
     /*
      * Retain an ordinary-cflags TB ending at the observed I/O instruction.
      * The existing one-instruction retry still completes this first access.
      * Following executions can then perform I/O without an exception.
-     * Delay-slot targets and position-independent TBs need a different
-     * boundary key.
+     * As in TB lookup, PC-relative translations are keyed by physical PC
+     * without a virtual PC. Delay-slot targets still need a different
+     * boundary calculation.
      */
     if ((tb_cflags(tb) & CF_USE_ICOUNT) &&
-        !(tb_cflags(tb) & (CF_PCREL | CF_COUNT_MASK | CF_MEMI_ONLY |
+        !(tb_cflags(tb) & (CF_COUNT_MASK | CF_MEMI_ONLY |
                           CF_NOIRQ | CF_SINGLE_STEP)) &&
         tb_page_addr0(tb) != -1 &&
         !cc->tcg_ops->io_recompile_replay_branch) {
@@ -670,9 +673,9 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
         int left = cpu_unwind_data_from_tb(tb, retaddr, data, NULL);
 
         if (left > 1) {
-            unsigned h = io_tb_hint_index(tb->pc);
+            unsigned h = io_tb_hint_index(tb_page_addr0(tb));
 
-            io_tb_hints[h].pc = tb->pc;
+            io_tb_hints[h].pc = tb_cflags(tb) & CF_PCREL ? 0 : tb->pc;
             io_tb_hints[h].cs_base = tb->cs_base;
             io_tb_hints[h].phys_pc = tb_page_addr0(tb);
             io_tb_hints[h].flags = tb->flags;
