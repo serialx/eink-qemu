@@ -1186,7 +1186,7 @@ static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
         { "ssi_psram", "is_octal", "true" },
     };
     MachineClass *mc = MACHINE_CLASS(oc);
-    mc->desc = "Xteink X4 Pro (ESP32-S3R8, SSD1677 e-paper)";
+    mc->desc = "Xteink X4 Pro (ESP32-S3R8, UC8179 e-paper)";
     mc->default_ram_size = 8 * MiB;
     compat_props_add(mc->compat_props, x4pro_globals, ARRAY_SIZE(x4pro_globals));
 }
