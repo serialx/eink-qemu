@@ -205,8 +205,9 @@ smoke tests. The same container leak-detection limitation noted above applies.
 
 On the same i3-N305 with Node 26.11.1 and Emscripten 6.0.12, the default
 Wasm build at `3a838c7aff` spent much of its optimizing compilation on the
-RISC-V decoder. Wasm-only `noinline` translator declarations and a 16 KiB
-Binaryen combined-inlining budget for the RISC-V executable reduce
+RISC-V decoder. Commit `d104d310ff` bounds inlining: Wasm-only `noinline`
+translator declarations and a 16 KiB Binaryen combined-inlining budget for
+the RISC-V executable reduce
 `decode_insn32` from 367,734 to 56,765 bytes and `tb_gen_code` from 72,694 to
 7,922 bytes. This changes compiler inlining decisions without changing the
 generated decoder, ISA coverage, device timing, JIT threshold or Node flags.
@@ -242,3 +243,70 @@ compiles with unchanged native flags. The device suite passes 99 tests;
 12 Xtensa compiler-dependent tests and one optional release-fixture test
 are skipped. The indirect-branch probe passes in native and Node builds;
 the native icount replay/SMC probe also passes.
+
+### Further Node measurements: series 3
+
+The cumulative comparison is `3a838c7aff` to `6a92b2c17f` on the same
+2026-10-13 i3-N305 host (seven usable CPUs), Node 26.11.1, Emscripten 6.0.12
+and default `MEMORY64=2` build. Each mode has six interleaved pairs,
+alternating before/after and after/before, with fresh two-book X3 image
+copies, `sleep=off`, `--wait-count 5` and no profiler or extra Node flags.
+Timing holds exclusive `gate.lock` then `host.lock`, releases both after
+at most three pairs, and cannot overlap cooperating builds/profiles;
+those use the shared host lock after gate admission, with at most three
+build jobs.
+
+| Mode | Node phase | Before median | After median | Median paired reduction |
+| --- | --- | ---: | ---: | ---: |
+| Accurate | Home | 4.441 s | 3.761 s | 15.65% |
+| Accurate | Home to settled | 3.271 s | 2.943 s | 9.66% |
+| Accurate | Settled, from launch | 7.730 s | 6.703 s | 13.35% |
+| Turbo | Home | 2.846 s | 2.488 s | 11.72% |
+| Turbo | Home to settled | 3.906 s | 3.698 s | 4.99% |
+| Turbo | Settled, from launch | 6.768 s | 6.187 s | 8.86% |
+
+Phase medians are independent. Paired reductions use the median of each
+pair's after/before ratio, rather than the ratio of the two medians.
+All six settled pairs improve in each mode. All 24 runs retain the panel
+hash above and identical complete wait lines within each mode: accurate
+`1061, 1996, 2669, 3157, 3647` ms; turbo `760, 761, 968, 983, 1003` ms.
+These measurements describe this Node fixture, not browser or native speed.
+
+Retained changes and their separate measured effects follow. Percentages
+here compare independent phase medians against each experiment's own base;
+they are not additive:
+
+- `119c06e3e7`: live MMIO word fast path; accurate Home/settled decreased
+  7.0%/5.5%; turbo settled was 0.7% slower in three pairs, with no demonstrated gain.
+- `d104d310ff`: decoder inlining bound; accurate/turbo Home decreased
+  6.1%/7.8%; the [decoder comparison above](#bound-main-module-compilation-work)
+  records the mixed accurate settled result and compilation evidence.
+- `b79d2a98c2`: aligned TCI RAM fast path; accurate/turbo settled decreased
+  2.4%/2.7%, with all six pairs per mode faster.
+- `7a8d8b94f8`: defer lookup-state initialization past live MMIO reads;
+  confirmation on b79 reduced accurate/turbo settled 1.1%/1.4% in three pairs.
+- `6a92b2c17f`: refresh only interrupt lines crossing the C3 threshold;
+  accurate/turbo settled decreased 1.2%/0.9% in six pairs, while turbo Home
+  increased 1.9%.
+
+Rejected in this series (positive time changes mean slower):
+
+- JIT memory-emitter TLB comparison retention: negligible accurate settled
+  change (−0.6%) and a turbo settled regression (+5.0%).
+- TCI typed FFI trampolines: adding them to the RAM fast path regressed
+  turbo Home by 4.3%, without a demonstrated settled gain.
+- Indirect-lookup RV32 state fast path: accurate settled changed −2.4%
+  with baseline-first order but +0.1% with candidate-first order.
+- Turbo UC8279 tiling: settled time increased 0.7%; every turbo pair was slower.
+- Narrower decoder variants: gains remained within noise; the closest split
+  gave −0.24%/−0.73% paired accurate/turbo settled changes and an order-dependent
+  turbo result.
+- Halted-WFI inline warp: unsafe ordering despite an apparent ~9% Node gain;
+  a late BH observed the clock already advanced from 0 to 100.
+- Indefinite-poll wait transport: no gain on the final stack; paired settled
+  changes were +0.47% accurate and +0.075% turbo.
+
+All per-run Home, Home-to-settled and settled values, paired summaries,
+binary hashes, exact-output checks and experiment report references are in
+`build-wasm/evidence/amd64-perf3/final/REPORT.md`. Raw evidence remains local
+and ignored. No rejected candidate is included in `6a92b2c17f`.
