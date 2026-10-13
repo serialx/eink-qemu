@@ -23,6 +23,8 @@
 #include "tcg/tcg-ldst.h"
 #include "tcg/helper-info.h"
 #include "exec/helper-proto-common.h"
+#include "exec/cpu-common.h"
+#include "exec/target_page.h"
 #include <ffi.h>
 #include <emscripten.h>
 #include "wasm64.h"
@@ -243,11 +245,66 @@ static bool tci_compare64(uint64_t u0, uint64_t u1, TCGCond condition)
     return result;
 }
 
+/*
+ * Only plain, naturally aligned RAM accesses bypass the softmmu helpers.
+ * Exact tag equality rejects MMIO, notdirty/SMC, watchpoints and every other
+ * TLB flag; misses, unaligned accesses and byte swapping retain the slow path.
+ */
+static inline void *tci_qemu_tlb_hit(CPUArchState *env, uint64_t taddr,
+                                   MemOpIdx oi, bool is_load)
+{
+    MemOp mop = get_memop(oi);
+    unsigned align = MAX(memop_alignment_bits(mop), mop & MO_SIZE);
+    CPUTLBDescFast *fast;
+    CPUTLBEntry *entry;
+    uintptr_t tag, haddr;
+    uintptr_t size_mask = (1u << (mop & MO_SIZE)) - 1;
+    uint64_t page_mask = (int64_t)qemu_target_page_mask();
+
+    if ((mop & MO_BSWAP) || (taddr & ((1u << align) - 1))) {
+        return NULL;
+    }
+    fast = cpu_tlb_fast(env_cpu(env), get_mmuidx(oi));
+    entry = (void *)fast->table +
+            ((taddr >> (qemu_target_page_bits() - CPU_TLB_ENTRY_BITS)) &
+             fast->mask);
+    tag = is_load ? qatomic_read(&entry->addr_read)
+                  : qatomic_read(&entry->addr_write);
+    if (tag != (taddr & page_mask)) {
+        return NULL;
+    }
+    haddr = (uintptr_t)taddr + entry->addend;
+    /* Atomic host accesses also require the backing pointer to be aligned. */
+    return haddr & size_mask ? NULL : (void *)haddr;
+}
+
 static uint64_t tci_qemu_ld(CPUArchState *env, uint64_t taddr,
                             MemOpIdx oi, const void *tb_ptr)
 {
     MemOp mop = get_memop(oi);
     uintptr_t ra = (uintptr_t)tb_ptr;
+    void *haddr = tci_qemu_tlb_hit(env, taddr, oi, true);
+
+    if (haddr) {
+        switch (mop & MO_SSIZE) {
+        case MO_UB:
+            return qatomic_read((uint8_t *)haddr);
+        case MO_SB:
+            return (int8_t)qatomic_read((uint8_t *)haddr);
+        case MO_UW:
+            return qatomic_read((uint16_t *)haddr);
+        case MO_SW:
+            return (int16_t)qatomic_read((uint16_t *)haddr);
+        case MO_UL:
+            return qatomic_read((uint32_t *)haddr);
+        case MO_SL:
+            return (int32_t)qatomic_read((uint32_t *)haddr);
+        case MO_UQ:
+            return qatomic_read((uint64_t *)haddr);
+        default:
+            g_assert_not_reached();
+        }
+    }
 
     switch (mop & MO_SSIZE) {
     case MO_UB:
@@ -274,6 +331,26 @@ static void tci_qemu_st(CPUArchState *env, uint64_t taddr, uint64_t val,
 {
     MemOp mop = get_memop(oi);
     uintptr_t ra = (uintptr_t)tb_ptr;
+    void *haddr = tci_qemu_tlb_hit(env, taddr, oi, false);
+
+    if (haddr) {
+        switch (mop & MO_SIZE) {
+        case MO_UB:
+            qatomic_set((uint8_t *)haddr, val);
+            return;
+        case MO_UW:
+            qatomic_set((uint16_t *)haddr, val);
+            return;
+        case MO_UL:
+            qatomic_set((uint32_t *)haddr, val);
+            return;
+        case MO_UQ:
+            qatomic_set((uint64_t *)haddr, val);
+            return;
+        default:
+            g_assert_not_reached();
+        }
+    }
 
     switch (mop & MO_SIZE) {
     case MO_UB:
