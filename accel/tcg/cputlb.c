@@ -2358,6 +2358,55 @@ static uint16_t do_ld2_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
     return ret;
 }
 
+#ifdef __EMSCRIPTEN__
+/*
+ * Repeated live-word MMIO polls need neither a refill nor the general lookup's
+ * cross-page machinery. The first read still validates the region and access
+ * through do_ld_mmio_beN. The association belongs to the full TLB entry, so a
+ * flush, refill or victim move has exactly the same lifetime as its section.
+ */
+static inline bool do_ld4_mmu_readonly_word(CPUState *cpu, vaddr addr,
+                                           MemOpIdx oi, uintptr_t ra,
+                                           uint32_t *value)
+{
+    MemOp mop = get_memop(oi);
+    unsigned mmu_idx = get_mmuidx(oi);
+    CPUTLBEntry *entry;
+    CPUTLBEntryFull *full;
+    MemoryRegion *mr;
+    hwaddr offset;
+
+    /* Aligned words cannot cross a page. Keep all other access semantics on
+     * the original path, including target-required alignment and byte swaps.
+     */
+    if ((addr & 3) || (mop & MO_BSWAP) ||
+        (addr & ((1u << memop_alignment_bits(mop)) - 1)) ||
+        cpu_plugin_mem_cbs_enabled(cpu)) {
+        return false;
+    }
+    entry = tlb_entry(cpu, mmu_idx, addr);
+    if (qatomic_read(&entry->addr_read) !=
+        ((addr & TARGET_PAGE_MASK) | TLB_FORCE_SLOW)) {
+        return false;
+    }
+    full = &cpu->neg.tlb.d[mmu_idx].fulltlb[tlb_index(cpu, mmu_idx, addr)];
+    mr = full->readonly_word_mr;
+    if (full->slow_flags[MMU_DATA_LOAD] != TLB_MMIO || !mr ||
+        full->readonly_word_addr != addr ||
+        full->attrs.memory || full->attrs.debug ||
+        !memory_region_readonly_word_enabled(mr)) {
+        return false;
+    }
+
+    /* Even a cached, side-effect-free read is an icount I/O boundary. This
+     * sets mem_io_pc and exits to recompile before reading when !can_do_io.
+     */
+    io_prepare(&offset, cpu, full, addr, ra);
+    *value = qatomic_read(mr->readonly_word);
+    return true;
+}
+#endif
+
 static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                            uintptr_t ra, MMUAccessType access_type)
 {
@@ -2366,6 +2415,12 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
     uint32_t ret;
 
     cpu_req_mo(cpu, TCG_MO_LD_LD | TCG_MO_ST_LD);
+#ifdef __EMSCRIPTEN__
+    if (access_type == MMU_DATA_LOAD &&
+        do_ld4_mmu_readonly_word(cpu, addr, oi, ra, &ret)) {
+        return ret;
+    }
+#endif
     crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
     if (likely(!crosspage)) {
         return do_ld_4(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
