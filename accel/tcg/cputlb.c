@@ -2410,7 +2410,6 @@ static inline bool do_ld4_mmu_readonly_word(CPUState *cpu, vaddr addr,
 static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
                            uintptr_t ra, MMUAccessType access_type)
 {
-    MMULookupLocals l;
     bool crosspage;
     uint32_t ret;
 
@@ -2421,6 +2420,8 @@ static uint32_t do_ld4_mmu(CPUState *cpu, vaddr addr, MemOpIdx oi,
         return ret;
     }
 #endif
+    /* Keep automatic initialization of slow-path state off live-word hits. */
+    MMULookupLocals l;
     crosspage = mmu_lookup(cpu, addr, oi, ra, access_type, &l);
     if (likely(!crosspage)) {
         return do_ld_4(cpu, &l.page[0], l.mmu_idx, access_type, l.memop, ra);
