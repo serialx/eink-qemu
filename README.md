@@ -28,7 +28,7 @@ and Kohei Tokunaga's WebAssembly JIT. Where each piece came from is in
 
 | Board | SoC | Machine | Emulator binary | Fidelity |
 | --- | --- | --- | --- | --- |
-| Xteink X4 Pro | ESP32-S3 | `x4pro` | `qemu-system-xtensa` | Full board, panel ghosting fitted to device photos |
+| Xteink X4 Pro | ESP32-S3 | `x4pro` | `qemu-system-xtensa` | Full board; CPU, PSRAM, SD, SPI and UC8279 timing [calibrated on a real X4 Pro](eink-qemu/x4cal/README.md) |
 | Xteink X3 | ESP32-C3 | `x3` | `qemu-system-riscv32` | Full board, SD, panel and CPU timing calibrated on a real X3 |
 | Xteink X4 | ESP32-C3 | `x4` | `qemu-system-riscv32` | Runs firmware; panel refresh timing simplified, no ghosting |
 | BOOX Picco | ESP32-S3 | `picco` | `qemu-system-xtensa` | Runs firmware; panel waveforms and charging simplified |
