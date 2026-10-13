@@ -192,6 +192,13 @@ MiB. Images are sparse where the host filesystem supports it, but copying one
 can still take its full size. Use accurate timing, not Turbo, and record the
 card's geometry with any measurement.
 
+For identical input trees and geometry, `mksd.py` produces byte-identical images
+with the same dosfstools/mtools versions. It fixes the FAT volume ID to
+`45494e4b`, pins all FAT timestamps to 1980-01-01 00:00:00 UTC, and copies entries
+in sorted order at every directory level. Source timestamps are unchanged;
+the builder overrides `SOURCE_DATE_EPOCH` and `TZ` for its child processes.
+Timestamp pinning requires mtools 4.0.20 or newer.
+
 ## Building for the browser and Node
 
 The WebAssembly build compiles hot guest code to WebAssembly with a JIT and

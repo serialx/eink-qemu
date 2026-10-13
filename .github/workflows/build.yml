@@ -333,6 +333,8 @@ jobs:
           node-version: '26'
       - name: Test browser FAT filesystem
         run: node eink-qemu/wasm/web/fat.test.mjs
+      - name: Test reproducible SD images
+        run: python3 -m unittest eink-qemu.tests.test_mksd
       - name: Test Wi-Fi asset preparation and packaging
         run: python3 -m unittest discover -s eink-qemu/wasm -p test_wifi_assets.py
       - name: Cache wasm dependencies
