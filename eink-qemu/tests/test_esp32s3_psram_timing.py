@@ -82,3 +82,46 @@ class PSRAMTiming(unittest.TestCase):
         self.assertAlmostEqual(delta[0], 400 * .016, delta=2)
         self.assertAlmostEqual(delta[1], 0, delta=2)
         self.assertAlmostEqual(delta[2], 100 * 400 * .016, delta=3)
+
+    def test_invalidate_all_rom_encoding(self):
+        setup = ['movi a2, 0x600c5000', 'movi a3, 0x8000',
+                 's32i a3, a2, 0', 'movi a2, 0x600c4000',
+                 'movi a3, 9', 's32i a3, a2, 0',
+                 'movi a6, 0x3c000000', 'l32i a11, a6, 0',
+                 'movi a13, 0x600c4028', 'movi a14, 0',
+                 's32i a14, a13, 4', 's32i a14, a13, 8', 'movi a15, 1']
+        op = 's32i a15, a13, 0\nl32i a11, a6, 0'
+        times = [self.execute([op], setup=setup, machine='x4pro', iterations=100,
+                 globals=self.ZERO_PIPELINE + [f'driver=esp32s3.icache,property=psram-read-ns,value={ns}'])[0]
+                 for ns in [0, 400]]
+        self.assertAlmostEqual(times[1] - times[0], 100 * 400 * .016, delta=3)
+
+    def test_clean_and_writeback_all_include_unmapped_tags(self):
+        times = []
+        for command in [0, 2, 4]:
+            setup = ['movi a2, 0x600c5000', 'movi a3, 0x8000',
+                     's32i a3, a2, 0', 'movi a2, 0x600c4000',
+                     'movi a3, 9', 's32i a3, a2, 0']
+            # Four dirty lines in one set. Hide their physical page before
+            # issuing the ROM all-cache command; remapping must not hide tags.
+            for offset in [0, 8192, 16384, 24576]:
+                setup += [f'movi a6, {0x3c000000 + offset}', 's32i a3, a6, 0']
+            setup += ['movi a2, 0x600c5000', 'movi a3, 0x8001',
+                      's32i a3, a2, 0', 'movi a13, 0x600c4028',
+                      'movi a14, 0', 's32i a14, a13, 4', 's32i a14, a13, 8',
+                      f'movi a15, {command}', 's32i a15, a13, 0',
+                      'movi a3, 0x8000', 's32i a3, a2, 0',
+                      'movi a6, 0x3c000000']
+            op = '\n'.join(['l32i a11, a6, 0', 'movi a13, 0x3c008000',
+                             'l32i a11, a13, 0', 'movi a13, 0x3c00a000',
+                             'l32i a11, a13, 0'])
+            times.append(self.execute([op], setup=setup, machine='x4pro', iterations=1,
+                globals=self.ZERO_PIPELINE + [
+                    'driver=esp32s3.icache,property=psram-read-ns,value=400',
+                    'driver=esp32s3.icache,property=psram-write-ns,value=10000'])[0])
+        self.assertGreater(times[0] - times[1], 140)
+        self.assertAlmostEqual(times[1], times[2], delta=2)
+        # Exactly two new lines refill. Clean/writeback must retain the hit.
+        off = self.execute([op], setup=setup, machine='x4pro', iterations=1,
+            globals=['driver=esp32s3.icache,property=psram-read-ns,value=0'])[0]
+        self.assertAlmostEqual(times[2] - off, 2 * 400 * .016, delta=2)

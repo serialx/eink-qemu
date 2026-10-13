@@ -121,6 +121,23 @@ static void esp32s3_cache_sync(ESP32S3CacheState *s, uint32_t value)
     uint32_t size = s->regs[ESP32S3_CACHE_REG_IDX(A_EXTMEM_DCACHE_SYNC_SIZE)] & 0x7fffff;
     unsigned line_size = 16 << MIN((s->regs[0] >> 3) & 3, 2);
 
+    /* ROM Cache_{Invalidate_DCache,Clean,WriteBack}_All use (0, 0).
+     * Visit physical tags directly, including pages no longer mapped. */
+    if (addr == 0 && size == 0) {
+        for (unsigned set = 0; set < ARRAY_SIZE(s->timing_lines); set++) {
+            for (unsigned way = 0; way < 4; way++) {
+                ESP32S3CacheLine *line = &s->timing_lines[set][way];
+                if (value & 6) {
+                    line->dirty = false;
+                }
+                if (value & 1) {
+                    line->valid = false;
+                }
+            }
+        }
+        return;
+    }
+
     uint64_t begin = addr & ~(line_size - 1);
     uint64_t end = MIN(begin + (uint64_t)size * line_size,
                        ESP32S3_DCACHE_BASE + ESP32S3_EXTMEM_REGION_SIZE);
