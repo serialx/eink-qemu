@@ -1,0 +1,76 @@
+{
+  "tested_implementation": "85530ec478",
+  "date": "2026-10-13",
+  "native_unittest": {
+    "run": 109,
+    "skipped": 1,
+    "failures": 0
+  },
+  "javascript_tests": {
+    "run": 35,
+    "failures": 0
+  },
+  "x3_instruction_cost_regressions": "pass",
+  "x3_panel_drift_regression": "pass",
+  "native_and_wasm_builds": "pass",
+  "native_node_home_sha256": "b923a20a1e88caf11e9a6971b419ba4d89eb5ff62e1ab04a5e97f3630ae085dc",
+  "browser": {
+    "tested_implementation": "85530ec478",
+    "engine": "Chrome/155.0.8059.39",
+    "checks": {
+      "turbo": false,
+      "cross_origin_isolated": true,
+      "service_worker_controlled": false,
+      "firmware": true,
+      "down_changed_canvas": true,
+      "keyboard_up_changed_canvas": true,
+      "touch_changed_canvas": true,
+      "touch_opened_library": true,
+      "pointer_delivered_without_error": true,
+      "button_home_returned_home": true,
+      "page_keyboard_home_returned_home": true,
+      "canvas_keyboard_home_returned_home": true,
+      "stop_removed_runtime": true
+    },
+    "exported_sd_bytes": 67108864
+  },
+  "hardware_restoration": {
+    "restored": true,
+    "readback_sha256": "4bf8abc4fe05fc1e7538c7912dfdabb65856423888fd676086d20a79481f42d7",
+    "offset": 65536,
+    "length": 409600
+  },
+  "independent_review": {
+    "range": "bc198e18b5..c0ee377a01",
+    "findings": 1,
+    "fixed": "85530ec478: ROM (addr=0, size=0) invalidate/clean/writeback-all commands",
+    "regressions": "two failing real Xtensa execution tests now pass; full suite109 with1skip",
+    "unresolved_findings": 0,
+    "accepted_limits": [
+      "TB-granularity interrupt and bus overlap; timing may diverge within a translation block.",
+      "Coherent RAM backing and state-only cache maintenance; no calibrated maintenance latency or DMA incoherence.",
+      "Other PSRAM clocks/line sizes, hardware replacement, flash competition, I-cache, cache locking/preload/freeze, DMA and multicore contention remain uncalibrated.",
+      "Existing branch-heavy cached CPU timing remains up to26.8% fast; no artificial hit penalty added."
+    ]
+  },
+  "post_review_validation": {
+    "CPU": {
+      "groups": 30,
+      "checksums_match": true,
+      "max_native_median_change_us": 0
+    },
+    "PSRAM": {
+      "groups": 392,
+      "checksums_match": true,
+      "max_native_median_change_us": 40
+    },
+    "DETAIL": {
+      "groups": 96,
+      "checksums_match": true,
+      "max_native_median_change_us": 1,
+      "final_native_node_max_median_difference_us": 1
+    }
+  },
+  "final_native_sha256": "58986904765595c4721096db87cb63d1aa60c107503a0f3a074f16ce0eabb671",
+  "final_wasm_sha256": "777c3dac00948c722c17120d33e553186b8455b6a79ca982c01aa9c91d273c25"
+}

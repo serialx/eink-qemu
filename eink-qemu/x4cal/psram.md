@@ -49,6 +49,7 @@ Successful scalar, floating-point, atomic and S3 vector data accesses update
 the timing cache. Failed conditional stores do not dirty a line. Cache mode
 changes and reset clear timing tags. MMIO invalidation/writeback/clean commands
 update them over the specified range; the range register counts cache lines.
+The ROM zero-address/zero-length all-cache encoding also visits unmapped tags.
 Firmware on this S3 uses the external cache controller: its Xtensa configuration
 has no core D-cache instructions such as `dhi`.
 
@@ -138,3 +139,10 @@ accesses and single-instruction blocks. The full native suite, X3 cost and panel
 drift checks, JavaScript tests, native/Wasm builds and original-firmware Home
 smokes pass. Native and Node Home screenshots are byte-identical. See
 [psram-results.json](evidence/psram-results.json) for the numerical results.
+
+The independent review found one all-cache maintenance edge case, fixed in
+`85530ec478` with two new failing-then-passing execution regressions. The final
+suite passes **109 tests (one optional fixture skipped)**. Post-review probe
+checksums match, and original CPU medians are unchanged.
+[psram-verification.json](evidence/psram-verification.json) records the checks
+and the explicitly accepted modeling limits.
