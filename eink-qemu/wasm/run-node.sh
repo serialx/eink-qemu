@@ -2,7 +2,7 @@
 # Headless Node launcher. Ctrl-a c switches between USB-CDC and the HMP monitor.
 # Accurate timing is the default; TURBO=1 opts into fast, non-accurate timing.
 # HMP screendump paths use /host followed by the absolute host path.
-# X4PANEL=uc8279-68 selects the measured X4 Pro panel revision.
+# X4 Pro defaults to measured UC8279 revision 0x68; X4PANEL=uc8179 selects the legacy panel.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 case "${WASM64_MODE:-32}" in

@@ -1,5 +1,8 @@
 # X4 Pro hardware calibration
 
+> Historical implementation plan: UC8279 revision `0x68` is now the default.
+> See [current calibration and profile selection](x4cal/README.md).
+
 ## Goal and sequence
 
 Run unmodified X4 Pro firmware with behavior and elapsed guest time close to

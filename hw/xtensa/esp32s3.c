@@ -1158,7 +1158,7 @@ static DeviceState *x4pro_add_i2c(I2CBus *bus, const char *type, uint8_t addr)
 }
 
 /*
- * Xteink X4 Pro board: UC8179 panel on GPSPI2 (CS 13, DC 18, RST 14,
+ * Xteink X4 Pro board: UC8279/UC8179 panel on GPSPI2 (CS 13, DC 18, RST 14,
  * BUSY_N 6 through GPIO; SCLK 12 and SDA 11 also bit-banged for reads), the
  * Up/Down/Power keys (GPIO 0/7/3), and on I2C0 (SDA 39, SCL 38) the GT911
  * touch (INT 10, RST 4, power enable GPIO2 active-low), BM8563 RTC and
@@ -1220,6 +1220,11 @@ static void x4pro_set_panel(Object *obj, const char *value, Error **errp)
     s->uc8279_68 = !strcmp(value, "uc8279-68");
 }
 
+static void x4pro_machine_instance_init(Object *obj)
+{
+    ESP32S3_MACHINE(obj)->uc8279_68 = true;
+}
+
 static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
 {
     static GlobalProperty x4pro_globals[] = {
@@ -1250,12 +1255,12 @@ static void x4pro_machine_class_init(ObjectClass *oc, const void *data)
         { "dwc_sdmmc", "write-tail-us", "16" },
     };
     MachineClass *mc = MACHINE_CLASS(oc);
-    mc->desc = "Xteink X4 Pro (ESP32-S3R8, UC8179 e-paper)";
+    mc->desc = "Xteink X4 Pro (ESP32-S3R8, UC8279 rev 0x68 e-paper)";
     mc->default_ram_size = 8 * MiB;
     compat_props_add(mc->compat_props, x4pro_globals, ARRAY_SIZE(x4pro_globals));
     object_class_property_add_str(oc, "panel", x4pro_get_panel, x4pro_set_panel);
     object_class_property_set_description(oc, "panel",
-                                         "Panel: uc8179 (default) or uc8279-68");
+                                         "Panel: uc8279-68 (default) or uc8179");
 }
 
 /* BOOX Picco: SSD1677, SDMMC, and a shared I2C peripheral bus. */
@@ -1319,6 +1324,7 @@ static const TypeInfo x4pro_info = {
     .name = TYPE_X4PRO_MACHINE,
     .parent = TYPE_ESP32S3_MACHINE,
     .class_init = x4pro_machine_class_init,
+    .instance_init = x4pro_machine_instance_init,
 };
 
 /* Initialize machine type */

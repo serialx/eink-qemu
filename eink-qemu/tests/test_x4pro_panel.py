@@ -354,7 +354,7 @@ class PanelSelection(unittest.TestCase):
                          ['uc8279-68', 0, 0])
 
     def test_default_profile(self):
-        self.assertEqual(self.properties('x4pro'), ['uc8179', 25000, 2])
+        self.assertEqual(self.properties('x4pro'), ['uc8279-68', 0, 0])
         self.assertEqual(self.properties('x4pro,panel=uc8179'),
                          ['uc8179', 25000, 2])
 

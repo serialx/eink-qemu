@@ -17,7 +17,7 @@ QEMU = Path(os.environ.get('QEMU_XTENSA', ROOT / 'build/qemu-system-xtensa'))
 
 
 @unittest.skipUnless(QEMU.exists(), 'build qemu-system-xtensa first')
-class StockBootPeripherals(unittest.TestCase):
+class StockBootHarness(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -37,7 +37,7 @@ class StockBootPeripherals(unittest.TestCase):
         self.addCleanup(self.qmp_in.close)
         self.addCleanup(self.qmp_out.close)
         self.proc = subprocess.Popen([
-            str(QEMU), '-machine', 'x4pro', '-accel', 'qtest',
+            str(QEMU), '-machine', getattr(self, 'machine', 'x4pro'), '-accel', 'qtest',
             '-display', 'none', '-monitor', 'none', '-serial', 'none',
             '-nic', 'none', '-qtest', 'stdio',
             '-chardev', f'pipe,id=qmp,path={monitor}',
@@ -95,6 +95,8 @@ class StockBootPeripherals(unittest.TestCase):
         self.write(0x60023004, 1 << 30)
         return self.read(0x60023044) | (self.read(0x60023040) << 32)
 
+
+class StockBootPeripherals(StockBootHarness):
     def test_systimer_polling_preserves_fractional_ticks(self):
         for _ in range(100):
             self.command('clock_step 32')
@@ -250,8 +252,8 @@ class StockBootPeripherals(unittest.TestCase):
         self.write(spi + 0x1C, 39)
         self.write(spi, 1 << 24)
         self.command('clock_step 1000000')
-        self.assertEqual(self.read(spi + 0x98), 0xFF010000)
-        self.assertEqual(self.read(spi + 0x9C) & 0xFF, 0xFF)
+        self.assertEqual(self.read(spi + 0x98), 0x01680F00)
+        self.assertEqual(self.read(spi + 0x9C) & 0xFF, 0x00)
 
     def test_power_held_then_released(self):
         gpio_in = 0x6000403C
@@ -335,8 +337,8 @@ class StockBootPeripherals(unittest.TestCase):
         self.write(spi + 0x10, 1 << 28)  # MISO data phase
         self.write(spi, 1 << 24)
         self.command('clock_step 1000000')
-        self.assertEqual(self.read(payload), 0xFF010000)
-        self.assertEqual(self.read(payload + 76), 0xFFFFFFFF)
+        self.assertEqual(self.read(payload), 0x01680F00)
+        self.assertEqual(self.read(payload + 76), 0)
         self.assertEqual((self.read(desc) >> 12) & 0xFFF, 80)
         self.assertEqual(self.read(desc) >> 31, 0)
 
@@ -362,6 +364,10 @@ class StockBootPeripherals(unittest.TestCase):
                 self.command('clock_step 1000000')
                 self.assertEqual(self.read(payload), 0x3FCE9724)
                 self.assertEqual(self.read(desc), config)
+
+
+class LegacyPanelPeripherals(StockBootHarness):
+    machine = "x4pro,panel=uc8179"
 
     def test_panel_scan_directions(self):
         gpio, spi = 0x60004000, 0x60024000

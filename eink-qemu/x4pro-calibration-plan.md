@@ -1,5 +1,8 @@
 # X4 Pro UC8279-0x68 Implementation Plan
 
+> Historical implementation plan: UC8279 revision `0x68` is now the default.
+> See [current calibration and profile selection](x4cal/README.md).
+
 > **For agentic workers:** Use superpowers:executing-plans for this plan. Track evidence and decisions in `build/x4pro-calibration.local/progress.md`.
 
 **Goal:** Run the backed-up X4 Pro firmware using the connected reader's panel protocol and measured refresh timing.

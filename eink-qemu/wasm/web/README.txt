@@ -35,9 +35,10 @@ provenance and licenses are in eink-qemu/boot/README.md (boot-provenance.md in
 the package). Unsupported chips, invalid headers and apps exceeding the selected board partition
 are rejected. Full 16 MiB images pass through unchanged.
 The hosted copy is https://serialx.github.io/eink-qemu/ (no firmware included).
-For an X4 Pro UC8279 revision 0x68 panel, choose X4 Pro panel > UC8279 (0x68),
-or add ?panel=uc8279-68&turbo=0. Auto detects the chip, not the panel revision.
-The default panel remains UC8179; this selection does not affect other boards.
+X4 Pro defaults to UC8279 revision 0x68. Use ?turbo=0 for measured timing.
+Select UC8179 in X4 Pro panel or use ?panel=uc8179 for the older panel.
+Saved panel choices take precedence; this selection does not affect other boards.
+Auto detects the chip, not the panel revision.
 UC8279-0x68 has measured panel waits but has not had its optical ghosting fitted.
 Ghosting starts ticked. Untick it before Start or use ?ghosting=0 for clean,
 stable pixels in automated QA. The setting applies each time the emulator

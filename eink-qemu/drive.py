@@ -6,7 +6,7 @@ steps:  wait:SECONDS     press:KEY[:MS]     shot:FILE.png
         hmp:COMMAND      (any monitor command, output printed)
 KEY: up|down|power on the X4 Pro; back|confirm|left|right|up|down|power on the X3/X4.
 The machine follows the image's chip (X4MACHINE=x3|x4|x4pro|picco overrides).
-X4PANEL=uc8279-68 selects the measured X4 Pro panel revision.
+X4 Pro defaults to measured UC8279 revision 0x68; X4PANEL=uc8179 selects the legacy panel.
 The firmware log (USB-CDC) goes to log.txt."""
 import os, socket, subprocess, sys, time
 

@@ -30,7 +30,7 @@ class PanelLaunchers(unittest.TestCase):
             for launcher in ('run.sh', 'wasm/run-node.sh'):
                 for machine, chip in (('x4pro', 9), ('x3', 5)):
                     flash.write_bytes(bytes(12) + bytes([chip]))
-                    for panel in ('', 'uc8279-68'):
+                    for panel in ('', 'uc8179', 'uc8279-68'):
                         with self.subTest(launcher=launcher, machine=machine, panel=panel):
                             env = {k: v for k, v in os.environ.items()
                                    if not k.startswith('X4')}

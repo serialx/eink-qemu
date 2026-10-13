@@ -166,7 +166,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
     } else if (data.type === 'sd') {
         sdOperation(data);
     } else if (data.type === 'boot') {
-        const {machine, panel = 'uc8179', flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
+        const {machine, panel = 'uc8279-68', flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
         machineType = machine;
         // Picco distinguishes taps from long presses in guest time. Keep its
         // interactive clock paced even with faster peripheral timings, or an

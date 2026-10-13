@@ -7,18 +7,21 @@ revision `0x68` timing profile. RTC light sleep and deep-sleep restart are also
 implemented. These measurements characterize one reader and its installed card;
 they do not establish cycle-accurate cache, radio, or optical behavior.
 
-Select the connected reader's panel explicitly:
+The connected reader's UC8279 revision `0x68` panel is the X4 Pro default:
 
 ```sh
-X4PANEL=uc8279-68 eink-qemu/run.sh flash.bin sd.img
-X4PANEL=uc8279-68 eink-qemu/wasm/run-node.sh flash.bin sd.img
+eink-qemu/run.sh flash.bin sd.img
+eink-qemu/wasm/run-node.sh flash.bin sd.img
 ```
 
-The browser uses `?device=x4pro&panel=uc8279-68&turbo=0`. Direct QEMU requires
-`-machine x4pro,panel=uc8279-68 -icount shift=0,sleep=off`. The CPU costs are
+The browser uses `?device=x4pro&turbo=0`. Direct QEMU requires
+`-machine x4pro -icount shift=0,sleep=off`. The CPU costs are
 nanoseconds at 240 MHz; using the old `shift=2` multiplies them by four.
 Native, Node, browser and smoke-test launchers now agree on shift zero.
 The generic S3, Picco, X3 and legacy UC8179 profile retain their own defaults.
+Select the legacy panel with `X4PANEL=uc8179`, direct QEMU
+`-machine x4pro,panel=uc8179`, or the browser panel selector. Saved browser
+choices and explicit panel overrides take precedence over the default.
 Turbo explicitly disables SDMMC and SPI delays and shortens panel waits.
 
 ## PSRAM follow-up

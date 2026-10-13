@@ -3,7 +3,7 @@
 # usage: eink-qemu/run.sh flash.bin [sd.img] [extra qemu args...]
 # The machine follows the image's chip (byte 12 of the bootloader header): ESP32-S3 -> x4pro,
 # ESP32-C3 -> x3. X4MACHINE=x3|x4|x4pro|picco overrides.
-# X4PANEL=uc8279-68 selects the measured X4 Pro panel revision (default: uc8179).
+# X4 Pro defaults to measured UC8279 revision 0x68; X4PANEL=uc8179 selects the legacy panel.
 # Wi-Fi: the fake AP "PICSimLabWifi" is bridged to a QEMU NIC.
 #   X4BR=br0: on your LAN (router DHCP); needs "allow br0" in /usr/local/etc/qemu/bridge.conf, run as root.
 #   default: QEMU NAT (10.0.2.15), host :8080 -> device :80. X4NET overrides both.

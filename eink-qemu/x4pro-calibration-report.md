@@ -26,7 +26,8 @@ X4PANEL=uc8279-68 eink-qemu/wasm/run-node.sh flash.bin sd.img
 `-machine x4pro,panel=uc8279-68`. In the browser, choose **X4 Pro panel →
 UC8279 (0x68)**, or add `panel=uc8279-68&turbo=0` to the query string.
 Turn Turbo off for measured panel delays. Auto detects the SoC, not the panel.
-UC8179 remains the default; other boards ignore the separate panel selection.
+UC8279 revision `0x68` is now the default; `panel=uc8179` selects the legacy
+profile. Other boards ignore the separate panel selection.
 
 ## Implemented behavior
 
