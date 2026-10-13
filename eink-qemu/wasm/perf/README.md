@@ -200,3 +200,45 @@ including a new test of real matrix functions with counted CPU callbacks and
 50,000 randomized routing, priority, masking and reset changes. Weighted
 icount/deadline checks pass, as do X3 native accurate and native/Node turbo
 smoke tests. The same container leak-detection limitation noted above applies.
+
+### Bound main-module compilation work
+
+On the same i3-N305 with Node 26.11.1 and Emscripten 6.0.12, the default
+Wasm build at `3a838c7aff` spent much of its optimizing compilation on the
+RISC-V decoder. Wasm-only `noinline` translator declarations and a 16 KiB
+Binaryen combined-inlining budget for the RISC-V executable reduce
+`decode_insn32` from 367,734 to 56,765 bytes and `tb_gen_code` from 72,694 to
+7,922 bytes. This changes compiler inlining decisions without changing the
+generated decoder, ISA coverage, device timing, JIT threshold or Node flags.
+Native and Xtensa build settings remain unchanged.
+
+Three interleaved baseline/candidate pairs per mode, with exclusive host
+locks, fresh images, `sleep=off` and five waits, produced these medians:
+
+| Node phase | Accurate before/after | Turbo before/after |
+| --- | ---: | ---: |
+| Home | 4.727 / 4.437 s | 2.914 / 2.688 s |
+| Home to settled | 3.481 / 3.586 s | 4.244 / 4.200 s |
+| Settled, from launch | 8.117 / 8.079 s | 7.149 / 6.869 s |
+
+Home improved in all six pairs. Accurate settled time was mixed (one pair
+slower and only a 0.5% median reduction); turbo settled time improved in all
+three pairs, with a 3.9% median reduction. Accurate settled pairs were
+`8.117/8.392`, `8.652/8.079`, `8.063/7.695`; turbo pairs were
+`7.334/6.962`, `7.130/6.833`, `7.149/6.869` seconds. All twelve captures match
+the panel hash above and their baseline wait lines, including every accurate
+guest timestamp.
+
+A separate shared-lock turbo trace reduced summed main-module TurboFan
+event durations from 7,557 to 3,128 ms, including decoder compilation from
+4,264 to 265 ms. These overlapping compiler-event durations are not elapsed
+startup time. Total Wasm file size increased 1.2%; memory initialization is
+unchanged. LLVM `noinline` alone and a 64 KiB Binaryen budget left the decoder
+over 340 KiB, so neither was retained. Evidence, per-run values, build hashes
+and validation details are under `build-wasm/evidence/amd64-perf3/compile-cost/`.
+
+Both default Wasm targets build, and the native RISC-V translation unit
+compiles with unchanged native flags. The device suite passes 99 tests;
+12 Xtensa compiler-dependent tests and one optional release-fixture test
+are skipped. The indirect-branch probe passes in native and Node builds;
+the native icount replay/SMC probe also passes.

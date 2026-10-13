@@ -861,7 +861,14 @@ static int ex_rvc_shiftri(DisasContext *ctx, int imm)
 }
 
 /* Include the auto-generated decoder for 32 bit insn */
+#ifdef __EMSCRIPTEN__
+/* Keep translator bodies out of the decoder to bound Wasm tier-up work. */
+#pragma clang attribute push (__attribute__((noinline)), apply_to = function)
+#endif
 #include "decode-insn32.c.inc"
+#ifdef __EMSCRIPTEN__
+#pragma clang attribute pop
+#endif
 
 static bool gen_logic_imm_fn(DisasContext *ctx, arg_i *a,
                              void (*func)(TCGv, TCGv, target_long))

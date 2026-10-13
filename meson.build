@@ -4288,6 +4288,11 @@ foreach target : target_dirs
             '-DCONFIG_TARGET="@0@-config-target.h"'.format(target),
   ]
   link_args = emulator_link_args
+  if host_os == 'emscripten' and target_base_arch == 'riscv'
+    # Binaryen otherwise folds the noinline translator functions back into
+    # a large decoder, making V8's optimizing compilation expensive.
+    link_args += ['-sBINARYEN_EXTRA_PASSES=--inline-max-combined-binary-size=16384']
+  endif
 
   target_inc = [include_directories('target' / config_target['TARGET_BASE_ARCH'])]
   if host_os == 'linux'
