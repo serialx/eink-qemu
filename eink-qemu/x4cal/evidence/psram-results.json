@@ -1,0 +1,153 @@
+{
+  "capacity_and_patterns": {
+    "rows": 5880,
+    "groups": 392,
+    "checksums_match": true,
+    "sources": {
+      "baseline": {
+        "median_absolute_percent": 40.679,
+        "maximum_absolute_percent": 92.488,
+        "worst_group": {
+          "mhz": "240",
+          "bytes": "131072",
+          "op": "1",
+          "stride": "1024",
+          "warm": "1"
+        }
+      },
+      "native": {
+        "median_absolute_percent": 11.899,
+        "maximum_absolute_percent": 26.796,
+        "worst_group": {
+          "mhz": "240",
+          "bytes": "32768",
+          "op": "0",
+          "stride": "8",
+          "warm": "1"
+        }
+      },
+      "node": {
+        "median_absolute_percent": 11.899,
+        "maximum_absolute_percent": 26.799,
+        "worst_group": {
+          "mhz": "240",
+          "bytes": "32768",
+          "op": "0",
+          "stride": "1",
+          "warm": "1"
+        }
+      }
+    },
+    "native_node_max_median_difference_us": 40
+  },
+  "focused_kernels": {
+    "rows": 1440,
+    "groups": 96,
+    "checksums_match": true,
+    "sources": {
+      "baseline": {
+        "median_absolute_percent": 17.682,
+        "maximum_absolute_percent": 97.358,
+        "worst_group": {
+          "mhz": "240",
+          "bytes": "524288",
+          "stride": "8",
+          "op": "1",
+          "offset": "1"
+        }
+      },
+      "native": {
+        "median_absolute_percent": 1.373,
+        "maximum_absolute_percent": 9.049,
+        "worst_group": {
+          "mhz": "80",
+          "bytes": "524288",
+          "stride": "8",
+          "op": "0",
+          "offset": "7"
+        }
+      },
+      "node": {
+        "median_absolute_percent": 1.366,
+        "maximum_absolute_percent": 9.049,
+        "worst_group": {
+          "mhz": "80",
+          "bytes": "524288",
+          "stride": "8",
+          "op": "0",
+          "offset": "7"
+        }
+      }
+    },
+    "native_node_max_median_difference_us": 1
+  },
+  "original_cpu_validation": {
+    "rows": 750,
+    "groups": 30,
+    "checksums_match": true,
+    "sources": {
+      "baseline": {
+        "median_absolute_percent": 3.257,
+        "maximum_absolute_percent": 92.147,
+        "worst_group": {
+          "name": "psram_random",
+          "mhz": "240",
+          "bytes": "524288"
+        }
+      },
+      "native": {
+        "median_absolute_percent": 2.987,
+        "maximum_absolute_percent": 8.159,
+        "worst_group": {
+          "name": "psram_random",
+          "mhz": "240",
+          "bytes": "32768"
+        }
+      },
+      "node": {
+        "median_absolute_percent": 2.987,
+        "maximum_absolute_percent": 8.159,
+        "worst_group": {
+          "name": "psram_random",
+          "mhz": "240",
+          "bytes": "32768"
+        }
+      }
+    },
+    "native_node_max_median_difference_us": 0,
+    "selected": [
+      {
+        "name": "render_sram",
+        "mhz": "240",
+        "bytes": "32768",
+        "hardware_us": 149238,
+        "baseline_us": 150859,
+        "native_us": 150859
+      },
+      {
+        "name": "render_psram",
+        "mhz": "240",
+        "bytes": "32768",
+        "hardware_us": 149454,
+        "baseline_us": 150859,
+        "native_us": 151021
+      },
+      {
+        "name": "psram_seq",
+        "mhz": "240",
+        "bytes": "524288",
+        "hardware_us": 240182,
+        "baseline_us": 91366,
+        "native_us": 243255
+      },
+      {
+        "name": "psram_random",
+        "mhz": "240",
+        "bytes": "524288",
+        "hardware_us": 245114,
+        "baseline_us": 19248,
+        "native_us": 242096
+      }
+    ]
+  }
+}

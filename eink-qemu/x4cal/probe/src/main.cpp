@@ -14,6 +14,7 @@
 #include <cstring>
 
 void psramProbe();
+void psramDetail();
 
 #define NOINLINE __attribute__((noinline, noclone, noipa))
 constexpr unsigned kRepeats = 5, kWords = 8192, kLoops = 500000;
@@ -370,7 +371,7 @@ void spiProbe() {
     panelSPI.end();Serial.println("[CAL] DONE spi");
 }
 void info() {
-    Serial.printf("[CAL] READY version=5 cpu_mhz=%u flash_hz=%lu psram=%lu wake=%u deep=%lu\n",
+    Serial.printf("[CAL] READY version=6 cpu_mhz=%u flash_hz=%lu psram=%lu wake=%u deep=%lu\n",
                   getCpuFrequencyMhz(),(unsigned long)ESP.getFlashChipSpeed(),(unsigned long)ESP.getPsramSize(),
                   esp_sleep_get_wakeup_cause(),(unsigned long)deepMarker);
     deepMarker=0;
@@ -397,6 +398,7 @@ void loop() {
             if(!strcmp(input,"info")) { info(); Serial.println("[CAL] DONE info"); }
             else if(!strcmp(input,"cpu")) cpuProbe();
             else if(!strcmp(input,"psram")) psramProbe();
+            else if(!strcmp(input,"detail")) psramDetail();
             else if(!strcmp(input,"sd")) sdProbe();
             else if(!strcmp(input,"panel")) panelProbe();
             else if(!strcmp(input,"matrix")) matrixProbe();

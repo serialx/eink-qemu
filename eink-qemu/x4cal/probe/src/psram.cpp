@@ -65,3 +65,48 @@ void psramProbe() {
     heap_caps_free(p);
     Serial.println("[CAL] DONE psram");
 }
+
+template<unsigned Op>
+static __attribute__((noinline, noclone, noipa)) uint32_t IRAM_ATTR detailKernel(
+        volatile uint32_t *p, unsigned mask, unsigned offset, unsigned stride) {
+    uint32_t x = offset, sum = 0;
+    for (unsigned i = 0; i < 65536; i++) {
+        if constexpr (Op == 1) p[x] = i;
+        else if constexpr (Op == 2) p[x] += i;
+        else sum += p[x];
+        x = (x + stride) & mask;
+    }
+    return sum;
+}
+
+void psramDetail() {
+    auto *p = static_cast<uint32_t *>(heap_caps_aligned_alloc(
+        64, 524288, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!p) { Serial.println("[CAL] ERROR psram allocation"); return; }
+    for (unsigned mhz : {240u, 80u}) {
+        setCpuFrequencyMhz(mhz);
+        for (unsigned bytes : {4096u, 524288u})
+        for (unsigned stride : {1u, 8u})
+        for (unsigned op : {0u, 1u, 2u})
+        for (unsigned offset : {0u, 1u, 3u, 7u})
+        for (unsigned rep = 0; rep < 3; rep++) {
+            for (unsigned i = 0; i < bytes / 4; i++) p[i] = i;
+            Cache_WriteBack_Addr((uint32_t)p, bytes);
+            Cache_Invalidate_Addr((uint32_t)p, bytes);
+            auto fn = op == 0 ? detailKernel<0> : op == 1 ? detailKernel<1> : detailKernel<2>;
+            fn(p, bytes / 4 - 1, offset, stride); // warm the small working set
+            int64_t start = esp_timer_get_time();
+            uint32_t sum = fn(p, bytes / 4 - 1, offset, stride);
+            int64_t us = esp_timer_get_time() - start;
+            // Full contents checked outside the timed interval, for stores too.
+            uint32_t hash = 0;
+            for (unsigned i = 0; i < bytes / 4; i++) hash = (hash * 33) ^ p[i];
+            Serial.printf("[CAL] DETAIL mhz=%u bytes=%u stride=%u op=%u offset=%u rep=%u us=%lld sum=%08lx hash=%08lx\n",
+                mhz, bytes, stride, op, offset, rep, us, (unsigned long)sum, (unsigned long)hash);
+            Serial.flush();
+        }
+    }
+    setCpuFrequencyMhz(240);
+    heap_caps_free(p);
+    Serial.println("[CAL] DONE detail");
+}

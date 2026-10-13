@@ -41,6 +41,38 @@
     "Frozen v5 source and identical app binary for paired measurements.",
     "Baseline bc198e18b5 has no miss model and incorrectly reads cache configuration as CTRL=1/line=16.",
     "Hardware run 0 is training; run 1, dependent reads, and original CPU command are validation.",
-    "Store/RMW PSRAM kernel returns final index; read kernels return accumulated data. Functional store behavior is checked separately in emulator tests."
-  ]
+    "Store/RMW PSRAM kernel returns final index; read kernels return accumulated data. Functional store behavior is checked separately in emulator tests.",
+    "v6 adds focused read/write/RMW kernels and full-buffer hashes; v5 command bodies unchanged.",
+    "The data cache is four-way per Espressif hardware documentation even though sdkconfig defines DATA_CACHE_8WAYS.",
+    "Read completion overlaps a refill tail; dirty writeback occupies the same bus and can overlap CPU hits. Constants fitted to first physical boot; second boot retained for validation."
+  ],
+  "v6": {
+    "probe_sha256": "f107f6e7f69b82feaaeba28fd8009fba1d80357f691bf80599d0159c0328a62c",
+    "probe_size": 408080,
+    "source_sha256": {
+      "probe/platformio.ini": "a06348f26c394447a335dd38fc4068bdaa76cbf049d9812f80e0265b7a926a33",
+      "probe/partitions.csv": "c23434071d22951d76771268ac32895ba9d4c7cfd103cc56f7c060d6c7a4e422",
+      "probe/src/psram.cpp": "828f7f0de80ca4b48cf840b218186c60ba7af34ea1a69639491d5adb7d5253c2",
+      "probe/src/main.cpp": "266cbceafbb11d043a0b337cfa53355e6944b2cade0b0355b4808a96bf182dbb"
+    },
+    "restoration": {
+      "restored": true,
+      "readback_sha256": "4bf8abc4fe05fc1e7538c7912dfdabb65856423888fd676086d20a79481f42d7",
+      "offset": 65536,
+      "length": 409600
+    }
+  },
+  "model_commit": "dd652939ca",
+  "final_logs_sha256": {
+    "hardware-0.log": "ce9014c4385bb4a937a1a02bd86ae995fcb5cd4ef9a481ab75a1f4fdb0e093a1",
+    "hardware-1.log": "272d72477fc89add923fe1c6eb4bb2b233c42da958bc5ccc7108a798c0728ba9",
+    "baseline.log": "35c74d4e83764043a0fbf84f70eeba239eacf31635c06610f6e6c02ada2d8827",
+    "native.log": "bb91d0821f0b50b2f86ed29be97c90fb0ada35d0e1fdd424d2469a1392d3a294",
+    "node.log": "fb1843c14993dc163532901a1324a63c6328222c24da4941d5e31ecab8f0f780",
+    "detail/hardware-0.log": "40ff49c2473659559a93d5b0870a0822d56bff25fe0148062c0f008b36daae7f",
+    "detail/hardware-1.log": "6b6c525b43c99969617dca6c5e590a31738ad6e69e76ac5f572540ae838660fc",
+    "detail/baseline.log": "2d74097d7b6e9733926cba4f642d7097222aef38e2f9344ef7385f6b07809e08",
+    "detail/native.log": "25054668d79f4265bb440bcf1d1217d5d434ecfb9923e60612cbcb3fce550102",
+    "detail/node.log": "73cd462942135adb0db3fc9d85cb5061a41fb1bf3da2313d5e412b21e87b819b"
+  }
 }

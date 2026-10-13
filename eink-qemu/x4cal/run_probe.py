@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--extra', action='append', default=[])
     parser.add_argument('--log', type=Path, required=True)
     parser.add_argument('--timeout', type=float, default=240)
-    parser.add_argument('commands', nargs='+', choices=['info', 'cpu', 'psram', 'sd', 'panel', 'matrix', 'vendor', 'spi', 'light', 'deep'])
+    parser.add_argument('commands', nargs='+', choices=['info', 'cpu', 'psram', 'detail', 'sd', 'panel', 'matrix', 'vendor', 'spi', 'light', 'deep'])
     args = parser.parse_args()
     if bool(args.qemu) == bool(args.port):
         parser.error('choose exactly one of --qemu and --port')

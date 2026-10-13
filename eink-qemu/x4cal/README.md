@@ -1,7 +1,8 @@
 # X4 Pro fidelity calibration
 
 The X4 Pro defaults now include measured Xtensa execution costs, CPU clock
-scaling, SDMMC command/data/card delays, SPI setup time, and a stateful UC8279
+scaling, PSRAM cache-miss and writeback delays, SDMMC command/data/card delays,
+SPI setup time, and a stateful UC8279
 revision `0x68` timing profile. RTC light sleep and deep-sleep restart are also
 implemented. These measurements characterize one reader and its installed card;
 they do not establish cycle-accurate cache, radio, or optical behavior.
@@ -20,7 +21,19 @@ Native, Node, browser and smoke-test launchers now agree on shift zero.
 The generic S3, Picco, X3 and legacy UC8179 profile retain their own defaults.
 Turbo explicitly disables SDMMC and SPI delays and shortens panel waits.
 
-## Results
+## PSRAM follow-up
+
+The [PSRAM calibration](psram.md) closes the large-working-set gap below:
+512 KiB sequential and random workloads now differ from hardware by +1.28% and
+−1.23%. The 96 focused read/write groups have 1.37% median absolute error and
+9.05% maximum error. Original CPU/render validation remains within 8.16% overall.
+The broader branch-heavy sweep still exposes CPU-model limits; see the full
+report and `python3 eink-qemu/x4cal/analyze_psram.py` for all residuals.
+
+## Initial calibration results
+
+The following table preserves the original v2/v4 evidence. Its PSRAM miss rows
+are superseded by the follow-up above; the historical CSVs remain unchanged.
 
 Measured October 13, 2026 on an ESP32-S3 rev 0.2, 8 MiB PSRAM, 16 MiB flash,
 UC8279 rev `0x68`, and ASTC card with 512-byte sectors, 8 KiB clusters and a
@@ -197,8 +210,8 @@ not physical optical appearance or end-to-end hardware page-turn timing.
 
 Remaining limits are explicit:
 
-- PSRAM cache misses dominate the measured 512 KiB workloads. No data/instruction
-  cache, PSRAM bus contention or dual-core contention model was fitted.
+- PSRAM data-cache miss/refill/writeback timing is now fitted; see [limits](psram.md#limits)
+  for remaining cache, CPU pipeline and contention approximations.
 - Electrical BUSY is calibrated; optical ghosting, temperature response, charge
   history and unknown OTP waveform bodies still use approximations. No camera,
   photometer, temperature chamber or external logic analyzer was available.
