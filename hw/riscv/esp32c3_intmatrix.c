@@ -77,10 +77,21 @@ static void esp32c3_intmatrix_update_line(ESP32C3IntMatrixState *s, int line)
     }
 }
 
-static void esp32c3_intmatrix_refresh_all(ESP32C3IntMatrixState *s)
+static void esp32c3_intmatrix_refresh_threshold(ESP32C3IntMatrixState *s,
+                                              uint8_t old_threshold)
 {
-    for (uint32_t i = 1; i <= ESP32C3_CPU_INT_COUNT; i++) {
-        esp32c3_intmatrix_update_line(s, i);
+    uint32_t pending = (uint32_t)s->irq_enabled & ~1u;
+
+    /* Only enabled lines crossing the threshold can change their output. */
+    while (pending) {
+        unsigned line = ctz32(pending);
+        uint8_t priority = s->irq_prio[line];
+
+        pending &= pending - 1;
+        if ((priority >= old_threshold) != (priority >= s->irq_thres)) {
+            /* Visit lines in the same ascending order as a full refresh. */
+            esp32c3_intmatrix_update_line(s, line);
+        }
     }
 }
 
@@ -185,11 +196,13 @@ static void esp32c3_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, u
          * `esp32c3_intmatrix_core_prio_changed` called below would re-schedule the same interrupt.
          */
         if (priority != s->irq_thres) {
+            const uint8_t old_threshold = s->irq_thres;
+
             s->irq_thres = priority;
 #if INTMATRIX_DEBUG
             info_report("\x1b[31m[INTMATRIX] Setting CPU IRQ threshold to %d\x1b[0m", priority);
 #endif
-            esp32c3_intmatrix_refresh_all(s);
+            esp32c3_intmatrix_refresh_threshold(s, old_threshold);
         }
 
     } else if (index == ESP32C3_INTMATRIX_IO_ENABLE_REG) {
