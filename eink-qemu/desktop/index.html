@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eink-qemu</title>
+  <script>
+    // Apply a saved theme before the first paint.
+    try { const theme = localStorage.getItem('eink-qemu-theme'); if (theme) document.documentElement.dataset.theme = theme; } catch {}
+    if (navigator.userAgent.includes('Mac')) document.documentElement.dataset.platform = 'macos';
+  </script>
+  <script type="module" src="/src/main.ts"></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h3"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="currentColor"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-card" viewBox="0 0 24 24"><path d="M8 3h8l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3z"/><path d="M9 3v4M12 3v4M15 3v4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5v.01"/></symbol>
+    <symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+  </svg>
+
+  <div class="app">
+    <header class="topbar" data-tauri-drag-region>
+      <div class="brandbar">
+        <div class="about">
+          <h1 class="brand"><button id="about-button" class="brand-button" type="button" aria-expanded="false" aria-controls="about"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">eink-<span>qemu</span></span></button></h1>
+          <div id="about" class="tip about-tip" aria-label="About eink-qemu">
+            <strong>eink-qemu</strong>
+            <p>An emulator for ESP32 e-ink readers: the Xteink X4 Pro, X3 and X4, and the BOOX Picco.
+              It runs their unmodified firmware, stock or any fork, with the screen, SD card, keys
+              and Wi-Fi behaving like the real board. This app runs native QEMU.</p>
+            <p class="fine">Built on QEMU. Started as a fork of
+              <a href="https://github.com/prokrypt/x4prosim" target="_blank" rel="noopener">prokrypt/x4prosim</a>.</p>
+            <a class="about-link" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener">
+              <svg class="icon icon-fill" aria-hidden="true"><use href="#i-github"/></svg>github.com/serialx/eink-qemu</a>
+          </div>
+        </div>
+        <a id="github" class="icon-button" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener" aria-label="eink-qemu on GitHub" title="eink-qemu on GitHub">
+          <svg class="icon icon-fill"><use href="#i-github"/></svg>
+        </a>
+        <button id="theme" class="icon-button" type="button" aria-label="Switch to dark mode">
+          <svg class="icon"><use href="#i-moon"/></svg>
+        </button>
+      </div>
+      <div class="controls" aria-label="Emulator" data-tauri-drag-region>
+        <label class="device-choice">Device
+          <select id="device" aria-label="Device">
+            <option value="auto">Auto</option>
+            <option value="x3">X3</option>
+            <option value="x4">X4</option>
+            <option value="x4pro">X4 Pro</option>
+            <option value="picco">BOOX Picco</option>
+          </select>
+        </label>
+        <label id="panel-choice" class="device-choice" hidden>X4 Pro panel
+          <select id="panel" aria-label="X4 Pro panel">
+            <option value="uc8279-68">UC8279 (0x68, default)</option>
+            <option value="uc8179">UC8179</option>
+          </select>
+        </label>
+        <button id="flash" class="file-chip" type="button" title="Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump">
+          <svg class="icon brand-icon"><use href="#i-chip"/></svg>
+          <span class="file-chip-text"><span class="file-chip-label">Firmware</span><span id="flash-name" class="empty">Choose a .bin or .xota…</span></span>
+          <svg class="icon chevron"><use href="#i-chevron"/></svg>
+        </button>
+        <span class="spacer" data-tauri-drag-region></span>
+        <div class="switches" data-tauri-drag-region>
+          <div class="option">
+            <label class="switch"><input id="wifi" type="checkbox" role="switch" checked> Wi-Fi</label>
+            <button class="info" type="button" aria-label="About Wi-Fi" aria-describedby="wifi-help" aria-expanded="false">
+              <svg class="icon"><use href="#i-info"/></svg>
+            </button>
+            <div id="wifi-help" class="tip" role="tooltip">
+              <strong>Wi-Fi</strong>
+              <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, on QEMU's user
+                network, so the firmware reaches the internet and its font downloader works.</p>
+              <p class="fine">Applies when the emulator starts.</p>
+            </div>
+          </div>
+          <div class="option">
+            <label class="switch"><input id="ghosting" type="checkbox" role="switch" checked> Ghosting</label>
+            <button class="info" type="button" aria-label="About Ghosting" aria-describedby="ghosting-help" aria-expanded="false">
+              <svg class="icon"><use href="#i-info"/></svg>
+            </button>
+            <div id="ghosting-help" class="tip" role="tooltip">
+              <strong>E-ink ghosting</strong>
+              <p>Available on X3 and X4 Pro. X4 shows completed frames without ghosting.</p>
+              <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
+                Turn it off for clean, stable pixels when comparing screenshots.</p>
+              <p class="fine">Applies when the emulator starts.</p>
+            </div>
+          </div>
+          <div class="option">
+            <label class="switch"><input id="turbo" type="checkbox" role="switch" checked> Turbo</label>
+            <button class="info" type="button" aria-label="About Turbo" aria-describedby="turbo-help" aria-expanded="false">
+              <svg class="icon"><use href="#i-info"/></svg>
+            </button>
+            <div id="turbo-help" class="tip" role="tooltip">
+              <strong>Turbo (fast, not timing-accurate)</strong>
+              <p>Runs the device as fast as your computer allows: idle waits are skipped and SD card,
+                screen refresh and SPI transfer delays are cut to a minimum.</p>
+              <p>Timing no longer matches real hardware. Turn it off to see how fast the firmware runs
+                on an actual device.</p>
+              <p class="fine">Applies when the emulator starts.</p>
+            </div>
+          </div>
+        </div>
+        <span class="divider" aria-hidden="true"></span>
+        <div class="run">
+          <button id="reset" type="button" disabled><svg class="icon"><use href="#i-reset"/></svg>Reset</button>
+          <button id="start" class="primary" type="button"><svg class="icon small"><use href="#i-play"/></svg>Start</button>
+          <button id="stop" class="invert" type="button" disabled><svg class="icon small"><use href="#i-stop"/></svg>Stop</button>
+        </div>
+      </div>
+    </header>
+
+    <aside class="sd" aria-label="SD card">
+      <div class="sd-head">
+        <div class="sd-title"><h2>SD card</h2><span id="sd-info" role="status"></span></div>
+        <div class="meter" aria-hidden="true"><span id="sd-meter"></span></div>
+        <p id="sd-save" role="status"></p>
+      </div>
+      <div class="sd-tools">
+        <button id="sd-upload" class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
+        <button id="sd-mkdir" class="icon-button" type="button" aria-label="New folder" title="New folder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
+        <div class="card-choice">
+          <button id="sd" class="icon-button" type="button" aria-label="Change SD card" title="Open another SD image or make a blank card" aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu"><svg class="icon"><use href="#i-card"/></svg></button>
+          <div id="card-menu" class="menu" role="menu" aria-label="SD card" hidden>
+            <button type="button" role="menuitem" data-card="open"><svg class="icon"><use href="#i-card"/></svg>Open SD image…</button>
+            <button type="button" role="menuitem" data-card="new"><svg class="icon"><use href="#i-file"/></svg>New blank card…</button>
+          </div>
+        </div>
+        <button id="download" class="icon-button" type="button" aria-label="Save a copy of the SD card" title="Save a copy of the SD card"><svg class="icon"><use href="#i-download"/></svg></button>
+        <button id="sd-refresh" class="icon-button" type="button" aria-label="Refresh" title="Refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      </div>
+      <nav id="sd-path" aria-label="Folder path"></nav>
+      <div class="sd-scroll">
+        <table id="sd-table" aria-label="Files in the open folder">
+          <colgroup><col><col class="col-size"><col class="col-ops"></colgroup>
+          <tbody id="sd-rows"></tbody>
+        </table>
+      </div>
+      <p id="sd-error" role="alert"></p>
+      <p class="drop-hint">Drop files or folders here to copy them into the open folder. Changing the card while the emulator runs resets the device so it mounts the card again.</p>
+    </aside>
+
+    <main class="stage" aria-label="Device">
+      <div class="gutter" data-side="sd" role="separator" aria-orientation="vertical" aria-label="Resize SD card panel"></div>
+      <div class="gutter" data-side="output" role="separator" aria-orientation="vertical" aria-label="Resize console"></div>
+      <div class="stage-bar">
+        <span id="machine" class="pill">No device running</span>
+        <div class="zoom" role="group" aria-label="Screen size">
+          <button id="zoom-out" type="button" aria-label="Smaller screen" disabled>−</button>
+          <select id="zoom-level" aria-label="Screen size" disabled>
+            <option value="fit">Fit</option>
+          </select>
+          <button id="zoom-in" type="button" aria-label="Larger screen" disabled>+</button>
+          <span class="divider" aria-hidden="true"></span>
+          <button id="screenshot" type="button" aria-label="Save screenshot" title="Save screenshot" disabled><svg class="icon"><use href="#i-camera"/></svg></button>
+        </div>
+      </div>
+      <div class="device">
+        <div class="bezel">
+          <div id="screen">
+            <div class="intro">
+              <h2>Choose firmware to begin</h2>
+              <p>Pick <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> for the X3/X4 or <code>crosspoint-&lt;ver&gt;-x4pro.bin</code>
+                for the X4 Pro from the <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases" target="_blank" rel="noopener">CrossPoint releases</a>,
+                an official X4 Pro <code>.xota</code> update, a merged <code>.bin</code>, or a 16 MiB flash dump.
+                Select your device above; choose X4 for TRMNL firmware. Drop the file here or choose it;
+                loading it starts the emulator.</p>
+              <button class="button" type="button" data-for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</button>
+              <p class="fine">The SD card is an image file on disk. A blank 64 MiB FAT32 card is created on first run.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="keys" aria-label="Device keys"></div>
+    </main>
+
+    <section class="output" aria-label="Firmware console">
+      <div class="output-head">
+        <h2>Console <span>USB-CDC</span></h2>
+        <label class="filter">
+          <svg class="icon"><use href="#i-search"/></svg>
+          <input id="console-filter" type="search" placeholder="Filter output" aria-label="Filter console output">
+        </label>
+        <button id="console-clear" class="icon-button" type="button" aria-label="Clear console" title="Clear console"><svg class="icon"><use href="#i-trash"/></svg></button>
+      </div>
+      <pre id="console" tabindex="0" aria-label="Firmware console"></pre>
+    </section>
+
+    <footer class="statusbar">
+      <span class="dot" aria-hidden="true"></span>
+      <p id="status" role="status">Choose a flash image to begin.</p>
+      <span id="key-hint" class="key-hint">Keyboard: arrows · Enter · Esc · P</span>
+    </footer>
+  </div>
+</body>
+</html>

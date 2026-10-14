@@ -1,44 +1,69 @@
 # eink-qemu desktop: design
 
-An Electron app with the browser page's interface (SD card explorer, device
-stage, firmware console) that runs the native `qemu-system-*` binaries instead
-of the WebAssembly build. Native QEMU is several times faster than the Wasm
-JIT, has no fixed heap, and reads the SD card image from disk at any size.
+A Tauri 2 app with the browser page's interface (SD card explorer, device
+stage, firmware console) that runs the native `qemu-system-*` binaries
+instead of the WebAssembly build. Native QEMU is several times faster than
+the Wasm JIT, has no fixed heap, and reads the SD card image from disk at any
+size.
+
+It replaces an Electron attempt (branch `serialx/electron-app`) whose
+renderer re-created the page with shadcn/ui. That copied the page's colours
+but not its look: shadcn's radius scale, control heights, focus rings and
+switches made every control a different shape. This app uses the page's own
+stylesheet and markup instead.
 
 ## Stack
 
-Electron, electron-vite, React, TypeScript, Tailwind v4, shadcn/ui (Base UI
-primitives), pnpm. The package lives in `eink-qemu/desktop/` and imports the
-browser page's dependency-free modules (`fat.js`, `sd-ops.js`, `xota.js`,
-`flash-image.js`) from `../wasm/web` so both front ends share one copy.
+Tauri 2, Rust (tokio, fatfs), Vite, TypeScript without a UI framework, pnpm.
+The package lives in `eink-qemu/desktop/`: `src/` is the WebView, `src-tauri/`
+the Rust core.
+
+## Theme and layout
+
+- `src/desktop.css` starts with `@import '@web/style.css'` (a Vite alias to
+  `../wasm/web`): the stone neutrals, the forest green, Inter, Lora and Geist
+  Mono, the controls, the green status bar, the dotted stage and the bezel
+  are the site's bytes. Fonts, the cow mark and the firmware modules come
+  from the same directory.
+- `index.html` keeps the page's markup and class names. The desktop overlay
+  adds a canvas where the page had its runtime iframe, buttons where it had
+  file inputs (Tauri works with paths from native dialogs and drops), gutters
+  that set the grid's panel widths, the card menu, in-page prompt and confirm
+  dialogs (`window.prompt` is not available in every system WebView), and a
+  traffic-light inset with drag regions for the macOS overlay title bar.
+- The window's minimum size is 1000×640, so the stylesheet's phone layout
+  never engages.
+- `src/app.ts` is the page's `app.js` with the runtime iframe replaced by
+  Rust commands. Screen zoom (whole physical pixels, Fit, Auto), the console
+  buffer and filter, help tips, key rows, theme toggle, status milestones and
+  the SD table carry over.
+- Without the Tauri runtime (`pnpm dev` in a browser) the page shows mock
+  content from `src/demo.ts`, for layout work.
 
 ## Processes
 
 ```
-main process                              renderer (React)
-EmulatorSession                    IPC    App state
-  spawns qemu-system-{riscv32,xtensa}  <->  TopBar, SdExplorer, DeviceStage,
-  QMP client       (socket, JSON)            Console, StatusBar
-  display server   (socket, ui/eink.c)       <canvas> at panel resolution
-  stdout           (USB-CDC log)
-SdCard  (fat.js on the image file)
-Firmware (compose release apps, .xota)
+src-tauri (Rust, tokio)                         WebView (TypeScript)
+Session                               invoke    app.ts
+  spawns qemu-system-{riscv32,xtensa}  <----->    topbar, SD explorer, stage,
+  QMP client     (socket, JSON)        channels   console, status bar
+  display reader (socket, ui/eink.c)   ------->   <canvas> at panel resolution
+  stdout/stderr  (USB-CDC log)         ------->   console, batched lines
+sd.rs  (fatfs on the image file)
 ```
 
-Electron listens on both sockets before it spawns QEMU, and QEMU connects as a
-client, so there is no wait for a socket file to appear. Unix sockets on macOS
-and Linux; loopback TCP on Windows.
+Rust listens on both sockets before spawning QEMU, and QEMU connects as a
+client, so there is no wait for a socket file. Unix sockets on macOS and
+Linux; loopback TCP on Windows. Startup succeeds once QMP has negotiated and
+the display has sent its first size; it fails after 30 seconds, when QEMU
+exits, or when Stop cancels it. Any later loss of QEMU, the monitor or the
+display ends the run as crashed.
 
 ## Display: `-display eink,addr=<socket>`
 
 `ui/eink.c` is a 2D `DisplayChangeListener` on the console of the device with
-qdev id `panel` (the UC8179, UC8279 or SSD1677; `device=ID` picks another).
-The boards also realize Espressif's RGB framebuffer, so the first graphic
-console is not always the panel. The panels rasterise their ink state,
-ghosting included, into a 32 bpp surface on each GUI refresh and report the
-whole surface as dirty. The backend forwards those pixels over one stream.
-
-Records are little-endian: a 4-byte type, a 4-byte payload length, the payload.
+qdev id `panel` (the UC8179, UC8279 or SSD1677). Records are little-endian: a
+4-byte type, a 4-byte payload length, the payload.
 
 | Type | Payload | When |
 |---|---|---|
@@ -47,54 +72,48 @@ Records are little-endian: a 4-byte type, a 4-byte payload length, the payload.
 | 3 `RECT` | u32 x, y, w, h, then `w*h` gray8 pixels | dirty rectangle |
 | 4 `FLUSH` | none | end of a refresh that sent rectangles |
 
-Pixels are 8-bit gray: the panels write R = G = B. The green channel is sent.
-At most one update is queued: while the front end reads, dirty areas
-accumulate, and the next update sends their bounding box with the newest
-pixels, so the guest never waits for the UI. Closing the connection shuts
-QEMU down, like closing its window (`window-close=off` keeps it running).
-Screenshots are taken from the canvas, as in the browser.
-
-Input does not go through the display. `x3-keys`, `x4pro-keys` (also Picco)
-and the GT911 touch panel are QEMU input handlers without routing, reached by
-QMP `input-send-event`: keys as qcodes (`up`, `down`, `left`, `right`, `ret`,
-`esc`, `p`), touch as absolute axes scaled to 0..32767 with the left button
-as the finger and the right button as the X4 Pro Home key.
+At most one update is queued in QEMU, so the guest never waits for the UI.
+`src-tauri/src/display.rs` validates every record (sizes up to 4096², rects
+inside the surface, at most 1024 per flush) and sends one raw binary channel
+message per flush: `u32 1, width, height` for a size, or `u32 2, count`
+followed by each rect. The WebView writes the gray pixels into an
+`ImageData` and puts the dirty bounding box. Rust keeps a copy of the panel,
+so a reloaded WebView gets the current screen when it attaches.
 
 ## Control: QMP
 
-`stop`, `cont`, `system_reset`, `input-send-event`, `query-status`, and the
-`STOP`, `RESUME`, `RESET` and `SHUTDOWN` events. The firmware console is the
-USB-CDC chardev on stdout, as in `run.sh`.
+`qmp_capabilities`, `stop`, `cont`, `system_reset`, `input-send-event`,
+`qom-set` and `quit`. Keys are qcodes (`esc ret left right up down p`);
+the X4 Pro Home key is `qom-set /machine/gt911 home`. Touch on the X4 Pro and
+Picco is absolute 0..32767 with the left button as the finger. Key and touch
+commands are synchronous Tauri commands that queue onto one task per run, so
+a release never overtakes its press.
 
 ## SD card
 
-The card is an image file on disk that QEMU opens directly; there is no
-autosave and no IndexedDB. Explorer edits keep the browser's sequence: QMP
-`stop`, edit the image with `fat.js`, `system_reset` (the firmware caches FAT
-and directory sectors), `cont`. Listing and downloads only stop and resume.
+The card is an image file QEMU opens directly. `src-tauri/src/sd.rs` edits
+it with the `fatfs` crate (FAT12/16/32, long names, bare or MBR-partitioned
+images), streaming file contents rather than loading the card, so stock
+2 GiB cards work. Names, ordering and error codes follow `fat.js`.
+
+While the emulator runs, every operation is bracketed: QMP `stop`, the
+operation, then `system_reset` if it may have changed the card (the firmware
+caches FAT and directory sectors), then `cont`. Errors raised before any
+write (`EEXIST`, `ENOENT`, `EINVAL`, …) skip the reset. One card is used by
+one app instance at a time, through a lock file in the app's data directory.
 
 ## Firmware
 
-Release apps and X4 Pro `.xota` updates are composed into 16 MiB flash with
-`flash-image.js` and the bundled boot assets, as in the browser; merged
-images and full dumps pass through. QEMU runs a temporary copy, because it
-writes NVS and OTA data to flash.
+Release apps and X4 Pro `.xota` updates are composed into 16 MiB flash in the
+WebView with the page's `flash-image.js` and `xota.js`, with boot assets
+served from `public/boot`; merged images and full dumps pass through after
+validating their partition table and application checksums. The composed
+image goes to Rust as a raw request body, and QEMU runs a temporary copy,
+because it writes NVS and OTA data to flash.
 
-## Interface
+## Packaging
 
-The browser page's layout and look: stone neutrals, one forest-green accent,
-Inter, Lora and Geist Mono. The three panels are `Resizable`; controls map to
-shadcn components (`Select`, `Switch`, `Popover`, `Button`, `Breadcrumb`,
-`Table`, `Progress`, `Dialog`, `AlertDialog`, `Empty`, `Badge`, `sonner`).
-Screen sizing keeps the browser's whole-physical-pixel zoom steps.
-
-## Order of work
-
-1. `ui/eink.c` and its QAPI entry; a script that dumps the first frame.
-2. Scaffold, theme and static layout.
-3. EmulatorSession: spawn, QMP, display, console, input.
-4. SD explorer on the image file; firmware composition; status milestones.
-5. Packaging with electron-builder and the release `bin/` archives.
-
-Follow-up: the turbo overrides exist in `turbo-args.sh` and `runtime.js`; the
-desktop app should read `turbo-args.sh` rather than add a third copy.
+`scripts/bundle-qemu.sh` stages QEMU, its non-system libraries and the two
+ESP32 ROMs into `src-tauri/qemu`; `tauri.bundle.conf.json` adds that folder
+to the bundle's resources, and a packaged app runs `qemu/bin` with
+`-L qemu/share`. macOS only so far; see the README.

@@ -1,0 +1,7 @@
+node_modules
+dist
+public/boot
+src-tauri/target
+src-tauri/resources
+src-tauri/gen/schemas
+src-tauri/qemu

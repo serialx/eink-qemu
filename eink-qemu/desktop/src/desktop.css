@@ -1,0 +1,72 @@
+/* The browser page's stylesheet is the theme: same tokens, fonts, marks and
+   component classes. This file only adapts the page to a desktop window. */
+@import '@web/style.css';
+
+/* A fixed window never falls into the page's phone layout (min size 1000x640),
+   and the app never scrolls as a document. */
+html, body { height: 100%; overflow: hidden; }
+body { user-select: none; -webkit-user-select: none; }
+#console, .filter input { user-select: text; -webkit-user-select: text; }
+
+/* Panel widths are the grid variables the page already reads; the gutters set them. */
+.app { --sd-min: var(--sd-w, 300px); --sd-max: var(--sd-w, 300px); --output-min: var(--output-w, 380px); }
+.gutter {
+  position: absolute; top: 0; bottom: 0; width: 9px; z-index: 5; cursor: col-resize; touch-action: none;
+}
+.gutter[data-side="sd"] { left: -5px; }
+.gutter[data-side="output"] { right: -5px; }
+.gutter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: transparent; transition: background .12s; }
+.gutter:hover::after, .gutter.active::after { background: var(--meter); }
+.app.resizing { cursor: col-resize; }
+.app.resizing * { pointer-events: none; }
+
+/* macOS: traffic lights sit over the top bar; the bar is the drag region. */
+html[data-platform="macos"] .topbar { padding-left: 84px; }
+.topbar button, .topbar select, .topbar label, .topbar a, .topbar .about { -webkit-app-region: no-drag; }
+
+/* Tauri hands files over as paths, so file inputs become buttons. */
+button.file-chip { padding: 6px 10px; font-weight: 500; color: var(--text-2); justify-content: flex-start; }
+button.file-chip:hover:enabled { background: var(--surface-2); }
+.intro button.button { background: #3d6652; border-color: transparent; color: #fff; font-weight: 600; }
+.intro button.button:hover:enabled { background: #315243; }
+
+/* The device screen is a canvas fed by QEMU's eink display backend. */
+#screen canvas { display: block; image-rendering: pixelated; filter: var(--screen-filter); }
+#screen:not(:has(canvas)) { width: min(380px, calc(100vw - 72px)); aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; }
+
+/* The card is a file on disk: show its path on one line, full path on hover. */
+#sd-save { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The card button's menu: the page's tip surface. */
+.card-choice { position: relative; display: inline-flex; }
+.menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 190px;
+  display: flex; flex-direction: column; gap: 2px; padding: 4px;
+  border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface);
+  box-shadow: 0 12px 32px -8px rgba(12,10,9,.25);
+}
+.menu[hidden] { display: none; }
+.menu button { justify-content: flex-start; border: 0; background: none; padding: 7px 10px; font-weight: 500; color: var(--text-2); }
+.menu button:hover:enabled, .menu button:focus-visible { background: var(--surface-2); color: var(--text); }
+.menu .icon { color: var(--faint); }
+
+/* Prompt and confirm: <dialog> with the page's tokens. */
+dialog.ask {
+  width: min(400px, calc(100vw - 32px)); padding: 18px 18px 16px; border: 1px solid var(--border-strong); border-radius: 12px;
+  background: var(--surface); color: var(--text); box-shadow: 0 24px 60px -16px rgba(12,10,9,.45);
+}
+dialog.ask::backdrop { background: rgba(12,10,9,.35); }
+dialog.ask form { display: flex; flex-direction: column; gap: 12px; }
+dialog.ask strong { font: 600 16px/1.35 var(--serif); }
+dialog.ask p { color: var(--text-2); font-size: 13px; white-space: pre-line; overflow-wrap: anywhere; }
+dialog.ask input {
+  font: inherit; color: var(--text); background: var(--bg); padding: 7px 10px;
+  border: 1px solid var(--border-strong); border-radius: 8px; outline: 0; user-select: text; -webkit-user-select: text;
+}
+dialog.ask input:focus { border-color: var(--meter); }
+.ask-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+button.danger { background: var(--danger); border-color: transparent; color: #fff; font-weight: 600; }
+button.danger:hover:enabled { background: var(--danger); opacity: .9; }
+
+/* Stopped and error messages sit on the paper like the page's intro. */
+#screen:not(:has(canvas)):not(:has(.intro)) { color: #44403c; }
