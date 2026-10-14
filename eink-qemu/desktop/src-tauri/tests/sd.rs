@@ -292,7 +292,8 @@ fn replacing_files_reports_conflicts_and_frees_space() {
     let host2 = card.host("v2");
     write(&host2.join("BOOK.epub"), &data(2, 1_000));
     let plan = sd::plan_upload(&card.image, "/", &[host2.join("BOOK.epub")]).unwrap();
-    assert_eq!(plan.conflicts, ["/BOOK.epub"]);
+    // The conflict names the file on the card, as it is listed.
+    assert_eq!(plan.conflicts, ["/book.epub"]);
     upload_all(&card.image, "/", &[host2.join("BOOK.epub")]).unwrap();
     // The existing entry keeps its name; its contents are replaced.
     assert_eq!(card.names("/"), ["book.epub"]);
@@ -1082,7 +1083,7 @@ fn a_short_alias_names_the_existing_file() {
 
     // The alias alone replaces that file, as fat.js would.
     let plan = sd::plan_upload(&card.image, "/", &[next.join("LONGLO~1.TXT")]).unwrap();
-    assert_eq!(plan.conflicts, ["/LONGLO~1.TXT"]);
+    assert_eq!(plan.conflicts, ["/LongLongFileName.txt"]);
     upload_all(&card.image, "/", &[next.join("LONGLO~1.TXT")]).unwrap();
     assert_eq!(card.names("/"), ["LongLongFileName.txt"]);
     assert_eq!(card.read("/LongLongFileName.txt"), [b'B'; 3000]);
@@ -1532,7 +1533,7 @@ fn temporary_space_child() {
     let before = fs::read(&image).unwrap();
     let error = sd::upload(&image, "/", &[source], &[]).unwrap_err();
     assert_eq!((error.code, error.changed), ("EIO", false), "{error:?}");
-    assert!(error.message.starts_with("Not enough temporary disk space"), "{}", error.message);
+    assert!(error.message.starts_with("Could not stage the change in temporary storage"), "{}", error.message);
     assert!(fs::read(&image).unwrap() == before, "the card is unchanged");
 }
 

@@ -115,14 +115,22 @@ a release never overtakes its press.
 The card is an image file QEMU opens directly. `src-tauri/src/sd.rs` edits
 it with the `fatfs` crate (FAT12/16/32, long names, bare or MBR-partitioned
 images), streaming file contents rather than loading the card, so stock
-2 GiB cards work. Names, ordering and error codes follow `fat.js`.
+2 GiB cards work. Name rules, folder-first ordering and the common error
+codes follow `fat.js`; the deviations (generated short aliases, which damaged
+cards are refused and with which code, partition and FSInfo handling, upload
+of nested dotfiles and empty folders) are listed in `sd.rs`'s header. The
+crate is vendored with fixes (`src-tauri/vendor/fatfs/EINK-QEMU.md`) so the
+folders it writes pass `fsck_msdos` and `fsck.fat`, which every SD test runs.
 
 While the emulator runs, every operation is bracketed: QMP `stop`, the
 operation, then `system_reset` if it may have changed the card (the firmware
 caches FAT and directory sectors), then `cont`. Edits are transactional: fatfs
 writes into a journal (spilled to a temporary file), which reaches the image
-only when the whole operation has succeeded, so a failed upload, rename or
-delete leaves the card byte-for-byte unchanged and needs no reset. Input
+only when the whole operation has succeeded. A failure before that leaves the
+card byte-for-byte unchanged; a write failure while committing new data to
+free clusters leaves it logically unchanged; only a failure while committing
+folders or the FAT can leave it inconsistent, and then the emulator is
+stopped rather than reset onto it. Input
 sent while the guest is paused waits for it to resume.
 
 One card is used by one app instance at a time. A reservation locks two

@@ -206,7 +206,7 @@ fn spill_error(error: io::Error) -> io::Error {
 
 fn eio(error: io::Error) -> SdError {
     if let Some(spill) = error.get_ref().and_then(|inner| inner.downcast_ref::<SpillError>()) {
-        return SdError::new("EIO", format!("Not enough temporary disk space to stage the change: {spill}"));
+        return SdError::new("EIO", format!("Could not stage the change in temporary storage (is the disk full?): {spill}"));
     }
     if error.kind() == io::ErrorKind::WriteZero {
         // Only a fixed FAT12/16 root folder ends a write early.
@@ -612,7 +612,7 @@ impl Journal {
             move |error: io::Error| SdError {
                 code: "EIO",
                 message: if error.get_ref().is_some_and(|inner| inner.is::<SpillError>()) {
-                    format!("Not enough temporary disk space to stage the change: {error}{}", if changed { "; the card may be inconsistent" } else { "" })
+                    format!("Could not stage the change in temporary storage (is the disk full?): {error}{}", if changed { "; the card may be inconsistent" } else { "" })
                 } else if changed {
                     format!("Writing the SD card image failed partway; the card may be inconsistent: {error}")
                 } else {
@@ -1646,6 +1646,8 @@ fn short_name(name: &str, existing: &HashSet<[u8; 11]>) -> Option<[u8; 11]> {
 }
 
 struct SimEntry {
+    /// The name the entry is listed under (its long name if it has one).
+    name: String,
     is_dir: bool,
     cluster: u32,
     /// Data clusters a replaced file gives back.
@@ -1675,7 +1677,8 @@ impl Sim<'_> {
         for entry in raw {
             let clusters = if entry.is_dir() { 0 } else { self.fat.chain(entry.cluster)?.len() as u64 };
             let id = self.entries.len();
-            self.entries.push(SimEntry { is_dir: entry.is_dir(), cluster: entry.cluster, clusters, planned: false });
+            let name = entry.long.clone().unwrap_or_else(|| entry.short.clone());
+            self.entries.push(SimEntry { name, is_dir: entry.is_dir(), cluster: entry.cluster, clusters, planned: false });
             if let Some(long) = &entry.long {
                 folder.names.entry(fold(long)).or_insert(id);
             }
@@ -1727,7 +1730,7 @@ impl Sim<'_> {
         let per_cluster = self.geo.cluster_size / 32;
         self.find(parent, name)?;
         let id = self.entries.len();
-        self.entries.push(SimEntry { is_dir, cluster: 0, clusters: 0, planned: true });
+        self.entries.push(SimEntry { name: name.to_string(), is_dir, cluster: 0, clusters: 0, planned: true });
         let folder = self.folders.get_mut(&fold(parent)).and_then(Option::as_mut).expect("folder loaded by find");
         let short = short_name(name, &folder.shorts)
             .ok_or_else(|| SdError::new("EEXIST", format!("{parent} has too many names like \"{name}\".")))?;
@@ -1793,7 +1796,8 @@ fn simulate(journal: &mut Journal, geo: &Geometry, fat: &FatState, dir: &str, pl
                     return Err(SdError::new("EINVAL", format!("Two sources would be copied to {path}: their names refer to the same file on the card.")));
                 }
                 free += entry.clusters as i64;
-                conflicts.push(path.clone());
+                // Name the file that is replaced, also when the source matched its short alias.
+                conflicts.push(if parent == "/" { format!("/{}", entry.name) } else { format!("{parent}/{}", entry.name) });
             }
             None => free -= sim.add(&parent, &name, false)? as i64,
         }
