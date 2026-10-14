@@ -99,12 +99,16 @@ impl QemuPaths {
     }
 }
 
-/// The open SD card and the lock that makes this app instance its only user.
+/// Locks that give this app instance exclusive use of a host file (see
+/// `reserve` in lib.rs). Held, never read.
+pub struct Reservation {
+    pub(crate) files: Vec<std::fs::File>,
+}
+
+/// The open SD card and the reservation that makes this instance its only user.
 pub struct Card {
     pub path: PathBuf,
-    /// Held, never read: the lock lasts as long as the card is in use.
-    #[allow(dead_code)]
-    pub lock: std::fs::File,
+    pub lock: StdMutex<Reservation>,
 }
 
 const TURBO_ARGS: &str = include_str!("../resources/turbo-args.json");
@@ -124,6 +128,9 @@ struct Run {
     input: mpsc::UnboundedSender<Input>,
     /// True while an SD operation has the guest stopped: input waits.
     paused: watch::Sender<bool>,
+    /// Held while one input event is sent and while pausing, so an event
+    /// never reaches QEMU after it was stopped for an SD operation.
+    gate: Arc<Mutex<()>>,
     kill: StdMutex<Option<oneshot::Sender<()>>>,
     exited: watch::Receiver<Option<String>>,
     stopping: AtomicBool,
@@ -343,12 +350,12 @@ impl Session {
 
     /// Replace the card. Only while idle; returns the previous card (and its
     /// lock) so the caller decides when to release it.
-    pub async fn set_card(&self, card: Card) -> Result<Option<Card>, AppError> {
+    pub async fn set_card(&self, card: Option<Card>) -> Result<Option<Card>, AppError> {
         let _ops = self.ops.lock().await;
         if self.info().state != "idle" {
             return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
         }
-        Ok(self.card.lock().unwrap().replace(card))
+        Ok(std::mem::replace(&mut *self.card.lock().unwrap(), card))
     }
 
     /// Run `action` while idle with the operations lock held, so no start or
@@ -681,12 +688,14 @@ impl Session {
 
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
         let (paused, mut paused_rx) = watch::channel(false);
+        let gate = Arc::new(Mutex::new(()));
         let run = Arc::new(Run {
             id,
             machine: options.machine.clone(),
             qmp: qmp.clone(),
             input: input_tx,
             paused,
+            gate: gate.clone(),
             kill,
             exited,
             stopping: AtomicBool::new(false),
@@ -702,10 +711,17 @@ impl Session {
             tokio::spawn(async move {
                 let mut home = false;
                 let mut reported = false;
-                while let Some(input) = input_rx.recv().await {
-                    if paused_rx.wait_for(|paused| !*paused).await.is_err() {
-                        break;
-                    }
+                'events: while let Some(input) = input_rx.recv().await {
+                    let _sending = loop {
+                        let held = gate.lock().await;
+                        if !*paused_rx.borrow() {
+                            break held;
+                        }
+                        drop(held);
+                        if paused_rx.wait_for(|paused| !*paused).await.is_err() {
+                            break 'events;
+                        }
+                    };
                     let result = match input {
                         Input::Key(key, down) if key == "Home" => {
                             if machine != "x4pro" || home == down {
@@ -852,7 +868,11 @@ impl Session {
             "idle" => blocking(card).await.map_err(AppError::from),
             "running" => {
                 let run = self.current().ok_or_else(AppError::busy)?;
-                let _ = run.paused.send(true);
+                {
+                    // Wait for an event being sent, then hold new ones back.
+                    let _gate = run.gate.lock().await;
+                    let _ = run.paused.send(true);
+                }
                 if let Err(error) = run.qmp.execute("stop", None).await {
                     // The guest may or may not have stopped: end the run
                     // rather than leave it in an unknown state.
@@ -861,7 +881,16 @@ impl Session {
                     return Err(AppError::new("EQEMU", error));
                 }
                 let result = blocking(card).await;
-                let changed = mutates && result.as_ref().err().is_none_or(sd_changed);
+                if let Err(error) = &result {
+                    if sd_changed(error) {
+                        // The card may be inconsistent: do not let the firmware write to it.
+                        let message = format!("The SD card may be damaged ({}). The emulator was stopped; check the card before starting again.", error.message);
+                        self.log(message.clone());
+                        self.finish(&run, Exit { kind: "failed", reason: Some(message.clone()) }).await;
+                        return Err(AppError::new(error.code, message));
+                    }
+                }
+                let changed = mutates && result.is_ok();
                 let resumed = async {
                     if changed {
                         self.reset_device(&run).await?;

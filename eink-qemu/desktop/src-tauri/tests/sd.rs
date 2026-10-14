@@ -88,6 +88,7 @@ fn node() -> Option<PathBuf> {
 /// What fat.js sees, or None without Node.
 fn fat_js(image: &Path) -> Option<Value> {
     let Some(node) = node() else {
+        assert!(std::env::var_os("SD_PARITY_OPTIONAL").is_some(), "node is required for the fat.js parity checks (set SD_PARITY_OPTIONAL=1 to skip them)");
         eprintln!("node not found: skipping fat.js parity");
         return None;
     };
@@ -121,12 +122,19 @@ fn rust_view(card: &Card) -> Value {
     serde_json::json!({ "type": root.fs_type, "free": root.free, "total": root.total, "order": order, "tree": tree })
 }
 
-/// fat.js and fatfs agree on the whole card.
+/// fat.js and fatfs agree on the whole card, and every allocated cluster
+/// belongs to exactly one file or folder (nothing lost or cross-linked).
 fn parity(card: &Card) {
+    sound(card);
     let rust = rust_view(card);
     if let Some(js) = fat_js(&card.image) {
         assert_eq!(js, rust, "fat.js and the Rust explorer disagree");
     }
+}
+
+/// No lost clusters and no cross-links (any FAT type).
+fn sound(card: &Card) {
+    assert_eq!(sd::lost_clusters(&card.image).expect("the card audits cleanly"), 0, "lost clusters");
 }
 
 #[test]
@@ -686,18 +694,21 @@ fn upload_failing_midway_leaves_the_image_unchanged() {
     write(&second.join("a.txt"), &grown);
     write(&second.join("b.txt"), b"");
     let sources = [second.join("a.txt"), second.join("b.txt")];
-    let plan = sd::plan_upload(&card.image, "/", &sources).unwrap();
-    assert_eq!(plan.conflicts, ["/a.txt", "/b.txt"]);
+    // The planner follows the upload's order, so it refuses this too.
+    assert_eq!(code(sd::plan_upload(&card.image, "/", &sources)), "ENOSPC");
     let error = sd::upload(&card.image, "/", &sources).unwrap_err();
     assert_eq!(error.code, "ENOSPC");
     assert!(!error.changed);
     identical(&card, &before);
     assert_eq!(card.read("/a.txt"), data(1, 400));
 
-    // In the other order it fits.
-    sd::upload(&card.image, "/", &[second.join("b.txt"), second.join("a.txt")]).unwrap();
+    // In the other order it fits, and the planner says so.
+    let reversed = [second.join("b.txt"), second.join("a.txt")];
+    assert_eq!(sd::plan_upload(&card.image, "/", &reversed).unwrap().conflicts, ["/b.txt", "/a.txt"]);
+    sd::upload(&card.image, "/", &reversed).unwrap();
     assert_eq!(card.read("/a.txt"), grown);
     assert_eq!(card.read("/b.txt"), b"");
+    sound(&card);
 }
 
 #[cfg(unix)]
@@ -967,4 +978,310 @@ fn large_uploads_spill_and_round_trip() {
     sd::upload(&card.image, "/", &[host.join("big.bin")]).unwrap();
     assert!(card.read("/big.bin") == bytes);
     parity(&card);
+}
+
+/* Short-name aliases: fatfs opens an existing entry whose short name
+   matches instead of creating a new one. */
+
+#[test]
+fn sources_colliding_through_a_short_alias_are_refused() {
+    let card = Card::new();
+    let host = card.host("alias");
+    write(&host.join("LongLongFileName.txt"), &[b'A'; 1000]);
+    write(&host.join("LONGLO~1.TXT"), &[b'B'; 1000]);
+    let before = fs::read(&card.image).unwrap();
+    // LongLongFileName.txt gets the short name LONGLO~1.TXT.
+    let sources = [host.join("LongLongFileName.txt"), host.join("LONGLO~1.TXT")];
+    assert_eq!(code(sd::plan_upload(&card.image, "/", &sources)), "EINVAL");
+    let error = sd::upload(&card.image, "/", &sources).unwrap_err();
+    assert_eq!(error.code, "EINVAL");
+    assert!(!error.changed);
+    identical(&card, &before);
+
+    // The other way round, the long name gets LONGLO~2.TXT: two files.
+    sd::upload(&card.image, "/", &[host.join("LONGLO~1.TXT"), host.join("LongLongFileName.txt")]).unwrap();
+    assert_eq!(card.names("/"), ["LongLongFileName.txt", "LONGLO~1.TXT"]);
+    assert_eq!(card.read("/LONGLO~1.TXT"), [b'B'; 1000]);
+    assert_eq!(card.read("/LongLongFileName.txt"), [b'A'; 1000]);
+    parity(&card);
+}
+
+#[test]
+fn a_short_alias_names_the_existing_file() {
+    let card = Card::new();
+    let host = card.host("seed");
+    write(&host.join("LongLongFileName.txt"), b"original");
+    sd::upload(&card.image, "/", &[host.join("LongLongFileName.txt")]).unwrap();
+    let before = fs::read(&card.image).unwrap();
+
+    // Both names refer to the one file on the card.
+    let next = card.host("next");
+    write(&next.join("LongLongFileName.txt"), &[b'A'; 3000]);
+    write(&next.join("LONGLO~1.TXT"), &[b'B'; 3000]);
+    let sources = [next.join("LongLongFileName.txt"), next.join("LONGLO~1.TXT")];
+    assert_eq!(code(sd::plan_upload(&card.image, "/", &sources)), "EINVAL");
+    assert_eq!(code(sd::upload(&card.image, "/", &sources)), "EINVAL");
+    identical(&card, &before);
+
+    // The alias alone replaces that file, as fat.js would.
+    let plan = sd::plan_upload(&card.image, "/", &[next.join("LONGLO~1.TXT")]).unwrap();
+    assert_eq!(plan.conflicts, ["/LONGLO~1.TXT"]);
+    sd::upload(&card.image, "/", &[next.join("LONGLO~1.TXT")]).unwrap();
+    assert_eq!(card.names("/"), ["LongLongFileName.txt"]);
+    assert_eq!(card.read("/LongLongFileName.txt"), [b'B'; 3000]);
+    parity(&card);
+}
+
+#[test]
+fn planned_short_names_follow_fatfs() {
+    let card = Card::new();
+    let host = card.host("names");
+    let mut sources: Vec<PathBuf> = (1..=4)
+        .map(|n| {
+            let path = host.join(format!("LongName{n}.txt"));
+            write(&path, format!("{n}").as_bytes());
+            path
+        })
+        .collect();
+    // The third long name takes LONGNA~3.TXT, so this one is the same file.
+    write(&host.join("LONGNA~3.TXT"), b"x");
+    let mut clash = sources.clone();
+    clash.push(host.join("LONGNA~3.TXT"));
+    assert_eq!(code(sd::plan_upload(&card.image, "/", &clash)), "EINVAL");
+    // A fifth long name gets a checksum alias, not LONGNA~5.TXT.
+    write(&host.join("LongName5.txt"), b"5");
+    write(&host.join("LONGNA~5.TXT"), b"y");
+    sources.push(host.join("LongName5.txt"));
+    sources.push(host.join("LONGNA~5.TXT"));
+    let plan = sd::plan_upload(&card.image, "/", &sources).unwrap();
+    assert!(plan.conflicts.is_empty());
+    sd::upload(&card.image, "/", &sources).unwrap();
+    assert_eq!(card.list("/").entries.len(), 6);
+    for n in 1..=5 {
+        assert_eq!(card.read(&format!("/LongName{n}.txt")), format!("{n}").as_bytes());
+    }
+    assert_eq!(card.read("/LONGNA~5.TXT"), b"y");
+    let image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    let shorts: Vec<Vec<u8>> = raw.records(&image, raw.root).into_iter().map(|(_, name, _)| name).collect();
+    for n in 1..=4 {
+        assert!(shorts.contains(&format!("LONGNA~{n}TXT").as_bytes().to_vec()), "LONGNA~{n}");
+    }
+    parity(&card);
+}
+
+/* Cross-links anywhere on the card stop edits that could free shared
+   storage. */
+
+#[test]
+fn cross_links_outside_the_target_are_refused() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("tree/a.txt"), b"A");
+    write(&host.join("tree/b.txt"), b"B");
+    sd::upload(&card.image, "/", &[host.join("tree")]).unwrap();
+    let mut image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    let (_, tree) = raw.record(&image, raw.root, b"TREE       ");
+    let (_, a) = raw.record(&image, tree, b"A       TXT");
+    let (b_record, b) = raw.record(&image, tree, b"B       TXT");
+    image[b_record + 20..b_record + 22].copy_from_slice(&((a >> 16) as u16).to_le_bytes());
+    image[b_record + 26..b_record + 28].copy_from_slice(&(a as u16).to_le_bytes());
+    raw.set_all(&mut image, b, 0); // b's own cluster is no longer used
+    fs::write(&card.image, &image).unwrap();
+    for error in [
+        sd::remove(&card.image, "/tree/a.txt").unwrap_err(),
+        sd::mkdir(&card.image, "/x").unwrap_err(),
+        sd::rename(&card.image, "/tree/a.txt", "c.txt").unwrap_err(),
+    ] {
+        assert_eq!(error.code, "ENOTSUP", "{error:?}");
+        assert!(error.message.contains("cross-linked"), "{}", error.message);
+        assert!(!error.changed);
+    }
+    identical(&card, &image);
+    // Reading still works.
+    assert_eq!(card.read("/tree/b.txt"), b"A");
+}
+
+fn bad_chain_variants(card: &Card, kind: &str, chain_tail: impl Fn(&mut Vec<u8>, u32, u32), get: impl Fn(&[u8], u32) -> u32, bad: u32, reserved: u32) {
+    let host = card.host("bad");
+    write(&host.join("a.bin"), &data(12, 3000));
+    sd::upload(&card.image, "/", &[host.join("a.bin")]).unwrap();
+    let good = fs::read(&card.image).unwrap();
+    let first_free = (2..).find(|&c| get(&good, c) == 0).unwrap();
+    let last = (2..first_free).filter(|&c| get(&good, c) > bad).last().unwrap();
+
+    // A chain that runs into a bad (or reserved) cluster: refused, never a panic.
+    for mark in [bad, reserved] {
+        let mut image = good.clone();
+        chain_tail(&mut image, last, first_free);
+        chain_tail(&mut image, first_free, mark);
+        fs::write(&card.image, &image).unwrap();
+        assert_eq!(code(sd::list(&card.image, "/")), "ENOTSUP", "{kind} {mark:#x}");
+        assert_eq!(code(sd::remove(&card.image, "/anything")), "ENOTSUP", "{kind} {mark:#x}");
+        assert_eq!(code(sd::remove(&card.image, "/a.bin")), "ENOTSUP", "{kind} {mark:#x}");
+        assert!(fs::read(&card.image).unwrap() == image);
+    }
+    // An isolated bad or reserved mark is healthy: the cluster is just unusable.
+    let mut image = good.clone();
+    chain_tail(&mut image, first_free, bad);
+    chain_tail(&mut image, first_free + 1, reserved);
+    fs::write(&card.image, &image).unwrap();
+    let free = card.list("/").free;
+    write(&host.join("b.bin"), &data(13, 5000));
+    sd::upload(&card.image, "/", &[host.join("b.bin")]).unwrap();
+    assert_eq!(card.read("/b.bin"), data(13, 5000));
+    assert!(card.list("/").free < free);
+    sd::remove(&card.image, "/a.bin").unwrap();
+    let after = fs::read(&card.image).unwrap();
+    assert_eq!(get(&after, first_free), bad, "{kind}: the bad mark stays");
+    assert_eq!(get(&after, first_free + 1), reserved, "{kind}: the reserved mark stays");
+    sound(card);
+}
+
+#[test]
+fn chains_into_bad_clusters_are_refused_without_panicking() {
+    let card = Card::new();
+    let image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    bad_chain_variants(
+        &card,
+        "FAT32",
+        |image, cluster, value| raw.set_all(image, cluster, value),
+        |image, cluster| raw.get(image, cluster),
+        0x0fff_fff7,
+        0x0fff_fff0,
+    );
+
+    let card = formatted(fatfs::FatType::Fat16, 32 << 20);
+    let image = fs::read(&card.image).unwrap();
+    let bps = u16_le(&image, 11);
+    let fat = u16_le(&image, 14) * bps;
+    let fat_size = u16_le(&image, 22) * bps;
+    let fats = image[16] as usize;
+    bad_chain_variants(
+        &card,
+        "FAT16",
+        |image, cluster, value| {
+            for copy in 0..fats {
+                let at = fat + copy * fat_size + cluster as usize * 2;
+                image[at..at + 2].copy_from_slice(&(value as u16).to_le_bytes());
+            }
+        },
+        |image, cluster| u16_le(image, fat + cluster as usize * 2) as u32,
+        0xfff7,
+        0xfff0,
+    );
+}
+
+/* The planner's space model. */
+
+/// Fill all free clusters with one file.
+fn fill(card: &Card) {
+    let host = card.host("fill");
+    let free = card.list("/").free;
+    write(&host.join("fill.bin"), &vec![0x5a; free as usize]);
+    sd::upload(&card.image, "/", &[host.join("fill.bin")]).unwrap();
+    assert_eq!(card.list("/").free, 0);
+}
+
+#[test]
+fn a_full_card_takes_empty_files_but_not_folders() {
+    let card = Card::new();
+    fill(&card);
+    let host = card.host("empty");
+    write(&host.join("empty.txt"), b"");
+    fs::create_dir_all(host.join("folder")).unwrap();
+    // The root folder has free slots in its cluster: no cluster is needed.
+    assert!(sd::plan_upload(&card.image, "/", &[host.join("empty.txt")]).unwrap().conflicts.is_empty());
+    sd::upload(&card.image, "/", &[host.join("empty.txt")]).unwrap();
+    assert_eq!(card.read("/empty.txt"), b"");
+    // A new folder needs a cluster of its own, even when empty.
+    let before = fs::read(&card.image).unwrap();
+    assert_eq!(code(sd::plan_upload(&card.image, "/", &[host.join("folder")])), "ENOSPC");
+    assert_eq!(code(sd::upload(&card.image, "/", &[host.join("folder")])), "ENOSPC");
+    identical(&card, &before);
+    parity(&card);
+}
+
+#[test]
+fn plans_that_fit_pass_and_succeed() {
+    // Many long names grow a folder by several clusters; replacements give
+    // their clusters back first. The plan and the upload agree.
+    let card = formatted(fatfs::FatType::Fat16, 32 << 20);
+    let host = card.host("tree");
+    for n in 0..300 {
+        write(&host.join(format!("folder/a rather long file name number {n:03}.txt")), &data(n, 700));
+    }
+    let free = card.list("/").free;
+    let plan = sd::plan_upload(&card.image, "/", &[host.join("folder")]).unwrap();
+    assert_eq!(plan.files, 300);
+    sd::upload(&card.image, "/", &[host.join("folder")]).unwrap();
+    assert!(card.list("/").free < free);
+    for n in 0..300 {
+        write(&host.join(format!("folder/a rather long file name number {n:03}.txt")), &data(n + 1000, 100));
+    }
+    let plan = sd::plan_upload(&card.image, "/", &[host.join("folder")]).unwrap();
+    assert_eq!(plan.conflicts.len(), 300);
+    sd::upload(&card.image, "/", &[host.join("folder")]).unwrap();
+    assert_eq!(card.read("/folder/a rather long file name number 123.txt"), data(1123, 100));
+    sound(&card);
+}
+
+/* Commit failures: new data reaches the card first, then folders and the
+   FATs. */
+
+struct Injected;
+impl Injected {
+    fn after(bytes: u64) -> Injected {
+        sd::fail_commit_after(Some(bytes));
+        Injected
+    }
+}
+impl Drop for Injected {
+    fn drop(&mut self) {
+        sd::fail_commit_after(None);
+    }
+}
+
+#[test]
+fn a_failure_while_writing_new_data_changes_nothing_on_the_card() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("keep.txt"), b"keep");
+    sd::upload(&card.image, "/", &[host.join("keep.txt")]).unwrap();
+    let before = fs::read(&card.image).unwrap();
+    let view = rust_view(&card);
+    write(&host.join("big.bin"), &data(14, 1 << 20));
+    let error = {
+        let _guard = Injected::after(8192);
+        sd::upload(&card.image, "/", &[host.join("big.bin")]).unwrap_err()
+    };
+    assert_eq!(error.code, "EIO");
+    assert!(!error.changed, "{error:?}");
+    // Only clusters the card does not use were written.
+    let after = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&after);
+    assert!(after[..raw.data] == before[..raw.data], "reserved sectors and FATs are unchanged");
+    assert_eq!(rust_view(&card), view);
+    parity(&card);
+    // The same upload then works.
+    sd::upload(&card.image, "/", &[host.join("big.bin")]).unwrap();
+    assert!(card.read("/big.bin") == data(14, 1 << 20));
+    parity(&card);
+}
+
+#[test]
+fn a_failure_after_new_data_reports_a_changed_card() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("a.txt"), b"a");
+    sd::upload(&card.image, "/", &[host.join("a.txt")]).unwrap();
+    // A rename only rewrites folder slots: the first write already counts.
+    let error = {
+        let _guard = Injected::after(0);
+        sd::rename(&card.image, "/a.txt", "b.txt").unwrap_err()
+    };
+    assert_eq!(error.code, "EIO");
+    assert!(error.changed, "{error:?}");
 }

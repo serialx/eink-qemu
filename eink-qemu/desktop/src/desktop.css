@@ -70,3 +70,18 @@ button.danger:hover:enabled { background: var(--danger); opacity: .9; }
 
 /* Stopped and error messages sit on the paper like the page's intro. */
 #screen:not(:has(canvas)):not(:has(.intro)) { color: #44403c; }
+
+/* WebKit draws native compact selects that ignore padding; give them the
+   page's look (as Chrome renders it) with a drawn chevron. */
+.device-choice select, .zoom select {
+  -webkit-appearance: none; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%), linear-gradient(135deg, var(--faint) 50%, transparent 50%);
+  background-repeat: no-repeat; background-size: 4px 4px, 4px 4px;
+}
+.device-choice select {
+  min-height: 34px; padding: 6px 28px 6px 10px; line-height: 1.4; color: var(--text);
+  background-color: var(--surface); background-position: calc(100% - 15px) 52%, calc(100% - 11px) 52%;
+}
+.device-choice select:hover:enabled { background-color: var(--surface-2); }
+.device-choice select:disabled { opacity: .55; }
+.zoom select { padding: 0 18px 0 8px; background-position: calc(100% - 11px) 52%, calc(100% - 7px) 52%; }

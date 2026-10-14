@@ -117,11 +117,16 @@ only when the whole operation has succeeded, so a failed upload, rename or
 delete leaves the card byte-for-byte unchanged and needs no reset. Input
 sent while the guest is paused waits for it to resume.
 
-One card is used by one app instance at a time: a lock file per card in the
-user's app data directory, shared by every instance whatever its data
-directory. Without the lock the card is not used at all; the app opens
-without a card and says why. Saving a copy, an exported file or a screenshot
-over a card that is open is refused.
+One card is used by one app instance at a time. A reservation locks two
+files in the user's app data directory, shared by every instance whatever
+its data directory: one named after the card's path (so it also covers a
+card being created) and one after its identity (device and inode, so hard
+links share an owner). Without its reservation the card is not used at all;
+the app opens without a card and says why. Saving a copy, an exported file
+or a screenshot reserves its destination for the whole write, so it can
+never land on an open card, and the default card is reserved before it is
+created. Device input and the pause for an SD operation take one gate, so
+no key event reaches a stopped guest.
 
 ## Firmware
 

@@ -74,6 +74,10 @@ async function validateApp(bytes: Uint8Array): Promise<void> {
 }
 
 async function validateFlash(bytes: Uint8Array): Promise<void> {
+  // The second-stage bootloader is an ESP image too, before the partition table.
+  try { await validateApp(bytes.subarray(0, 0x8000)); } catch (error) {
+    throw new Error((error as Error).message.replace('application image', 'bootloader'));
+  }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let applications = 0;
   for (let offset = 0x8000; offset < 0x8c00; offset += 32) {

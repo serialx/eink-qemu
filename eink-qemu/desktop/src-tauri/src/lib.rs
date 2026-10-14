@@ -13,7 +13,7 @@ mod session;
 mod settings;
 
 use serde::Serialize;
-use session::{AppError, Card, QemuPaths, Session, SessionInfo, StartOptions};
+use session::{AppError, Card, QemuPaths, Reservation, Session, SessionInfo, StartOptions};
 use settings::{Settings, SettingsPatch};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -118,39 +118,68 @@ fn card_key(path: &Path) -> PathBuf {
     }
 }
 
-fn lock_path(locks: &Path, card: &Path) -> PathBuf {
+/// The lock file for one key (a path or a file identity).
+fn lock_file(locks: &Path, key: &str) -> Result<std::fs::File, AppError> {
     use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    card_key(card).hash(&mut hasher);
-    locks.join(format!("{:016x}.lock", hasher.finish()))
-}
-
-/// Refuse to write over a card that an instance (this one included) has open.
-fn not_an_open_card(locks: &Path, dest: &Path) -> Result<(), AppError> {
-    let Ok(file) = std::fs::OpenOptions::new().write(true).open(lock_path(locks, dest)) else {
-        return Ok(());
-    };
-    match file.try_lock() {
-        Ok(()) => Ok(()),
-        Err(_) => Err(AppError::new("EBUSY", format!("{} is an SD card open in eink-qemu.", dest.display()))),
-    }
-}
-
-/// Lock a card for this instance. Fails when another instance holds it.
-fn lock_card(locks: &Path, card: &Path) -> Result<std::fs::File, AppError> {
     std::fs::create_dir_all(locks)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(lock_path(locks, card))?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::new(
-            "EBUSY",
-            format!("{} is open in another eink-qemu window.", card.display()),
-        )),
-        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+        .open(locks.join(format!("{:016x}.lock", hasher.finish())))?;
+    Ok(file)
+}
+
+/// A file's identity, so hard links to one card share one owner.
+fn identity_key(path: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(format!("id:{}:{}", meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Exclusive use of a host file among all eink-qemu instances of this user:
+/// a lock on its path (also before it exists) and, when it exists, on its
+/// identity. Cards hold one while open; writes to a host file hold one for
+/// the whole write, so they can never land on an open card.
+fn reserve(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
+    let mut reservation = Reservation { files: Vec::new() };
+    reservation.add(locks, &format!("path:{}", card_key(path).display()), path)?;
+    reservation.refresh(locks, path)?;
+    Ok(reservation)
+}
+
+impl Reservation {
+    fn add(&mut self, locks: &Path, key: &str, path: &Path) -> Result<(), AppError> {
+        let file = lock_file(locks, key)?;
+        match file.try_lock() {
+            Ok(()) => {
+                self.files.push(file);
+                Ok(())
+            }
+            Err(std::fs::TryLockError::WouldBlock) => Err(AppError::new(
+                "EBUSY",
+                format!("{} is an SD card open in eink-qemu.", path.display()),
+            )),
+            Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+        }
+    }
+
+    /// Also lock the file's current identity (after it was created or replaced).
+    fn refresh(&mut self, locks: &Path, path: &Path) -> Result<(), AppError> {
+        match identity_key(path) {
+            Some(id) => self.add(locks, &id, path),
+            None => Ok(()),
+        }
     }
 }
 
@@ -170,8 +199,8 @@ fn validate_card(path: &Path) -> Result<PathBuf, AppError> {
 
 fn open_card(locks: &Path, path: &Path) -> Result<Card, AppError> {
     let path = validate_card(path)?;
-    let lock = lock_card(locks, &path)?;
-    Ok(Card { path, lock })
+    let lock = reserve(locks, &path)?;
+    Ok(Card { path, lock: lock.into() })
 }
 
 fn check_firmware(path: &Path) -> Result<FileInfo, AppError> {
@@ -351,12 +380,18 @@ fn touch(app: State<'_, App>, x: f64, y: f64, down: bool) {
 
 async fn use_card(app: &App, card: Card) -> Result<FileInfo, AppError> {
     let path = card.path.clone();
-    let previous = app.session.set_card(card).await?;
-    drop(previous);
-    app.update(|settings| {
+    let previous = app.session.set_card(Some(card)).await?;
+    let previous_path = previous.as_ref().map(|card| card.path.clone());
+    if let Err(error) = app.update(|settings| {
         settings.card = Some(path.clone());
         Ok(())
-    })?;
+    }) {
+        // Keep the card the settings still name.
+        let _ = app.session.set_card(previous).await;
+        return Err(error);
+    }
+    drop(previous);
+    let _ = previous_path;
     file_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
 }
 
@@ -391,21 +426,30 @@ async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>) -> Result<
     else {
         return Ok(None);
     };
-    let key = card_key(&path);
     let locks = app.locks.clone();
-    // The card in use is replaced in place under its own lock; any other
-    // destination must be free before anything is written.
-    let lock = app
+    // The card in use is replaced in place under its own reservation; any
+    // other destination is reserved before anything is written.
+    let made = app
         .session
         .while_idle(|current| {
-            let ours = current.is_some_and(|card| card_key(&card.path) == key);
-            let lock = if ours { None } else { Some(lock_card(&locks, &path)?) };
-            sd::create_blank(&path).map_err(AppError::from)?;
-            Ok(lock)
+            let ours = current.is_some_and(|card| {
+                card_key(&card.path) == card_key(&path) || (identity_key(&card.path).is_some() && identity_key(&card.path) == identity_key(&path))
+            });
+            if ours {
+                sd::create_blank(&path).map_err(AppError::from)?;
+                // The blank card is a new file: lock its identity too.
+                current.unwrap().lock.lock().unwrap().refresh(&locks, &path)?;
+                Ok(None)
+            } else {
+                let mut reservation = reserve(&locks, &path)?;
+                sd::create_blank(&path).map_err(AppError::from)?;
+                reservation.refresh(&locks, &path)?;
+                Ok(Some(reservation))
+            }
         })
         .await?;
-    match lock {
-        Some(lock) => use_card(&app, Card { path: validate_card(&path)?, lock }).await.map(Some),
+    match made {
+        Some(lock) => use_card(&app, Card { path: validate_card(&path)?, lock: lock.into() }).await.map(Some),
         None => Ok(file_info(&path)),
     }
 }
@@ -423,11 +467,13 @@ async fn card_pick_copy(handle: tauri::AppHandle, app: State<'_, App>) -> Result
     else {
         return Ok(None);
     };
-    not_an_open_card(&app.locks, &dest)?;
+    // Held until the copy is written, so no instance opens it meanwhile.
+    let _reservation = reserve(&app.locks, &dest)?;
     let target = dest.clone();
     app.session
         .with_card(false, move |card| {
-            if card_key(&target) == card_key(card) {
+            let same_file = identity_key(&target).is_some() && identity_key(&target) == identity_key(card);
+            if card_key(&target) == card_key(card) || same_file {
                 return Err(sd::SdError::new("EINVAL", "Choose a different file for the copy."));
             }
             std::fs::copy(card, &target).map(|_| ()).map_err(|e| sd::SdError::new("EIO", e.to_string()))
@@ -477,7 +523,7 @@ async fn sd_pick_export(handle: tauri::AppHandle, app: State<'_, App>, path: Str
     else {
         return Ok(None);
     };
-    not_an_open_card(&app.locks, &dest)?;
+    let _reservation = reserve(&app.locks, &dest)?;
     let target = dest.clone();
     app.session.with_card(false, move |card| sd::export(card, &path, &target)).await?;
     Ok(Some(dest.to_string_lossy().into_owned()))
@@ -523,7 +569,7 @@ async fn screenshot_save(handle: tauri::AppHandle, app: State<'_, App>, request:
     else {
         return Ok(None);
     };
-    not_an_open_card(&app.locks, &dest)?;
+    let _reservation = reserve(&app.locks, &dest)?;
     tokio::fs::write(&dest, bytes).await?;
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
@@ -559,13 +605,18 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
         };
     }
     let default = data.join("sd.img");
-    if !default.exists() {
-        if let Err(error) = sd::create_blank(&default) {
-            problems.push(format!("Could not create the default SD card {}: {error}", default.display()));
-            return None;
+    // Reserve the default card before looking at it, so two first launches
+    // cannot both create it.
+    let opened = reserve(locks, &default).and_then(|mut reservation| {
+        if !default.exists() {
+            sd::create_blank(&default).map_err(|error| {
+                AppError::new("EIO", format!("Could not create the default SD card {}: {error}", default.display()))
+            })?;
+            reservation.refresh(locks, &default)?;
         }
-    }
-    match open_card(locks, &default) {
+        Ok(Card { path: validate_card(&default)?, lock: reservation.into() })
+    });
+    match opened {
         Ok(card) => {
             settings.card = Some(card.path.clone());
             Some(card)
@@ -677,4 +728,43 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reserved_card_cannot_be_reserved_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let locks = dir.path().join("locks");
+        let card = dir.path().join("card.img");
+        std::fs::write(&card, vec![0u8; 1024]).unwrap();
+        let first = reserve(&locks, &card).unwrap();
+        assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
+        drop(first);
+        assert!(reserve(&locks, &card).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_links_share_one_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let locks = dir.path().join("locks");
+        let card = dir.path().join("card.img");
+        let alias = dir.path().join("alias.img");
+        std::fs::write(&card, vec![0u8; 1024]).unwrap();
+        std::fs::hard_link(&card, &alias).unwrap();
+        let _owner = reserve(&locks, &card).unwrap();
+        assert_eq!(reserve(&locks, &alias).err().unwrap().code, "EBUSY");
+    }
+
+    #[test]
+    fn a_path_is_reserved_before_it_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let locks = dir.path().join("locks");
+        let card = dir.path().join("new.img");
+        let _creator = reserve(&locks, &card).unwrap();
+        assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
+    }
 }

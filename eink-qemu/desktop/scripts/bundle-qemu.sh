@@ -66,14 +66,17 @@ def rpaths(path):
     text = run('otool', '-l', path)
     return re.findall(r'cmd LC_RPATH\n\s+cmdsize \d+\n\s+path (.+?) \(offset', text)
 
-def resolve(name, referrer):
-    """Host path of an install name as referenced from `referrer` (a real path)."""
-    here = os.path.dirname(referrer)
-    if name.startswith('@loader_path/') or name.startswith('@executable_path/'):
+def resolve(name, referrer, executable):
+    """Host path of an install name as referenced from `referrer` (a real
+    path) in a process started from `executable` (the original binary)."""
+    here, exe = os.path.dirname(referrer), os.path.dirname(executable)
+    if name.startswith('@loader_path/'):
         candidates = [os.path.join(here, name.split('/', 1)[1])]
+    elif name.startswith('@executable_path/'):
+        candidates = [os.path.join(exe, name.split('/', 1)[1])]
     elif name.startswith('@rpath/'):
         rest = name[len('@rpath/'):]
-        candidates = [os.path.join(rp.replace('@loader_path', here).replace('@executable_path', here), rest)
+        candidates = [os.path.join(rp.replace('@loader_path', here).replace('@executable_path', exe), rest)
                       for rp in rpaths(referrer)] + [os.path.join(HOMEBREW_LIB, rest)]
     else:
         candidates = [name]
@@ -86,11 +89,13 @@ def resolve(name, referrer):
 # library is named after the last component of its install name.
 bundled = {}   # basename -> host real path
 sources = {}   # bundled file -> host real path it was copied from
+executables = {}  # bundled file -> the original binary whose process loads it
 queue = []
 for name in sorted(os.listdir(bindir)):
     path = os.path.join(bindir, name)
     # Resolve loader-relative names from the original build binary, not the copy.
     sources[path] = os.path.realpath(os.path.join(build, name))
+    executables[path] = sources[path]
     queue.append(path)
 changes = {}   # bundled file -> [(old install name, basename)]
 while queue:
@@ -102,23 +107,25 @@ while queue:
         base = os.path.basename(dep)
         changes[path].append((dep, base))
         if base not in bundled:
-            real = resolve(dep, sources[path])
+            real = resolve(dep, sources[path], executables[path])
             bundled[base] = real
             target = os.path.join(libdir, base)
             shutil.copyfile(real, target)
             os.chmod(target, 0o755)
             sources[target] = real
+            executables[target] = executables[path]
             queue.append(target)
             for source, extra in DLOPENED.get(base, []):
                 if extra not in bundled:
                     # Beside the library that opens it first, then Homebrew's lib.
                     beside = os.path.join(os.path.dirname(real), source)
-                    real_extra = resolve(beside if os.path.exists(beside) else os.path.join(HOMEBREW_LIB, source), real)
+                    real_extra = resolve(beside if os.path.exists(beside) else os.path.join(HOMEBREW_LIB, source), real, executables[path])
                     bundled[extra] = real_extra
                     extra_target = os.path.join(libdir, extra)
                     shutil.copyfile(real_extra, extra_target)
                     os.chmod(extra_target, 0o755)
                     sources[extra_target] = real_extra
+                    executables[extra_target] = executables[path]
                     queue.append(extra_target)
 
 for path, refs in changes.items():

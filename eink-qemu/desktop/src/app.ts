@@ -27,7 +27,7 @@ let firmware: FileInfo | null = null;
 let card: FileInfo | null = null;
 let pending = false; // Preparing firmware before the session starts.
 let canvas: HTMLCanvasElement | null = null;
-let milestones = 0, startedAt = 0, lastDrawAt = 0, bootSeconds: number | null = null;
+let milestones = 0, startedAt = 0, lastDrawAt = 0, bootSeconds: number | null = null, sdFailed = false;
 
 const status = (text: string) => { $('status').textContent = text; };
 const timingLabel = () => session.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing';
@@ -95,7 +95,7 @@ async function start() {
   }
   pending = true;
   clearConsole();
-  milestones = 0; lastDrawAt = 0; bootSeconds = null; startedAt = performance.now();
+  milestones = 0; lastDrawAt = 0; bootSeconds = null; sdFailed = false; startedAt = performance.now();
   paintControls();
   try {
     status('Loading firmware…');
@@ -126,7 +126,7 @@ async function start() {
 }
 
 function resetting(prefix = '') {
-  milestones = 0; lastDrawAt = 0; bootSeconds = null; startedAt = performance.now();
+  milestones = 0; lastDrawAt = 0; bootSeconds = null; sdFailed = false; startedAt = performance.now();
   status(`${prefix}Resetting…`);
 }
 
@@ -140,8 +140,14 @@ function watchLog(lines: string[]) {
   for (const line of lines) {
     if (line.startsWith('ESP-ROM:') && milestones) {
       // The guest rebooted (a crash, a firmware reset): count again.
-      milestones = 0; lastDrawAt = 0; bootSeconds = null; startedAt = performance.now();
+      milestones = 0; lastDrawAt = 0; bootSeconds = null; sdFailed = false; startedAt = performance.now();
       status(`${deviceLabel()} · ${timingLabel()} · Restarting…`);
+    }
+    // CrossPoint reports a card it cannot mount; its Home is then an error screen.
+    if (/SD card initialization failed/.test(line)) sdFailed = true;
+    // Stock X4 Pro firmware powers itself off unless Power is held at boot.
+    if (/reject physical boot before init|POWERON without key/.test(line) && bootSeconds === null) {
+      status(`${deviceLabel()} is off · hold Power (P) for a moment to turn it on`);
     }
     if (/main_task: Returned from app_main\(\)/.test(line) && bootSeconds === null) {
       status(`${deviceLabel()} · ${timingLabel()} · Firmware running`);
@@ -150,11 +156,13 @@ function watchLog(lines: string[]) {
       lastDrawAt = performance.now();
       if (++milestones === 3) {
         bootSeconds = (lastDrawAt - startedAt) / 1000;
-        status(`${deviceLabel()} · ${timingLabel()} · Home drawn in ${bootSeconds.toFixed(2)} s · finishing startup…`);
+        if (!sdFailed) status(`${deviceLabel()} · ${timingLabel()} · Home drawn in ${bootSeconds.toFixed(2)} s · finishing startup…`);
       }
     }
     if (line.includes('[MEM]')) {
-      if (bootSeconds !== null) {
+      if (sdFailed) {
+        status(`${deviceLabel()} · The firmware could not mount the SD card · check it in the SD card panel`);
+      } else if (bootSeconds !== null) {
         status(`${deviceLabel()} · ${timingLabel()} · Ready · Home drawn in ${bootSeconds.toFixed(2)} s`);
       } else if (milestones && performance.now() - lastDrawAt > 3000) {
         // Firmware that resumes a book or an app draws fewer full refreshes
@@ -714,7 +722,7 @@ function sdRender() {
 }
 
 async function sdUpload(sources: string[]) {
-  if (!sources.length) return;
+  if (!sources.length || !card || !sd.ready) return;
   const plan = await api.sdPlanUpload(sd.cwd, sources);
   if (!plan.files) {
     sdStatusFlash('Nothing to copy: hidden files and links are skipped.');
@@ -770,7 +778,7 @@ function dropTarget(x: number, y: number): 'sd' | 'firmware' | null {
   // coordinates through); other platforms report physical pixels.
   const scale = platform === 'macos' ? 1 : window.devicePixelRatio;
   const element = document.elementFromPoint(x / scale, y / scale);
-  if (element?.closest('.sd')) return sdUsable() ? 'sd' : null;
+  if (element?.closest('.sd')) return sdUsable() && card && sd.ready ? 'sd' : null;
   if (element?.closest('.stage, .file-chip')) return session.state === 'idle' && !pending ? 'firmware' : null;
   return null;
 }
@@ -800,6 +808,7 @@ export async function boot() {
   // Before attaching, so no session or log message is missed.
   await listen<SessionInfo>('session', (event) => onSession(event.payload));
   await listen('sd-reset', () => {
+    releaseTouch?.();
     resetting('SD card changed · ');
   });
   const state = await api.attach((lines) => {

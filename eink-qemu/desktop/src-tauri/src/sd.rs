@@ -11,19 +11,36 @@
 //!   partition, types 0x01 0x04 0x06 0x0b 0x0c 0x0e).
 //! - Every mutating operation (upload, mkdir, rename, remove) is one
 //!   transaction: its writes go to a journal and reach the image only after
-//!   the whole operation, fatfs's unmount and the FSInfo update succeeded and
-//!   the edited FAT still validates. Any earlier error leaves the image
-//!   byte-identical. Read-only operations (list, plan_upload, export) never
-//!   write the image.
+//!   the whole operation and fatfs's unmount succeeded, the edited FAT still
+//!   validates, the edit lost no clusters, and FSInfo was updated. Any error
+//!   before that leaves the image byte-identical (`changed` false).
+//!   Read-only operations (list, plan_upload, export) never write the image.
+//! - Committing writes the journal in three stages: (1) data in clusters
+//!   that were free in the original FAT, then a sync; (2) the rest of the
+//!   data region (folder clusters, data rewritten in place); (3) the
+//!   reserved sectors, FATs and fixed root folder, then a sync. If writing
+//!   fails in stage 1, only clusters the card does not use were touched: the
+//!   file system is unchanged (`changed` false, though those free clusters'
+//!   bytes may differ). A failure in stage 2 or 3 sets `changed`: the card
+//!   may be inconsistent (for example a replaced file whose data was
+//!   rewritten in place), and the device must at least remount it.
 //! - Errors carry fat.js-style codes: ENOENT EEXIST EINVAL ENOTDIR EISDIR
-//!   ENOTEMPTY ENOSPC ENOTSUP EIO. `SdError::changed` is true only when
-//!   writing a committed transaction to the image failed partway; the card
-//!   may then be inconsistent. After `Ok` from a mutating operation, or an
-//!   error with `changed`, the device must remount the card (reset).
+//!   ENOTEMPTY ENOSPC ENOTSUP EIO. After `Ok` from a mutating operation, or
+//!   an error with `changed`, the device must remount the card (reset).
 //! - Cards whose FAT copies disagree, FAT32 cards with mirroring disabled,
-//!   and FATs with broken, cross-linked or cyclic cluster chains are refused
-//!   with ENOTSUP before anything is read through fatfs, as fat.js refuses
-//!   them; so a damaged card cannot hang a listing.
+//!   FATs with broken, cross-linked or cyclic chains, or chains that run
+//!   into bad or reserved clusters are refused with ENOTSUP before fatfs
+//!   reads them, so a damaged card cannot hang or crash an operation.
+//!   Isolated bad or reserved marks are healthy. Before every edit the whole
+//!   folder tree is checked as well: two entries sharing clusters, an entry
+//!   starting inside another chain or at a free cluster, folders that loop
+//!   and files longer than their chains are refused with ENOTSUP.
+//! - Upload sources resolve, case-insensitively, against long and short
+//!   names, including the short names fatfs will generate for new entries
+//!   in the same upload: a source naming an existing entry replaces it, and
+//!   two sources naming one entry are refused with EINVAL. The plan follows
+//!   the upload step by step (folder slots, folder growth, replacements),
+//!   so `plan_upload` fails with ENOSPC exactly when `upload` would.
 //!
 //! Notes on fatfs 0.3: it trusts the FSInfo free count, so free space is
 //! counted from the FAT here and both FSInfo copies are rewritten after every
@@ -535,38 +552,96 @@ impl Journal {
         self.write_all(buf)
     }
 
-    /// Write the overlay to the image in offset order and sync it.
-    fn commit(mut self) -> Result<(), SdError> {
-        let failed = |error: io::Error| SdError {
-            code: "EIO",
-            message: format!("Writing the SD card image failed partway; the card may be inconsistent: {error}"),
-            changed: true,
-        };
-        let mut indices: Vec<u64> = self.dirty.keys().chain(self.spilled.keys()).copied().collect();
-        indices.sort_unstable();
-        let mut run: Vec<u8> = Vec::with_capacity(1 << 20);
-        let mut run_start = 0u64;
-        let mut next = None;
-        for index in indices {
-            let data = match self.dirty.remove(&index) {
-                Some(data) => data,
-                None => self.unspill(index).map_err(failed)?.unwrap(),
-            };
-            if next != Some(index) || run.len() >= 1 << 20 {
-                if !run.is_empty() {
-                    write_all_at(&self.file, &run, self.base + run_start).map_err(failed)?;
-                    run.clear();
-                }
-                run_start = index * CHUNK;
-            }
-            run.extend_from_slice(&data);
-            next = Some(index + 1);
+    /// Which commit stage a chunk belongs to: 0 for data clusters that were
+    /// all free in the original FAT (nothing on the card refers to them
+    /// yet), 1 for the rest of the data region (folders, data overwritten
+    /// in place), 2 for the reserved sectors, FATs and fixed root folder.
+    fn stage(&self, index: u64, geo: &Geometry, original: &FatState) -> u8 {
+        let start = index * CHUNK;
+        let end = start + self.chunk_len(index) as u64;
+        if start < geo.data_offset {
+            return 2;
         }
-        if !run.is_empty() {
-            write_all_at(&self.file, &run, self.base + run_start).map_err(failed)?;
-        }
-        self.file.sync_data().map_err(failed)
+        let first = (start - geo.data_offset) / geo.cluster_size + 2;
+        let last = (end - 1 - geo.data_offset) / geo.cluster_size + 2;
+        let free = (first..=last).all(|c| (c as usize) < original.next.len() && original.next[c as usize] == 0);
+        if free { 0 } else { 1 }
     }
+
+    /// Write the overlay to the image and sync it, in three stages (see
+    /// `stage`): new data first, then folders and in-place data, then the
+    /// FATs. A failure in the first stage touched only clusters the card
+    /// does not use, so the file system is unchanged (`changed` false);
+    /// a later failure may leave the card inconsistent (`changed` true).
+    fn commit(mut self, geo: &Geometry, original: &FatState) -> Result<(), SdError> {
+        let failed = |changed: bool| {
+            move |error: io::Error| SdError {
+                code: "EIO",
+                message: if changed {
+                    format!("Writing the SD card image failed partway; the card may be inconsistent: {error}")
+                } else {
+                    format!("Writing the SD card image failed before anything on it changed: {error}")
+                },
+                changed,
+            }
+        };
+        let mut stages: [Vec<u64>; 3] = Default::default();
+        for index in self.dirty.keys().chain(self.spilled.keys()).copied() {
+            stages[self.stage(index, geo, original) as usize].push(index);
+        }
+        for (stage, mut indices) in stages.into_iter().enumerate() {
+            let fail = failed(stage > 0);
+            indices.sort_unstable();
+            let mut run: Vec<u8> = Vec::with_capacity(1 << 20);
+            let mut run_start = 0u64;
+            let mut next = None;
+            for index in indices {
+                let data = match self.dirty.remove(&index) {
+                    Some(data) => data,
+                    None => self.unspill(index).map_err(fail)?.unwrap(),
+                };
+                if next != Some(index) || run.len() >= 1 << 20 {
+                    if !run.is_empty() {
+                        commit_write(&self.file, &run, self.base + run_start).map_err(fail)?;
+                        run.clear();
+                    }
+                    run_start = index * CHUNK;
+                }
+                run.extend_from_slice(&data);
+                next = Some(index + 1);
+            }
+            if !run.is_empty() {
+                commit_write(&self.file, &run, self.base + run_start).map_err(fail)?;
+            }
+            if stage == 0 {
+                self.file.sync_data().map_err(fail)?;
+            }
+        }
+        self.file.sync_data().map_err(failed(true))
+    }
+}
+
+thread_local! {
+    static COMMIT_BUDGET: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tests: make commits on this thread fail after writing `bytes` more
+/// bytes to the image (None: never), to exercise partial commits.
+#[doc(hidden)]
+pub fn fail_commit_after(bytes: Option<u64>) {
+    COMMIT_BUDGET.with(|budget| budget.set(bytes));
+}
+
+fn commit_write(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    if let Some(budget) = COMMIT_BUDGET.with(|budget| budget.get()) {
+        if (buf.len() as u64) > budget {
+            write_all_at(file, &buf[..budget as usize], offset)?;
+            COMMIT_BUDGET.with(|b| b.set(Some(0)));
+            return Err(io::Error::other("injected write failure"));
+        }
+        COMMIT_BUDGET.with(|b| b.set(Some(budget - buf.len() as u64)));
+    }
+    write_all_at(file, buf, offset)
 }
 
 impl Read for Journal {
@@ -667,25 +742,58 @@ impl Seek for Journal {
 
 struct FatState {
     next: Vec<u32>,
+    /// Whether another cluster links to this one (it is not a chain head).
+    has_pred: Vec<bool>,
     free: u64,
     first_free: Option<u64>,
+    /// The bad-cluster mark and the first end-of-chain value; values from
+    /// `reserved` up to `end` (bad included) mark clusters, not links.
     bad: u32,
+    reserved: u32,
     end: u32,
 }
 
+/// What a FAT entry's value means.
+enum Next {
+    Free,
+    End,
+    Link(u32),
+    /// Bad or reserved: the cluster holds no data and no chain may enter it.
+    Mark,
+    Outside,
+}
+
 impl FatState {
-    fn is_link(&self, value: u32) -> bool {
-        value >= 2 && (value as usize) < self.next.len()
+    fn classify(&self, value: u32) -> Next {
+        if value == 0 {
+            Next::Free
+        } else if value >= self.end {
+            Next::End
+        } else if value >= 2 && (value as usize) < self.next.len() && value != self.bad {
+            Next::Link(value)
+        } else if value >= self.reserved {
+            Next::Mark
+        } else {
+            Next::Outside
+        }
+    }
+
+    /// Whether cluster `c` holds data (part of a chain).
+    fn allocated(&self, c: u32) -> bool {
+        (c as usize) < self.next.len() && c >= 2 && matches!(self.classify(self.next[c as usize]), Next::End | Next::Link(_))
     }
 
     /// The clusters of a chain starting at `first` (none for an empty file).
+    /// Never panics: a chain into free, bad, reserved or missing clusters is
+    /// an error, as fat.js reports it.
     fn chain(&self, first: u32) -> Result<Vec<u32>, SdError> {
         let mut result = Vec::new();
         if first == 0 {
             return Ok(result);
         }
-        if !self.is_link(first) || self.next[first as usize] == 0 || self.next[first as usize] == self.bad {
-            return Err(SdError::new("EINVAL", "Broken FAT cluster chain"));
+        let broken = || SdError::new("EINVAL", "Broken FAT cluster chain");
+        if !self.allocated(first) {
+            return Err(broken());
         }
         let mut cluster = first;
         loop {
@@ -693,11 +801,11 @@ impl FatState {
             if result.len() > self.next.len() {
                 return Err(SdError::new("EINVAL", "Cyclic FAT cluster chain"));
             }
-            let value = self.next[cluster as usize];
-            if value >= self.end {
-                return Ok(result);
+            match self.classify(self.next[cluster as usize]) {
+                Next::End => return Ok(result),
+                Next::Link(next) if self.allocated(next) => cluster = next,
+                _ => return Err(broken()),
             }
-            cluster = value;
         }
     }
 }
@@ -739,28 +847,30 @@ fn fat_scan(journal: &mut Journal, geo: &Geometry) -> Result<FatState, SdError> 
             return Err(SdError::new("ENOTSUP", "FAT copies disagree; repair the card before editing"));
         }
     }
-    let (bad, end) = match geo.kind {
-        FatKind::Fat12 => (0xff7, 0xff8),
-        FatKind::Fat16 => (0xfff7, 0xfff8),
-        FatKind::Fat32 => (0x0fff_fff7, 0x0fff_fff8),
+    let (bad, reserved, end) = match geo.kind {
+        FatKind::Fat12 => (0xff7, 0xff0, 0xff8),
+        FatKind::Fat16 => (0xfff7, 0xfff0, 0xfff8),
+        FatKind::Fat32 => (0x0fff_fff7, 0x0fff_fff0, 0x0fff_fff8),
     };
-    let mut state = FatState { next, free: 0, first_free: None, bad, end };
-    let mut incoming = vec![0u8; entries];
+    let mut state = FatState { next, has_pred: vec![false; entries], free: 0, first_free: None, bad, reserved, end };
     for cluster in 2..entries {
-        let value = state.next[cluster];
-        if value == 0 {
-            state.free += 1;
-            state.first_free.get_or_insert(cluster as u64);
-        } else if value == bad || value >= end {
-            continue;
-        } else if !state.is_link(value) {
-            return Err(damaged("a cluster chain points outside the card"));
-        } else if state.next[value as usize] == 0 {
-            return Err(damaged("a cluster chain runs into free space"));
-        } else {
-            incoming[value as usize] += 1;
-            if incoming[value as usize] > 1 {
-                return Err(damaged("cross-linked cluster chains"));
+        match state.classify(state.next[cluster]) {
+            Next::Free => {
+                state.free += 1;
+                state.first_free.get_or_insert(cluster as u64);
+            }
+            Next::End | Next::Mark => {}
+            Next::Outside => return Err(damaged("a cluster chain points outside the card")),
+            Next::Link(value) => {
+                match state.classify(state.next[value as usize]) {
+                    Next::Free => return Err(damaged("a cluster chain runs into free space")),
+                    Next::Mark | Next::Outside => return Err(damaged("a cluster chain runs into a bad or reserved cluster")),
+                    Next::End | Next::Link(_) => {}
+                }
+                if state.has_pred[value as usize] {
+                    return Err(damaged("cross-linked cluster chains"));
+                }
+                state.has_pred[value as usize] = true;
             }
         }
     }
@@ -769,21 +879,19 @@ fn fat_scan(journal: &mut Journal, geo: &Geometry) -> Result<FatState, SdError> 
     // sits on a cycle.
     let mut visited = vec![false; entries];
     for head in 2..entries {
-        let value = state.next[head];
-        if value == 0 || value == bad || incoming[head] != 0 {
+        if !state.allocated(head as u32) || state.has_pred[head] {
             continue;
         }
         let mut cluster = head;
         loop {
             visited[cluster] = true;
-            let value = state.next[cluster];
-            if value >= end || value == bad {
-                break;
+            match state.classify(state.next[cluster]) {
+                Next::Link(value) => cluster = value as usize,
+                _ => break,
             }
-            cluster = value as usize;
         }
     }
-    if (2..entries).any(|c| !visited[c] && state.next[c] != 0 && state.next[c] != bad) {
+    if (2..entries).any(|c| !visited[c] && state.allocated(c as u32)) {
         return Err(damaged("a cluster chain loops"));
     }
     Ok(state)
@@ -804,14 +912,17 @@ fn sync_info(journal: &mut Journal, geo: &Geometry, state: &FatState) -> Result<
     Ok(())
 }
 
-/* Raw directory reading, for checks fatfs cannot express: the start
-   clusters of a folder tree before it is removed. */
+/* Raw directory reading, for checks and plans fatfs cannot express: start
+   clusters and sizes, short names, and where new entries would go. */
 
 struct RawEntry {
     long: Option<String>,
     short: String,
+    /// The 11-byte short name as stored.
+    raw: [u8; 11],
     attr: u8,
     cluster: u32,
+    size: u32,
 }
 
 impl RawEntry {
@@ -823,37 +934,97 @@ impl RawEntry {
     }
 }
 
+/// Free directory slots, as fatfs's `find_free_entries` uses them: the
+/// first run of deleted slots long enough, else the tail from the end
+/// marker (or a deleted run just before it), growing the folder by whole
+/// clusters (a fixed FAT12/16 root cannot grow).
+#[derive(Clone)]
+struct Slots {
+    runs: Vec<(u64, u64)>,
+    tail: u64,
+    total: u64,
+    fixed: bool,
+}
+
+impl Slots {
+    /// Take `count` slots; Ok(new clusters the folder needs) or Err when a
+    /// fixed root is full.
+    fn take(&mut self, count: u64, per_cluster: u64) -> Result<u64, ()> {
+        if let Some(run) = self.runs.iter_mut().find(|run| run.1 >= count) {
+            run.0 += count;
+            run.1 -= count;
+            return Ok(0);
+        }
+        self.tail += count;
+        if self.tail <= self.total {
+            return Ok(0);
+        }
+        if self.fixed {
+            return Err(());
+        }
+        let extra = (self.tail - self.total).div_ceil(per_cluster);
+        self.total += extra * per_cluster;
+        Ok(extra)
+    }
+}
+
 const LFN_POS: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
 
-fn raw_folder(journal: &mut Journal, geo: &Geometry, fat: &FatState, cluster: Option<u32>) -> Result<Vec<RawEntry>, SdError> {
-    let bytes = match cluster {
-        None if geo.fixed_root() => {
-            let mut bytes = vec![0u8; (geo.root_entries * 32) as usize];
-            journal.pread(geo.root_offset, &mut bytes).map_err(eio)?;
-            bytes
-        }
-        _ => {
-            let first = cluster.unwrap_or(geo.root_cluster);
-            let mut bytes = Vec::new();
-            for c in fat.chain(first)? {
-                let start = bytes.len();
-                bytes.resize(start + geo.cluster_size as usize, 0);
-                journal.pread(geo.data_offset + (c as u64 - 2) * geo.cluster_size, &mut bytes[start..]).map_err(eio)?;
-            }
-            bytes
-        }
+/// The short name as text: "NAME.EXT", code page 437, as fatfs shows it.
+fn short_text(raw: &[u8; 11]) -> String {
+    let decode = |bytes: &[u8]| -> String {
+        bytes.iter().map(|&b| CP437.decode(b)).collect::<String>().trim_end_matches(' ').to_string()
     };
+    let mut base = raw[..8].to_vec();
+    if base[0] == 0x05 {
+        base[0] = 0xe5;
+    }
+    let (stem, ext) = (decode(&base), decode(&raw[8..11]));
+    if ext.is_empty() { stem } else { format!("{stem}.{ext}") }
+}
+
+fn raw_dir(journal: &mut Journal, geo: &Geometry, fat: &FatState, cluster: Option<u32>) -> Result<(Vec<RawEntry>, Slots), SdError> {
+    let fixed = cluster.is_none() && geo.fixed_root();
+    let bytes = if fixed {
+        let mut bytes = vec![0u8; (geo.root_entries * 32) as usize];
+        journal.pread(geo.root_offset, &mut bytes).map_err(eio)?;
+        bytes
+    } else {
+        let first = cluster.unwrap_or(geo.root_cluster);
+        let mut bytes = Vec::new();
+        for c in fat.chain(first)? {
+            let start = bytes.len();
+            bytes.resize(start + geo.cluster_size as usize, 0);
+            journal.pread(geo.data_offset + (c as u64 - 2) * geo.cluster_size, &mut bytes[start..]).map_err(eio)?;
+        }
+        bytes
+    };
+    let records = bytes.as_chunks::<32>().0;
+    let total = records.len() as u64;
+    let mut slots = Slots { runs: Vec::new(), tail: total, total, fixed };
+    let (mut run_start, mut run_len) = (0u64, 0u64);
     let mut result = Vec::new();
     let mut lfn: Vec<u16> = Vec::new();
     let mut lfn_checksum = None;
-    for record in bytes.as_chunks::<32>().0 {
+    for (i, record) in records.iter().enumerate() {
+        let i = i as u64;
         if record[0] == 0 {
+            slots.tail = if run_len > 0 { run_start } else { i };
+            run_len = 0;
             break;
         }
         if record[0] == 0xe5 {
+            if run_len == 0 {
+                run_start = i;
+            }
+            run_len += 1;
             lfn.clear();
             lfn_checksum = None;
             continue;
+        }
+        if run_len > 0 {
+            slots.runs.push((run_start, run_len));
+            run_len = 0;
         }
         let attr = record[11];
         if attr & 0x3f == 0x0f {
@@ -863,8 +1034,8 @@ fn raw_folder(journal: &mut Journal, geo: &Geometry, fat: &FatState, cluster: Op
                 lfn_checksum = Some(record[13]);
             }
             if sequence >= 1 && sequence * 13 <= lfn.len() {
-                for (i, &at) in LFN_POS.iter().enumerate() {
-                    lfn[(sequence - 1) * 13 + i] = u16::from_le_bytes([record[at], record[at + 1]]);
+                for (k, &at) in LFN_POS.iter().enumerate() {
+                    lfn[(sequence - 1) * 13 + k] = u16::from_le_bytes([record[at], record[at + 1]]);
                 }
             }
             continue;
@@ -881,23 +1052,24 @@ fn raw_folder(journal: &mut Journal, geo: &Geometry, fat: &FatState, cluster: Op
         });
         lfn.clear();
         lfn_checksum = None;
-        let decode = |bytes: &[u8]| -> String {
-            bytes.iter().map(|&b| CP437.decode(b)).collect::<String>().trim_end_matches(' ').to_string()
-        };
-        let mut base = record[..8].to_vec();
-        if base[0] == 0x05 {
-            base[0] = 0xe5;
-        }
-        let (stem, ext) = (decode(&base), decode(&record[8..11]));
-        let short = if ext.is_empty() { stem } else { format!("{stem}.{ext}") };
+        let raw: [u8; 11] = record[..11].try_into().unwrap();
+        let short = short_text(&raw);
         if short == "." || short == ".." {
             continue;
         }
         let low = u16_at(record, 26) as u32;
         let high = if geo.kind == FatKind::Fat32 { (u16_at(record, 20) as u32) << 16 } else { 0 };
-        result.push(RawEntry { long, short, attr, cluster: high | low });
+        result.push(RawEntry { long, short, raw, attr, cluster: high | low, size: u32_at(record, 28) as u32 });
     }
-    Ok(result)
+    if run_len > 0 {
+        // Deleted slots run to the end of the folder: new entries start there.
+        slots.tail = run_start;
+    }
+    Ok((result, slots))
+}
+
+fn raw_folder(journal: &mut Journal, geo: &Geometry, fat: &FatState, cluster: Option<u32>) -> Result<Vec<RawEntry>, SdError> {
+    Ok(raw_dir(journal, geo, fat, cluster)?.0)
 }
 
 /// Refuse to remove a tree whose clusters are shared or loop, as fat.js does.
@@ -936,49 +1108,153 @@ fn check_tree(journal: &mut Journal, geo: &Geometry, fat: &FatState, names: &[&s
     Ok(())
 }
 
-struct Stats {
-    free: u64,
+/// Every chain on the card belongs to exactly one file or folder: walk the
+/// whole tree once (O(entries + clusters)). Refuses cross-links between any
+/// two entries, entries that start inside another chain or point at broken
+/// chains, folders that loop, and files longer than their clusters. Returns
+/// how many allocated clusters no entry owns (lost clusters, harmless).
+fn audit_tree(journal: &mut Journal, geo: &Geometry, fat: &FatState) -> Result<u64, SdError> {
+    const MAX_DEPTH: usize = 256;
+    let mut owned = vec![false; fat.next.len()];
+    let mut claim = |chain: &[u32]| -> Result<(), SdError> {
+        for &c in chain {
+            if std::mem::replace(&mut owned[c as usize], true) {
+                return Err(damaged("cross-linked files or folders"));
+            }
+        }
+        Ok(())
+    };
+    if geo.kind == FatKind::Fat32 {
+        if fat.has_pred[geo.root_cluster as usize] {
+            return Err(damaged("the root folder starts inside another cluster chain"));
+        }
+        claim(&fat.chain(geo.root_cluster).map_err(|_| damaged("the root folder's cluster chain is broken"))?)?;
+    }
+    let mut pending: Vec<(Option<u32>, usize)> = vec![(None, 0)];
+    while let Some((folder, depth)) = pending.pop() {
+        if depth > MAX_DEPTH {
+            return Err(damaged("folders nest too deeply"));
+        }
+        let entries = raw_folder(journal, geo, fat, folder).map_err(|e| if e.code == "EIO" { e } else { damaged("a folder's cluster chain is broken") })?;
+        for entry in entries {
+            if entry.cluster == 0 {
+                if entry.is_dir() {
+                    return Err(damaged("a folder has no clusters"));
+                }
+                if entry.size > 0 {
+                    return Err(damaged("a file is longer than its clusters"));
+                }
+                continue;
+            }
+            if !fat.allocated(entry.cluster) {
+                return Err(damaged("a file or folder starts at a free, bad or missing cluster"));
+            }
+            if fat.has_pred[entry.cluster as usize] {
+                return Err(damaged("a file or folder starts inside another cluster chain"));
+            }
+            let chain = fat.chain(entry.cluster).map_err(|_| damaged("a file's cluster chain is broken"))?;
+            if !entry.is_dir() && (chain.len() as u64) * geo.cluster_size < entry.size as u64 {
+                return Err(damaged("a file is longer than its clusters"));
+            }
+            claim(&chain)?;
+            if entry.is_dir() {
+                pending.push((Some(entry.cluster), depth + 1));
+            }
+        }
+    }
+    Ok((2..fat.next.len() as u32).filter(|&c| fat.allocated(c) && !owned[c as usize]).count() as u64)
+}
+
+/// Read-only operations: check what fatfs will read on `names` (the
+/// folders on the way, and the target's chain or the listed folder's
+/// entries), so a damaged card is an error rather than a fatfs failure.
+fn check_path(journal: &mut Journal, geo: &Geometry, fat: &FatState, names: &[&str], listing: bool) -> Result<(), SdError> {
+    let broken = |_| damaged("a folder or file's cluster chain is broken");
+    let mut folder = None;
+    for (i, name) in names.iter().enumerate() {
+        let key = fold(name);
+        let entries = raw_folder(journal, geo, fat, folder).map_err(broken)?;
+        let Some(entry) = entries.into_iter().find(|e| e.matches(&key)) else { return Ok(()) };
+        if entry.is_dir() {
+            if entry.cluster == 0 || !fat.allocated(entry.cluster) {
+                return Err(damaged("a folder has no valid clusters"));
+            }
+            fat.chain(entry.cluster).map_err(broken)?;
+            folder = Some(entry.cluster);
+        } else {
+            if i + 1 == names.len() && !listing {
+                fat.chain(entry.cluster).map_err(broken)?;
+            }
+            return Ok(());
+        }
+    }
+    if listing {
+        for entry in raw_folder(journal, geo, fat, folder).map_err(broken)? {
+            let ok = if entry.is_dir() { fat.allocated(entry.cluster) } else { entry.cluster == 0 || fat.allocated(entry.cluster) };
+            if !ok {
+                return Err(damaged("an entry points at a free, bad or missing cluster"));
+            }
+        }
+    }
+    Ok(())
 }
 
 type Disk = Journal;
 
-/// Mount the card through a journal and run `action`. For writes, the
-/// journal is committed only if the action and fatfs's unmount succeed and
-/// the edited FAT still validates; otherwise the image is untouched.
-fn with_fs<R>(
+fn inconsistent(error: SdError) -> SdError {
+    SdError::new("EIO", format!("The change was not saved because it would leave the card inconsistent: {}", error.message))
+}
+
+/// Mount the card through a journal and run `action`. `pre` runs first on
+/// the raw card (checks, plans) and hands its result to `action`. For
+/// writes, the whole tree is audited before; the journal is committed only
+/// if the action and fatfs's unmount succeed, the edited FAT still
+/// validates and the edit lost no clusters; otherwise the image is untouched.
+fn with_fs<P, R>(
     image: &Path,
     write: bool,
-    pre: impl FnOnce(&mut Journal, &Geometry, &FatState) -> Result<(), SdError>,
-    action: impl FnOnce(&FileSystem<&mut Disk>, &Geometry, &Stats) -> Result<R, SdError>,
+    pre: impl FnOnce(&mut Journal, &Geometry, &FatState) -> Result<P, SdError>,
+    action: impl FnOnce(&FileSystem<&mut Disk>, &Geometry, P) -> Result<R, SdError>,
 ) -> Result<R, SdError> {
     let file = OpenOptions::new().read(true).write(write).open(image).map_err(|e| host(image, e))?;
     let geo = geometry(&file)?;
     let mut journal = Journal::new(file, geo.base, geo.end - geo.base);
     let fat = fat_scan(&mut journal, &geo)?;
-    pre(&mut journal, &geo, &fat)?;
-    let stats = Stats { free: fat.free * geo.cluster_size };
-    drop(fat);
+    let planned = pre(&mut journal, &geo, &fat)?;
+    let lost = if write { audit_tree(&mut journal, &geo, &fat)? } else { 0 };
     journal.pos = 0; // fatfs expects to start at the boot sector
     let value = {
         let fs = FileSystem::new(&mut journal, options())
             .map_err(|e| SdError::new("ENOTSUP", format!("Not a FAT file system the explorer can read: {e}")))?;
-        let value = action(&fs, &geo, &stats)?;
+        let value = action(&fs, &geo, planned)?;
         fs.unmount().map_err(eio)?;
         value
     };
     if !write || !journal.is_dirty() {
         return Ok(value);
     }
-    let after = fat_scan(&mut journal, &geo).map_err(|e| {
-        SdError::new("EIO", format!("The change was not saved because it would leave the card inconsistent: {}", e.message))
-    })?;
+    let after = fat_scan(&mut journal, &geo).map_err(inconsistent)?;
+    if audit_tree(&mut journal, &geo, &after).map_err(inconsistent)? > lost {
+        return Err(inconsistent(SdError::new("EIO", "clusters would be lost")));
+    }
     sync_info(&mut journal, &geo, &after)?;
-    journal.commit()?;
+    journal.commit(&geo, &fat)?;
     Ok(value)
 }
 
 fn no_check(_: &mut Journal, _: &Geometry, _: &FatState) -> Result<(), SdError> {
     Ok(())
+}
+
+/// Lost (allocated but unreachable) clusters on the card, after checking
+/// the whole tree as a write would. For tests and diagnostics.
+#[doc(hidden)]
+pub fn lost_clusters(image: &Path) -> Result<u64, SdError> {
+    let file = OpenOptions::new().read(true).open(image).map_err(|e| host(image, e))?;
+    let geo = geometry(&file)?;
+    let mut journal = Journal::new(file, geo.base, geo.end - geo.base);
+    let fat = fat_scan(&mut journal, &geo)?;
+    audit_tree(&mut journal, &geo, &fat)
 }
 
 /* Lookup helpers. */
@@ -1050,7 +1326,10 @@ fn mtime(entry: &FsEntry) -> Option<i64> {
 /// List a folder.
 pub fn list(image: &Path, dir: &str) -> Result<SdListing, SdError> {
     let names = parts(dir)?;
-    with_fs(image, false, no_check, |fs, geo, stats| {
+    with_fs(image, false, |journal, geo, fat| {
+        check_path(journal, geo, fat, &names, true)?;
+        Ok(fat.free * geo.cluster_size)
+    }, |fs, geo, free| {
         let folder = open_dir(fs, &names)?;
         let mut entries: Vec<SdEntry> = children(&folder)?
             .iter()
@@ -1062,7 +1341,7 @@ pub fn list(image: &Path, dir: &str) -> Result<SdListing, SdError> {
             })
             .collect();
         entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| fold(&a.name).cmp(&fold(&b.name))));
-        Ok(SdListing { path: dir.to_string(), entries, free: stats.free, total: geo.total(), fs_type: geo.name().to_string() })
+        Ok(SdListing { path: dir.to_string(), entries, free, total: geo.total(), fs_type: geo.name().to_string() })
     })
 }
 
@@ -1142,12 +1421,12 @@ fn host_plan(dir: &str, sources: &[PathBuf]) -> Result<HostPlan, SdError> {
     Ok(plan)
 }
 
-/// What an operation knows about a name in a folder.
+/// What an upload knows about a name in a folder, during execution.
 #[derive(Clone, Copy)]
 enum Known {
     /// An entry that was on the card, by its index in `Folder::entries`.
-    Entry { index: usize, is_dir: bool, len: u64 },
-    Created { dir: bool },
+    Entry { index: usize, is_dir: bool },
+    Created,
 }
 
 struct Folder<'a, 'b> {
@@ -1155,26 +1434,22 @@ struct Folder<'a, 'b> {
     entries: Vec<FsEntry<'a, 'b>>,
     /// Folded long and short names.
     names: HashMap<String, Known>,
-    /// Directory slots in use (estimated from the names).
-    slots: u64,
 }
 
 impl<'a, 'b> Folder<'a, 'b> {
     fn load(dir: FsDir<'a, 'b>) -> Result<Self, SdError> {
         let entries = children(&dir)?;
         let mut names = HashMap::new();
-        let mut slots = 0;
         for (index, entry) in entries.iter().enumerate() {
-            slots += name_slots(&entry.file_name());
-            let known = Known::Entry { index, is_dir: entry.is_dir(), len: entry.len() };
-            names.insert(fold(&entry.short_file_name()), known);
-            names.insert(fold(&entry.file_name()), known);
+            let known = Known::Entry { index, is_dir: entry.is_dir() };
+            names.entry(fold(&entry.file_name())).or_insert(known);
+            names.entry(fold(&entry.short_file_name())).or_insert(known);
         }
-        Ok(Folder { dir, entries, names, slots })
+        Ok(Folder { dir, entries, names })
     }
 }
 
-/// Every card folder an operation touches, read once.
+/// Every card folder an upload touches, read once.
 struct Index<'a, 'b> {
     fs: &'a FileSystem<&'b mut Disk>,
     /// Folded path -> the folder, or None when it does not exist (yet).
@@ -1197,21 +1472,17 @@ impl<'a, 'b> Index<'a, 'b> {
             let next = join(&current, name);
             let key = fold(&next);
             if !self.folders.contains_key(&key) {
-                let parent = self.folders.get(&fold(&current)).unwrap().as_ref();
+                let parent = self.folders.get(&fold(&current)).and_then(Option::as_ref);
                 let loaded = match parent.and_then(|p| p.names.get(&fold(name)).map(|known| (p, *known))) {
                     None => None,
-                    Some((parent, Known::Entry { index, is_dir: true, .. })) => Some(Folder::load(parent.entries[index].to_dir())?),
-                    Some((_, Known::Entry { .. })) | Some((_, Known::Created { dir: false })) => {
-                        return Err(SdError::new("ENOTDIR", format!("A file is in the way of folder {next}.")));
-                    }
-                    // Created folders are inserted when they are made.
-                    Some((_, Known::Created { dir: true })) => unreachable!(),
+                    Some((parent, Known::Entry { index, is_dir: true })) => Some(Folder::load(parent.entries[index].to_dir())?),
+                    Some(_) => return Err(SdError::new("ENOTDIR", format!("A file is in the way of folder {next}."))),
                 };
                 self.folders.insert(key.clone(), loaded);
             }
             current = next;
         }
-        Ok(self.folders.get_mut(&fold(&current)).unwrap().as_mut())
+        Ok(self.folders.get_mut(&fold(&current)).and_then(Option::as_mut))
     }
 
     fn lookup(&mut self, path: &str) -> Result<Option<Known>, SdError> {
@@ -1225,97 +1496,262 @@ impl<'a, 'b> Index<'a, 'b> {
         let parent = format!("/{}", parents.join("/"));
         let folder = self.folder(&parent)?.ok_or_else(|| SdError::new("ENOENT", format!("Path does not exist: {parent}")))?;
         let dir = folder.dir.create_dir(name).map_err(eio)?;
-        folder.names.insert(fold(name), Known::Created { dir: true });
-        folder.slots += name_slots(name);
-        self.folders.insert(fold(path), Some(Folder { dir, entries: Vec::new(), names: HashMap::new(), slots: 0 }));
+        folder.names.insert(fold(name), Known::Created);
+        self.folders.insert(fold(path), Some(Folder { dir, entries: Vec::new(), names: HashMap::new() }));
         Ok(())
     }
 }
 
-/// Directory slots a name takes: the short entry, plus long-name entries
-/// unless the name is already an upper-case 8.3 name.
-fn name_slots(name: &str) -> u64 {
-    let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
-    let short = !stem.is_empty()
-        && stem.len() <= 8
-        && ext.len() <= 3
-        && name.chars().filter(|&c| c == '.').count() <= 1
-        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || "._-~!#$%&'()@^{}".contains(c));
-    if short { 1 } else { 1 + (name.encode_utf16().count() as u64).div_ceil(13) }
+/* Upload planning: a simulation, on the raw card, of what fatfs will do in
+   the order `upload` does it: the short name each new entry gets, where its
+   directory slots go (and whether the folder grows), and the free clusters
+   after every step, so the plan fails exactly when the upload would. */
+
+/// The short name fatfs 0.3 gives `name` in a folder whose entries have
+/// the `existing` short names: its ShortNameGenerator, reproduced.
+fn short_name(name: &str, existing: &HashSet<[u8; 11]>) -> Option<[u8; 11]> {
+    fn copy_part(dst: &mut [u8], src: &str) -> (usize, bool, bool) {
+        let (mut at, mut lossy) = (0, false);
+        for c in src.chars() {
+            if at == dst.len() {
+                return (at, false, lossy);
+            }
+            let fixed = match c {
+                ' ' | '.' => {
+                    lossy = true;
+                    continue;
+                }
+                'A'..='Z' | 'a'..='z' | '0'..='9' => c,
+                '!' | '#' | '$' | '%' | '&' | '\'' | '(' | ')' | '-' | '@' | '^' | '_' | '`' | '{' | '}' | '~' => c,
+                _ => '_',
+            };
+            lossy = lossy || fixed != c;
+            dst[at] = fixed.to_ascii_uppercase() as u8;
+            at += 1;
+        }
+        (at, true, lossy)
+    }
+    let mut short = [b' '; 11];
+    let (stem_len, fits, lossy) = match name.rfind('.') {
+        Some(dot) => {
+            let (stem_len, stem_fits, stem_lossy) = copy_part(&mut short[..8], &name[..dot]);
+            let (_, ext_fits, ext_lossy) = copy_part(&mut short[8..], &name[dot + 1..]);
+            (stem_len, stem_fits && ext_fits, stem_lossy || ext_lossy)
+        }
+        None => copy_part(&mut short[..8], name),
+    };
+    let mut checksum = name.chars().fold(0u16, |sum, c| (sum >> 1).wrapping_add(sum << 15).wrapping_add(c as u16));
+    let hex = |value: u16| -> [u8; 4] { format!("{value:04X}").as_bytes().try_into().unwrap() };
+    let digit = |byte: u8| (byte as char).to_digit(10);
+    let mut exact = false;
+    for _ in 0..=u16::MAX as u32 {
+        let (mut long_bits, mut sum_bits) = (0u16, 0u16);
+        let long_len = stem_len.min(6);
+        let sum_len = stem_len.min(2);
+        for other in existing {
+            if *other == short {
+                exact = true;
+            }
+            let ext_matches = other[8..] == short[8..];
+            if other[long_len] == b'~' && other[..long_len] == short[..long_len] && ext_matches {
+                if let Some(n) = digit(other[long_len + 1]) {
+                    long_bits |= 1 << n;
+                }
+            }
+            if other[sum_len + 4] == b'~' && other[..sum_len] == short[..sum_len] && ext_matches {
+                let sum = std::str::from_utf8(&other[sum_len..sum_len + 4]).ok().and_then(|s| u16::from_str_radix(s, 16).ok());
+                if let (Some(n), Some(sum)) = (digit(other[sum_len + 5]), sum) {
+                    if sum == checksum {
+                        sum_bits |= 1 << n;
+                    }
+                }
+            }
+        }
+        if !lossy && fits && !exact {
+            return Some(short);
+        }
+        let build = |n: u32, with_sum: bool| {
+            let mut out = [b' '; 11];
+            let end = if with_sum {
+                out[..sum_len].copy_from_slice(&short[..sum_len]);
+                out[sum_len..sum_len + 4].copy_from_slice(&hex(checksum));
+                sum_len + 4
+            } else {
+                out[..long_len].copy_from_slice(&short[..long_len]);
+                long_len
+            };
+            out[end] = b'~';
+            out[end + 1] = b'0' + n as u8;
+            out[8..].copy_from_slice(&short[8..]);
+            out
+        };
+        if let Some(n) = (1..5).find(|&n| long_bits & (1 << n) == 0) {
+            return Some(build(n, false));
+        }
+        if let Some(n) = (1..10).find(|&n| sum_bits & (1 << n) == 0) {
+            return Some(build(n, true));
+        }
+        checksum = checksum.wrapping_add(1);
+    }
+    None
 }
 
-/// Check a host plan against the card: conflicts, type clashes and space.
-/// Space is counted net (replaced files give their clusters back) and
-/// includes directory entries; the upload itself is all-or-nothing, so a
-/// plan that only fits at the end fails cleanly at its peak.
-fn check_plan(index: &mut Index, geo: &Geometry, stats: &Stats, dir: &str, plan: &HostPlan) -> Result<UploadPlan, SdError> {
-    if index.folder(dir)?.is_none() {
+struct SimEntry {
+    is_dir: bool,
+    cluster: u32,
+    /// Data clusters a replaced file gives back.
+    clusters: u64,
+    planned: bool,
+}
+
+struct SimFolder {
+    /// Folded long and short names -> index in `Sim::entries`.
+    names: HashMap<String, usize>,
+    shorts: HashSet<[u8; 11]>,
+    slots: Slots,
+}
+
+struct Sim<'j> {
+    journal: &'j mut Journal,
+    geo: &'j Geometry,
+    fat: &'j FatState,
+    folders: HashMap<String, Option<SimFolder>>,
+    entries: Vec<SimEntry>,
+}
+
+impl Sim<'_> {
+    fn load(&mut self, cluster: Option<u32>) -> Result<SimFolder, SdError> {
+        let (raw, slots) = raw_dir(self.journal, self.geo, self.fat, cluster)?;
+        let mut folder = SimFolder { names: HashMap::new(), shorts: HashSet::new(), slots };
+        for entry in raw {
+            let clusters = if entry.is_dir() { 0 } else { self.fat.chain(entry.cluster)?.len() as u64 };
+            let id = self.entries.len();
+            self.entries.push(SimEntry { is_dir: entry.is_dir(), cluster: entry.cluster, clusters, planned: false });
+            if let Some(long) = &entry.long {
+                folder.names.entry(fold(long)).or_insert(id);
+            }
+            folder.names.entry(fold(&entry.short)).or_insert(id);
+            folder.shorts.insert(entry.raw);
+        }
+        Ok(folder)
+    }
+
+    fn folder(&mut self, path: &str) -> Result<Option<&mut SimFolder>, SdError> {
+        let names = parts(path)?;
+        if !self.folders.contains_key("/") {
+            let root = self.load(None)?;
+            self.folders.insert("/".into(), Some(root));
+        }
+        let mut current = "/".to_string();
+        for name in names {
+            let next = join(&current, name);
+            let key = fold(&next);
+            if !self.folders.contains_key(&key) {
+                let found = self.folders.get(&fold(&current)).and_then(Option::as_ref).and_then(|f| f.names.get(&fold(name)).copied());
+                let loaded = match found {
+                    None => None,
+                    Some(id) if !self.entries[id].is_dir => {
+                        return Err(SdError::new("ENOTDIR", format!("A file is in the way of folder {next}.")));
+                    }
+                    // Planned folders are added when they are planned.
+                    Some(id) if self.entries[id].planned => return Err(SdError::new("EIO", format!("Upload plan lost folder {next}."))),
+                    Some(id) => {
+                        let cluster = self.entries[id].cluster;
+                        Some(self.load(Some(cluster))?)
+                    }
+                };
+                self.folders.insert(key, loaded);
+            }
+            current = next;
+        }
+        Ok(self.folders.get_mut(&fold(&current)).and_then(Option::as_mut))
+    }
+
+    fn find(&mut self, parent: &str, name: &str) -> Result<Option<usize>, SdError> {
+        let folder = self.folder(parent)?.ok_or_else(|| SdError::new("ENOENT", format!("Path does not exist: {parent}")))?;
+        Ok(folder.names.get(&fold(name)).copied())
+    }
+
+    /// Plan a new entry in `parent`: its short name and directory slots.
+    /// Returns the clusters the folder grows by.
+    fn add(&mut self, parent: &str, name: &str, is_dir: bool) -> Result<u64, SdError> {
+        let per_cluster = self.geo.cluster_size / 32;
+        self.find(parent, name)?;
+        let id = self.entries.len();
+        self.entries.push(SimEntry { is_dir, cluster: 0, clusters: 0, planned: true });
+        let folder = self.folders.get_mut(&fold(parent)).and_then(Option::as_mut).expect("folder loaded by find");
+        let short = short_name(name, &folder.shorts)
+            .ok_or_else(|| SdError::new("EEXIST", format!("{parent} has too many names like \"{name}\".")))?;
+        let slots = 1 + (name.encode_utf16().count() as u64).div_ceil(13);
+        let grown = folder.slots.take(slots, per_cluster).map_err(|_| {
+            SdError::new("ENOSPC", "The SD card's root folder is full; put the files in a folder.")
+        })?;
+        folder.shorts.insert(short);
+        folder.names.entry(fold(name)).or_insert(id);
+        folder.names.entry(fold(&short_text(&short))).or_insert(id);
+        Ok(grown)
+    }
+}
+
+/// Check a host plan against the card, step by step in upload order:
+/// conflicts (by long or short name), type clashes, two sources that name
+/// one card entry, and free space at every step (replaced files give their
+/// clusters back when they are rewritten).
+fn simulate(journal: &mut Journal, geo: &Geometry, fat: &FatState, dir: &str, plan: &HostPlan) -> Result<UploadPlan, SdError> {
+    let mut sim = Sim { journal, geo, fat, folders: HashMap::new(), entries: Vec::new() };
+    if sim.folder(dir)?.is_none() {
         return Err(SdError::new("ENOENT", format!("Path does not exist: {dir}")));
     }
-    let clusters = |bytes: u64| bytes.div_ceil(geo.cluster_size) as i64;
-    let mut needed: i64 = 0;
-    // New directory slots per parent folder (folded path).
-    let mut slots: HashMap<String, (String, u64)> = HashMap::new();
-    let mut add_slots = |path: &str, name: &str| {
-        let parent = path[..path.len() - name.len()].trim_end_matches('/');
-        let parent = if parent.is_empty() { "/".to_string() } else { parent.to_string() };
-        slots.entry(fold(&parent)).or_insert_with(|| (parent, 0)).1 += name_slots(name);
+    let bytes: u64 = plan.files.iter().map(|(_, _, size)| size).sum();
+    let mut free = fat.free as i64;
+    let no_space = || {
+        SdError::new(
+            "ENOSPC",
+            format!("Not enough space: {} to copy, {} free.", format_size(bytes), format_size(fat.free * geo.cluster_size)),
+        )
     };
-    let mut new_dirs = HashSet::new();
+    let parent_of = |path: &str| -> Result<(String, String), SdError> {
+        let (parents, name) = split(path)?;
+        Ok((format!("/{}", parents.join("/")), name.to_string()))
+    };
     for folder in &plan.dirs {
-        let (_, name) = split(folder)?;
-        match index.lookup(folder)? {
-            Some(Known::Entry { is_dir: false, .. }) | Some(Known::Created { dir: false }) => {
-                return Err(SdError::new("ENOTDIR", format!("{folder} is a file on the SD card; it cannot become a folder.")));
-            }
-            Some(_) => {}
+        let (parent, name) = parent_of(folder)?;
+        match sim.find(&parent, &name)? {
+            Some(id) if sim.entries[id].is_dir => {}
+            Some(_) => return Err(SdError::new("ENOTDIR", format!("{folder} is a file on the SD card; it cannot become a folder."))),
             None => {
-                add_slots(folder, name);
-                new_dirs.insert(fold(folder));
+                // The new folder's own cluster holds "." and "..".
+                free -= sim.add(&parent, &name, true)? as i64 + 1;
+                let slots = Slots { runs: Vec::new(), tail: 2, total: geo.cluster_size / 32, fixed: false };
+                sim.folders.insert(fold(folder), Some(SimFolder { names: HashMap::new(), shorts: HashSet::new(), slots }));
+                if free < 0 {
+                    return Err(no_space());
+                }
             }
         }
     }
     let mut conflicts = Vec::new();
-    let mut bytes = 0;
+    let mut targeted = HashSet::new();
     for (_, path, size) in &plan.files {
-        let (_, name) = split(path)?;
-        bytes += size;
-        needed += clusters(*size);
-        match index.lookup(path)? {
-            Some(Known::Entry { is_dir: true, .. }) | Some(Known::Created { dir: true }) => {
-                return Err(SdError::new("EISDIR", format!("{path} is a folder on the SD card; a file cannot replace it.")));
-            }
-            Some(Known::Entry { len, .. }) => {
-                needed -= clusters(len);
+        let (parent, name) = parent_of(path)?;
+        match sim.find(&parent, &name)? {
+            Some(id) => {
+                let entry = &sim.entries[id];
+                if entry.is_dir {
+                    return Err(SdError::new("EISDIR", format!("{path} is a folder on the SD card; a file cannot replace it.")));
+                }
+                if entry.planned || !targeted.insert(id) {
+                    return Err(SdError::new("EINVAL", format!("Two sources would be copied to {path}: their names refer to the same file on the card.")));
+                }
+                free += entry.clusters as i64;
                 conflicts.push(path.clone());
             }
-            Some(Known::Created { .. }) => {}
-            None => add_slots(path, name),
+            None => free -= sim.add(&parent, &name, false)? as i64,
         }
-    }
-    let slot_bytes = |count: u64| (count * 32).div_ceil(geo.cluster_size) as i64;
-    for (key, (parent, count)) in &slots {
-        if new_dirs.contains(key) {
-            // A new folder holds "." and ".." besides its entries.
-            needed += slot_bytes(count + 2).max(1);
-        } else if parent == "/" && geo.fixed_root() {
-            let used = index.folder("/")?.map_or(0, |root| root.slots);
-            if used + count > geo.root_entries {
-                return Err(SdError::new(
-                    "ENOSPC",
-                    format!("The SD card's root folder has room for {} more entries; put the files in a folder.", geo.root_entries.saturating_sub(used)),
-                ));
-            }
-        } else {
-            needed += slot_bytes(*count);
+        free -= size.div_ceil(geo.cluster_size) as i64;
+        if free < 0 {
+            return Err(no_space());
         }
-    }
-    let free = (stats.free / geo.cluster_size) as i64;
-    if needed > free {
-        return Err(SdError::new(
-            "ENOSPC",
-            format!("Not enough space: {} to copy, {} free.", format_size(bytes), format_size(stats.free)),
-        ));
     }
     Ok(UploadPlan { files: plan.files.len(), bytes, conflicts })
 }
@@ -1337,13 +1773,15 @@ fn format_size(bytes: u64) -> String {
 /// folders are copied recursively as a folder of the same name. Hidden
 /// entries (name starting with '.') inside folders and symbolic links are
 /// skipped; a top-level source that is itself a symlink is skipped too.
-/// ENOENT if `dir` does not exist, EINVAL for an invalid name, ENOTSUP above
-/// the entry or depth limits, ENOSPC if the bytes exceed free space,
-/// EISDIR if a file would replace a folder or ENOTDIR if a folder would
-/// replace a file.
+/// A source whose name matches an existing entry's long or short name
+/// replaces that entry (listed in `conflicts`). ENOENT if `dir` does not
+/// exist, EINVAL for an invalid name or two sources naming one card entry,
+/// ENOTSUP above the entry or depth limits, ENOSPC if the copy does not fit
+/// at any step, EISDIR if a file would replace a folder or ENOTDIR if a
+/// folder would replace a file.
 pub fn plan_upload(image: &Path, dir: &str, sources: &[PathBuf]) -> Result<UploadPlan, SdError> {
     let plan = host_plan(dir, sources)?;
-    with_fs(image, false, no_check, |fs, geo, stats| check_plan(&mut Index::new(fs), geo, stats, dir, &plan))
+    with_fs(image, false, |journal, geo, fat| simulate(journal, geo, fat, dir, &plan), |_, _, summary| Ok(summary))
 }
 
 fn copy_in(file: &mut fatfs::File<&mut Disk>, source: &Path) -> Result<(), SdError> {
@@ -1362,18 +1800,20 @@ fn copy_in(file: &mut fatfs::File<&mut Disk>, source: &Path) -> Result<(), SdErr
 
 /// Copy `sources` into `dir`, creating folders as needed and replacing
 /// existing files (the caller confirmed `plan_upload`'s conflicts). Streams
-/// file contents; never loads a whole file or the card into memory. All or
-/// nothing: any error leaves the card unchanged.
+/// file contents; never loads a whole file or the card into memory. One
+/// transaction (see the module header): nothing reaches the card unless
+/// every file was copied.
 pub fn upload(image: &Path, dir: &str, sources: &[PathBuf]) -> Result<UploadPlan, SdError> {
     let plan = host_plan(dir, sources)?;
-    with_fs(image, true, no_check, |fs, geo, stats| {
+    with_fs(image, true, |journal, geo, fat| simulate(journal, geo, fat, dir, &plan), |fs, _, summary| {
         let mut index = Index::new(fs);
-        let summary = check_plan(&mut index, geo, stats, dir, &plan)?;
         for folder in &plan.dirs {
             if index.lookup(folder)?.is_none() {
                 index.create_dir(folder)?;
             }
         }
+        // Folder -> long names created there, to check them afterwards.
+        let mut created: HashMap<String, (String, Vec<String>)> = HashMap::new();
         for (source, path, _) in &plan.files {
             let (parents, name) = split(path)?;
             let parent_path = format!("/{}", parents.join("/"));
@@ -1381,15 +1821,31 @@ pub fn upload(image: &Path, dir: &str, sources: &[PathBuf]) -> Result<UploadPlan
             let folder = index.folder(&parent_path)?.ok_or_else(|| SdError::new("ENOENT", format!("Path does not exist: {parent_path}")))?;
             let mut file = match existing {
                 Some(Known::Entry { index, .. }) => folder.entries[index].to_file(),
-                Some(Known::Created { .. }) => return Err(SdError::new("EINVAL", format!("Two sources would be copied to {path}."))),
+                Some(Known::Created) => return Err(SdError::new("EINVAL", format!("Two sources would be copied to {path}."))),
                 None => {
                     let file = folder.dir.create_file(name).map_err(eio)?;
-                    folder.names.insert(fold(name), Known::Created { dir: false });
-                    folder.slots += name_slots(name);
+                    folder.names.insert(fold(name), Known::Created);
+                    created.entry(fold(&parent_path)).or_insert_with(|| (parent_path.clone(), Vec::new())).1.push(name.to_string());
                     file
                 }
             };
             copy_in(&mut file, source)?;
+        }
+        // Every new name must have become its own entry: fatfs opens an
+        // existing file whose short name matches instead of creating one.
+        for (parent, names) in created.values() {
+            let folder = index.folder(parent)?.ok_or_else(|| SdError::new("ENOENT", format!("Path does not exist: {parent}")))?;
+            let mut by_name = HashMap::new();
+            for (position, entry) in children(&folder.dir)?.iter().enumerate() {
+                by_name.entry(fold(&entry.file_name())).or_insert(position);
+                by_name.entry(fold(&entry.short_file_name())).or_insert(position);
+            }
+            let mut seen = HashSet::new();
+            for name in names {
+                if !by_name.get(&fold(name)).is_some_and(|&position| seen.insert(position)) {
+                    return Err(SdError::new("EINVAL", format!("Two sources would be copied to the same file as {name}.")));
+                }
+            }
         }
         Ok(summary)
     })
@@ -1437,7 +1893,8 @@ pub fn export(image: &Path, file: &str, dest: &Path) -> Result<(), SdError> {
     if is_image(image, dest) {
         return Err(SdError::new("EINVAL", "Choose a destination other than the SD card image."));
     }
-    with_fs(image, false, no_check, |fs, _, _| {
+    let names = parts(file)?;
+    with_fs(image, false, |journal, geo, fat| check_path(journal, geo, fat, &names, false), |fs, _, ()| {
         let parent = open_dir(fs, &parents)?;
         let entry = find(&parent, name)?.ok_or_else(|| SdError::new("ENOENT", format!("Path does not exist: {name}")))?;
         if entry.is_dir() {
@@ -1478,12 +1935,12 @@ fn finish(file: tempfile::NamedTempFile, dest: &Path) -> Result<(), SdError> {
 pub fn mkdir(image: &Path, path: &str) -> Result<(), SdError> {
     let (parents, name) = split(path)?;
     check_name(name)?;
-    with_fs(image, true, no_check, |fs, geo, stats| {
+    with_fs(image, true, |_, geo, fat| Ok(fat.free * geo.cluster_size), |fs, geo, free| {
         let parent = open_dir(fs, &parents)?;
         if find(&parent, name)?.is_some() {
             return Err(SdError::new("EEXIST", "Path already exists"));
         }
-        if stats.free < geo.cluster_size {
+        if free < geo.cluster_size {
             return Err(SdError::new("ENOSPC", "Not enough free space on the SD card"));
         }
         parent.create_dir(name).map_err(eio)?;
@@ -1495,7 +1952,7 @@ pub fn mkdir(image: &Path, path: &str) -> Result<(), SdError> {
 pub fn rename(image: &Path, path: &str, name: &str) -> Result<(), SdError> {
     let (parents, old) = split(path)?;
     check_name(name)?;
-    with_fs(image, true, no_check, |fs, _, _| {
+    with_fs(image, true, no_check, |fs, _, ()| {
         let parent = open_dir(fs, &parents)?;
         let entry = find(&parent, old)?.ok_or_else(|| SdError::new("ENOENT", "Source does not exist"))?;
         let current = entry.file_name();
@@ -1542,7 +1999,7 @@ pub fn remove(image: &Path, path: &str) -> Result<(), SdError> {
         image,
         true,
         |journal, geo, fat| check_tree(journal, geo, fat, &names),
-        |fs, _, _| {
+        |fs, _, ()| {
             let parent = open_dir(fs, &parents)?;
             let entry = find(&parent, name)?.ok_or_else(|| SdError::new("ENOENT", "Path does not exist"))?;
             remove_tree(&parent, entry)
