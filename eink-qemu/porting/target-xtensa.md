@@ -62,6 +62,13 @@ tick per instruction.
   The existing exclusions for TIE state, mapped, and unmapped registers
   remain unchanged.
 
+- `gdbstub.c:xtensa_gdb_register_window_feature` (eink-qemu addition)
+  describes `a0`-`a15`, `ar0`-`ar63`, `windowbase` and `windowstart` as an
+  extra feature after the regmap, so TCG plugins can read them
+  (`contrib/plugins/heaptrace.c` unwinds windowed stacks with them). With no
+  core XML, QEMU still advertises no `qXfer:features`, and the `g` packet
+  keeps its 236 registers (944 bytes on the ESP32-S3).
+
 These preserve the old fork's environment-variable semantics, including an
 empty value being different from `"0"`. GDB client interoperability was not
 part of this build-level acceptance.

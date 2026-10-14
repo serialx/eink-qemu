@@ -265,6 +265,7 @@ static void xtensa_cpu_realizefn(DeviceState *dev, Error **errp)
     }
 
     cs->gdb_num_regs = xcc->config->gdb_regmap.num_regs;
+    xtensa_gdb_register_window_feature(cs);
 
     qemu_init_vcpu(cs);
 

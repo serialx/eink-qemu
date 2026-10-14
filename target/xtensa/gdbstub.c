@@ -19,6 +19,7 @@
  */
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "exec/gdbstub.h"
 #include "gdbstub/helpers.h"
 #include "qemu/log.h"
 
@@ -187,4 +188,59 @@ int xtensa_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
     }
 
     return 4;
+}
+
+/*
+ * TCG plugins only see registers described by a GDB feature, and Xtensa has
+ * no core XML. Describe the window state (a0-a15, the physical AR file,
+ * WINDOWBASE, WINDOWSTART) as an extra feature numbered after the regmap, so
+ * plugins can unwind windowed stacks. The 'g' packet and GDB's register
+ * numbering are unchanged, and no XML is advertised without a core file.
+ */
+static GDBFeature xtensa_window_feature;
+
+static int xtensa_gdb_get_window_reg(CPUState *cs, GByteArray *buf, int n)
+{
+    CPUXtensaState *env = cpu_env(cs);
+    unsigned nareg = env->config->nareg;
+
+    if (n < 16) {
+        return gdb_get_reg32(buf, env->regs[n]);
+    }
+    if (n < 16 + nareg) {
+        xtensa_sync_phys_from_window(env);
+        return gdb_get_reg32(buf, env->phys_regs[n - 16]);
+    }
+    return gdb_get_reg32(buf, n == 16 + nareg ? env->sregs[WINDOW_BASE]
+                                              : env->sregs[WINDOW_START]);
+}
+
+void xtensa_gdb_register_window_feature(CPUState *cs)
+{
+    CPUXtensaState *env = cpu_env(cs);
+    unsigned nareg = env->config->nareg;
+
+    if (!xtensa_window_feature.xml) {
+        GDBFeatureBuilder builder;
+        int reg = 0;
+
+        gdb_feature_builder_init(&builder, &xtensa_window_feature,
+                                 "org.qemu.xtensa.windows", "xtensa-windows.xml",
+                                 cs->gdb_num_regs);
+        for (unsigned i = 0; i < 16; i++) {
+            gdb_feature_builder_append_reg(&builder, g_strdup_printf("a%u", i),
+                                           32, reg++, "uint32", NULL);
+        }
+        for (unsigned i = 0; i < nareg; i++) {
+            gdb_feature_builder_append_reg(&builder, g_strdup_printf("ar%u", i),
+                                           32, reg++, "uint32", NULL);
+        }
+        gdb_feature_builder_append_reg(&builder, "windowbase", 32, reg++,
+                                       "uint32", NULL);
+        gdb_feature_builder_append_reg(&builder, "windowstart", 32, reg++,
+                                       "uint32", NULL);
+        gdb_feature_builder_end(&builder);
+    }
+    gdb_register_coprocessor(cs, xtensa_gdb_get_window_reg, NULL,
+                             &xtensa_window_feature);
 }
