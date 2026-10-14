@@ -928,6 +928,8 @@ static void x3_board_init(Esp32C3MachineState *ms)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(keys), &error_fatal);
 
     if (x4) {
+        /* GPIO20 senses USB power; the emulated board starts on battery. */
+        qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 20), 0);
         return;
     }
     I2CBus *i2c = I2C_BUS(qdev_get_child_bus(ms->i2c0, "i2c"));
