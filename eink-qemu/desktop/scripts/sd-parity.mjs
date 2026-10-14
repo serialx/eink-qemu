@@ -8,6 +8,10 @@
 import { readFileSync } from 'node:fs';
 import FAT from '../../wasm/web/fat.mjs';
 
+if (process.argv.length !== 3) {
+  console.error('usage: node scripts/sd-parity.mjs card.img');
+  process.exit(2);
+}
 const fs = FAT.open(new Uint8Array(readFileSync(process.argv[2])));
 const order = {}, tree = {};
 // 32-bit FNV-1a, easy to recompute on the Rust side without extra crates.

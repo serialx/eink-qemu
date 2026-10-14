@@ -48,16 +48,12 @@ impl From<std::io::Error> for AppError {
     }
 }
 
-/// Whether a failed SD operation may have written to the card (then the
-/// device must remount it). Successful mutating operations always count.
-fn sd_changed(error: &SdError) -> bool {
-    error.changed
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Exit {
-    /// "stopped", "failed" (could not start) or "crashed" (ended while running).
+    /// "stopped" (by the user), "crashed" (QEMU, its monitor or display was
+    /// lost) or "failed" (could not start, or was ended by the app after an
+    /// error; `reason` says which).
     pub kind: &'static str,
     pub reason: Option<String>,
 }
@@ -73,6 +69,9 @@ pub struct SessionInfo {
     pub exit: Option<Exit>,
     /// Increases with every start, so the WebView can tell runs apart.
     pub run: u64,
+    /// Increases with every change, so the WebView can ignore a snapshot
+    /// older than an event it already applied.
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -313,7 +312,7 @@ impl Session {
             qemu,
             ops: Mutex::new(()),
             shared: StdMutex::new(Shared {
-                info: SessionInfo { state: "idle", machine: None, turbo: false, exit: None, run: 0 },
+                info: SessionInfo { state: "idle", machine: None, turbo: false, exit: None, run: 0, seq: 0 },
                 run: None,
                 cancel: None,
             }),
@@ -379,7 +378,10 @@ impl Session {
     /// messages go to these channels. The current screen is sent at once.
     pub fn attach(&self, logs: Channel<Vec<String>>, frames: Channel<InvokeResponseBody>) {
         *self.logs.lock().unwrap() = Some(logs);
-        if let Some(screen) = self.screen.lock().unwrap().as_ref() {
+        // The screen lock is held until the channel is swapped, so no
+        // update falls between the snapshot and the new channel.
+        let screen = self.screen.lock().unwrap();
+        if let Some(screen) = screen.as_ref() {
             let _ = frames.send(InvokeResponseBody::Raw(display::size_message(screen.width, screen.height)));
             let mut frame = Vec::with_capacity(24 + screen.pixels.len());
             for value in [display::MSG_FRAME, 1, 0, 0, screen.width, screen.height] {
@@ -389,12 +391,14 @@ impl Session {
             let _ = frames.send(InvokeResponseBody::Raw(frame));
         }
         *self.frames.lock().unwrap() = Some(frames);
+        drop(screen);
     }
 
     fn set(&self, update: impl FnOnce(&mut SessionInfo)) {
         let info = {
             let mut shared = self.shared.lock().unwrap();
             update(&mut shared.info);
+            shared.info.seq += 1;
             shared.info.clone()
         };
         let _ = self.app.emit("session", info);
@@ -407,8 +411,8 @@ impl Session {
 
     fn display_message(&self, message: Vec<u8>) {
         let kind = u32::from_le_bytes(message[0..4].try_into().unwrap());
+        let mut screen = self.screen.lock().unwrap();
         {
-            let mut screen = self.screen.lock().unwrap();
             let word = |at: usize| u32::from_le_bytes(message[at..at + 4].try_into().unwrap());
             if kind == display::MSG_SIZE {
                 let (width, height) = (word(4), word(8));
@@ -428,7 +432,7 @@ impl Session {
         }
         if let Some(path) = std::env::var_os("EINK_QEMU_SCREEN_DUMP") {
             // Tests: the whole panel as a binary PGM after every update.
-            if let Some(screen) = self.screen.lock().unwrap().as_ref() {
+            if let Some(screen) = screen.as_ref() {
                 let mut pgm = format!("P5\n{} {}\n255\n", screen.width, screen.height).into_bytes();
                 pgm.extend_from_slice(&screen.pixels);
                 let temp = PathBuf::from(&path).with_extension("tmp");
@@ -440,16 +444,18 @@ impl Session {
         if let Some(frames) = self.frames.lock().unwrap().as_ref() {
             let _ = frames.send(InvokeResponseBody::Raw(message));
         }
+        drop(screen);
     }
 
     pub async fn start(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>) -> Result<SessionInfo, AppError> {
         let (cancel_tx, cancel_rx) = watch::channel(false);
-        let id = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+        let id;
         {
             let mut shared = self.shared.lock().unwrap();
             if shared.info.state != "idle" {
                 return Err(AppError::busy());
             }
+            id = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
             shared.cancel = Some(cancel_tx);
             shared.info = SessionInfo {
                 state: "starting",
@@ -457,6 +463,7 @@ impl Session {
                 turbo: options.turbo,
                 exit: None,
                 run: id,
+                seq: shared.info.seq,
             };
         }
         self.set(|_| {});
@@ -494,11 +501,11 @@ impl Session {
             "-machine".into(),
             if machine == "x4pro" { format!("x4pro,panel={}", options.panel) } else { machine.to_string() },
             "-icount".into(),
-            format!(
-                "shift={},sleep={}",
-                if machine == "picco" { 2 } else { 0 },
-                if options.turbo && machine != "picco" { "off" } else { "on" }
-            ),
+            // Idle time always passes in real time (sleep=on): with native
+            // speed, sleep=off would run a resting device through minutes of
+            // guest time per second, into its auto-sleep, at a full core.
+            // Turbo's speed-up comes from the peripheral overrides below.
+            format!("shift={},sleep=on", if machine == "picco" { 2 } else { 0 }),
         ]);
         if options.turbo {
             let turbo: serde_json::Map<String, Value> = serde_json::from_str(TURBO_ARGS)
@@ -542,7 +549,9 @@ impl Session {
         if !binary.exists() {
             return Err(failed(AppError::new(
                 "EQEMU",
-                format!("QEMU is missing at {}. Build it or set EINK_QEMU_BIN.", binary.display()),
+                format!("QEMU is missing at {}.{}", binary.display(), if self.qemu.share.is_none() && std::env::var_os("EINK_QEMU_BIN").is_none() {
+                    " Build QEMU (EINK-QEMU.md) or set EINK_QEMU_BIN."
+                } else { "" }),
             )));
         }
         let dir = run_dir().map_err(|e| failed(e.into()))?;
@@ -888,7 +897,7 @@ impl Session {
                 }
                 let result = blocking(card).await;
                 if let Err(error) = &result {
-                    if sd_changed(error) {
+                    if error.changed {
                         // The card may be inconsistent: do not let the firmware write to it.
                         let message = format!("The SD card may be damaged ({}). The emulator was stopped; check the card before starting again.", error.message);
                         self.log(message.clone());

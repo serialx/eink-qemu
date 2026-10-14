@@ -20,7 +20,7 @@ const bootNames: Record<Machine, string> = {
   x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)', picco: 'BOOX Picco (ESP32-S3)',
 };
 
-let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null, run: 0 };
+let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null, run: 0, seq: -1 };
 let platform = '';
 let settings: Settings;
 let firmware: FileInfo | null = null;
@@ -54,6 +54,8 @@ function paintControls() {
 }
 
 function onSession(info: SessionInfo) {
+  // Events and command results can arrive out of order: keep the newest.
+  if (info.seq <= session.seq) return;
   const previous = session.state;
   session = info;
   if (info.state !== 'running') releaseAll();
@@ -67,11 +69,18 @@ function onSession(info: SessionInfo) {
     void sdRefresh();
   }
   if (info.state === 'idle' && previous !== 'idle') {
-    removeScreen(info.exit?.kind === 'crashed'
-      ? `The emulator exited (${info.exit.reason ?? 'unknown reason'}). Start again to boot with the current SD card.`
-      : 'Stopped. Start again to use the current SD card.');
-    if (info.exit?.kind === 'stopped') status('Stopped. Start boots again with your current SD card.');
-    else if (info.exit?.kind === 'crashed') status(`Emulator exited (${info.exit.reason ?? 'unknown'}).`);
+    const reason = info.exit?.reason?.replace(/\.$/, '') ?? 'unknown reason';
+    if (info.exit?.kind === 'crashed') {
+      removeScreen(`The emulator exited: ${reason}. Start again to boot with the current SD card.`);
+      status(`The emulator exited: ${reason}.`);
+    } else if (info.exit?.kind === 'failed' && previous !== 'starting') {
+      // Ended by the app after an error (a failed reset or SD operation).
+      removeScreen(`The emulator was stopped: ${reason}.`);
+      status(`The emulator was stopped: ${reason}.`);
+    } else if (info.exit?.kind === 'stopped') {
+      removeScreen('Stopped. Start again to use the current SD card.');
+      status('Stopped. Start boots again with your current SD card.');
+    }
     void sdRefresh();
   }
   paintControls();
@@ -111,9 +120,11 @@ async function start() {
     status(`${composition}Booting ${bootNames[machine]} · ${settings.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing'}…`);
     startedAt = performance.now();
     pending = false;
-    session = await api.start(flash, {
+    // The session events say how the start went; the result only adds
+    // what an event may not have delivered yet.
+    onSession(await api.start(flash, {
       machine, panel: settings.panel, wifi: settings.wifi, turbo: settings.turbo, ghosting: settings.ghosting,
-    });
+    }));
     paintControls();
   } catch (error) {
     pending = false;
@@ -464,7 +475,8 @@ function deviceKeyboard(event: KeyboardEvent) {
   }
   if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || dialogOpen()) return;
   const target = event.target as HTMLElement;
-  if (target.closest('input, textarea, select, button, a, .sd, #console, [role=dialog]')) return;
+  // As on the page: typing in a field and the SD card panel keep their keys.
+  if (target.closest('input, textarea, select, .sd, [role=dialog]')) return;
   if (session.state !== 'running') return;
   event.preventDefault();
   if (!event.repeat) press(name, owner, true);
@@ -503,6 +515,8 @@ function paintCard() {
 
 async function cardMenu() {
   if (session.state !== 'idle' || pending) return;
+  // A press on the button closed the open menu; its click must not reopen it.
+  if (menuJustClosed) { menuJustClosed = false; return; }
   const choice = await chooseCardAction();
   try {
     const chosen = choice === 'open' ? await api.pickOpenCard() : choice === 'new' ? await api.pickNewCard() : null;
@@ -514,6 +528,7 @@ async function cardMenu() {
   } catch (error) { sdError(error); }
 }
 
+let menuJustClosed = false;
 function chooseCardAction(): Promise<'open' | 'new' | null> {
   return new Promise((resolve) => {
     const menu = $('card-menu');
@@ -529,8 +544,15 @@ function chooseCardAction(): Promise<'open' | 'new' | null> {
       anchor.focus();
       resolve(value);
     };
-    const outside = (event: Event) => { if (!menu.contains(event.target as Node) && event.target !== anchor) close(null); };
-    const leave = (event: FocusEvent) => { if (!menu.contains(event.relatedTarget as Node)) close(null); };
+    const outside = (event: Event) => {
+      if (menu.contains(event.target as Node)) return;
+      menuJustClosed = anchor.contains(event.target as Node);
+      close(null);
+    };
+    // WebKit does not focus buttons on click: keep focus in the menu so a
+    // click is not taken for focus leaving it.
+    menu.onmousedown = (event) => event.preventDefault();
+    const leave = (event: FocusEvent) => { if (event.relatedTarget && !menu.contains(event.relatedTarget as Node)) close(null); };
     // Escape closes; arrows, Home and End move between the items.
     const keys = (event: KeyboardEvent) => {
       const at = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -632,7 +654,8 @@ async function sdRefresh(path = sd.cwd): Promise<void> {
     $('sd-path').replaceChildren();
     $('sd-meter').style.width = '0';
     const code = (error as AppError).code;
-    sdStatus(code === 'ENOCARD' || code === 'EBUSY' ? errorMessage(error) : `${errorMessage(error)} The emulator can still use this image.`, true);
+    sd.info = '';
+    sdStatus(code === 'EINVAL' || code === 'ENOTSUP' ? `${errorMessage(error)} The emulator can still use this image.` : errorMessage(error), true);
     sdPaint();
     return;
   }
@@ -737,13 +760,13 @@ async function sdUpload(sources: string[]) {
     if (!ok) return;
   }
   sdStatus(`Copying ${plan.files === 1 ? '1 file' : `${plan.files} files`} (${formatSize(plan.bytes)})…`);
-  await api.sdUpload(sd.cwd, sources);
+  await api.sdUpload(sd.cwd, sources, plan.conflicts);
   await sdRefresh();
 }
 
 function validName(name: string) {
   name = name.normalize('NFC');
-  const invalid = !name || name.length > 255 || /[\x00-\x1f￿"*/:<>?\\|]/u.test(name) || /[ .]$/u.test(name) ||
+  const invalid = !name || name.length > 255 || /[\x00-\x1f\uffff"*/:<>?\\|]/u.test(name) || /[ .]$/u.test(name) ||
     name === '.' || name === '..' || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name);
   if (invalid) throw new AppError('EINVAL', `"${name}" is not a valid FAT file name.`);
   return name;
@@ -759,7 +782,7 @@ async function sdRowAction(action: string, name: string) {
     const dest = await api.sdPickExport(path);
     if (dest) sdStatusFlash(`Saved ${name}`);
   } else if (action === 'rename') {
-    const target = await prompt(`Rename "${name}"`, name, 'Rename');
+    const target = await prompt(`Rename "${name}" to`, name, 'Rename');
     if (!target || target === name) return;
     await api.sdRename(path, validName(target));
     await sdRefresh();
@@ -818,7 +841,7 @@ export async function boot() {
   settings = state.settings;
   firmware = state.firmware;
   card = state.card;
-  session = state.session;
+  if (state.session.seq > session.seq) session = state.session;
   platform = state.platform;
   $<HTMLSelectElement>('device').value = settings.device;
   $<HTMLSelectElement>('panel').value = settings.panel;
@@ -921,6 +944,6 @@ export async function boot() {
     const link = (event.target as Element).closest<HTMLAnchorElement>('a[href^="https://"]');
     if (!link) return;
     event.preventDefault();
-    void openUrl(link.href);
+    openUrl(link.href).catch((error) => fail(errorMessage(error)));
   });
 }

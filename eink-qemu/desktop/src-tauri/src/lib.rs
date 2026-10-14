@@ -120,15 +120,14 @@ fn card_key(path: &Path) -> PathBuf {
 
 /// The lock file for one key (a path or a file identity).
 fn lock_file(locks: &Path, key: &str) -> Result<std::fs::File, AppError> {
-    use std::hash::{Hash, Hasher};
     std::fs::create_dir_all(locks)?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    key.hash(&mut hasher);
+    // FNV-1a: a fixed hash, so every build names a key's lock file alike.
+    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3));
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(locks.join(format!("{:016x}.lock", hasher.finish())))?;
+        .open(locks.join(format!("{hash:016x}.lock")))?;
     Ok(file)
 }
 
@@ -211,11 +210,11 @@ fn open_card(locks: &Path, path: &Path) -> Result<Card, AppError> {
 }
 
 fn check_firmware(path: &Path) -> Result<FileInfo, AppError> {
+    let meta = std::fs::metadata(path).map_err(|_| AppError::new("ENOENT", format!("{} does not exist.", path.display())))?;
     let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
     if !matches!(extension.as_deref(), Some("bin" | "xota")) {
         return Err(AppError::new("EINVAL", "Choose one firmware file: a .bin, or an X4 Pro .xota update."));
     }
-    let meta = std::fs::metadata(path).map_err(|_| AppError::new("ENOENT", format!("{} does not exist.", path.display())))?;
     if !meta.is_file() || meta.len() > MAX_FIRMWARE {
         return Err(AppError::new("EINVAL", "Firmware must be a file of at most 64 MiB."));
     }
@@ -439,10 +438,11 @@ async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>) -> Result<
             // Only the very same path is replaced in place; a hard link to
             // the card in use is another name, which becomes its own card.
             let ours = current.is_some_and(|card| card_key(&card.path) == card_key(&path));
-            if ours {
-                sd::create_blank(&path).map_err(AppError::from)?;
+            if let Some(card) = current.filter(|_| ours) {
+                // Replace the card itself, not a symbolic link that names it.
+                sd::create_blank(&card.path).map_err(AppError::from)?;
                 // The blank card is a new file: its identity replaces the old one.
-                current.unwrap().lock.lock().unwrap().refresh(&locks, &path)?;
+                card.lock.lock().unwrap().refresh(&locks, &card.path)?;
                 Ok(None)
             } else {
                 let alias = current.is_some_and(|card| identity_key(&card.path).is_some() && identity_key(&card.path) == identity_key(&path));
@@ -481,7 +481,12 @@ async fn card_pick_copy(handle: tauri::AppHandle, app: State<'_, App>) -> Result
             if card_key(&target) == card_key(card) || same_file {
                 return Err(sd::SdError::new("EINVAL", "Choose a different file for the copy."));
             }
-            std::fs::copy(card, &target).map(|_| ()).map_err(|e| sd::SdError::new("EIO", e.to_string()))
+            // Through a temporary file beside the destination, then renamed,
+            // so a failure never leaves half a card there.
+            let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let temp = tempfile::Builder::new().prefix(".eink-qemu-copy-").tempfile_in(dir).map_err(|e| sd::SdError::new("EIO", e.to_string()))?;
+            std::fs::copy(card, temp.path()).map_err(|e| sd::SdError::new("EIO", e.to_string()))?;
+            temp.persist(&target).map(|_| ()).map_err(|e| sd::SdError::new("EIO", e.error.to_string()))
         })
         .await?;
     Ok(Some(dest.to_string_lossy().into_owned()))
@@ -512,9 +517,11 @@ async fn sd_plan_upload(app: State<'_, App>, dir: String, sources: Vec<PathBuf>)
 }
 
 #[tauri::command]
-async fn sd_upload(app: State<'_, App>, dir: String, sources: Vec<PathBuf>) -> Result<sd::UploadPlan, AppError> {
+/// `confirmed`: the plan's conflicts the user agreed to replace; the upload
+/// is refused if the card changed since.
+async fn sd_upload(app: State<'_, App>, dir: String, sources: Vec<PathBuf>, confirmed: Vec<String>) -> Result<sd::UploadPlan, AppError> {
     granted_sources(&app, &sources)?;
-    app.session.with_card(true, move |card| sd::upload(card, &dir, &sources)).await
+    app.session.with_card(true, move |card| sd::upload(card, &dir, &sources, &confirmed)).await
 }
 
 /// Save a file from the card to the computer (native save dialog).
@@ -596,7 +603,10 @@ fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
 /// Open the saved card, or the default card when none was chosen. Problems
 /// are reported, never fatal: the app opens without a card instead.
 fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &mut Vec<String>) -> Option<Card> {
-    if let Some(saved) = settings.card.clone() {
+    let default = data.join("sd.img");
+    // A deleted default card is simply made again.
+    let saved = settings.card.clone().filter(|saved| !(card_key(saved) == card_key(&default) && !saved.exists()));
+    if let Some(saved) = saved {
         return match open_card(locks, &saved) {
             Ok(card) => Some(card),
             Err(error) => {
@@ -609,7 +619,6 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
             }
         };
     }
-    let default = data.join("sd.img");
     // Reserve the default card before looking at it, so two first launches
     // cannot both create it.
     let opened = reserve(locks, &default).and_then(|mut reservation| {
@@ -652,9 +661,9 @@ pub fn run() {
             };
             std::fs::create_dir_all(&data)?;
             let settings_path = config.join("settings.json");
-            let mut settings = Settings::load(&settings_path);
-            let locks = locks_dir(app.handle());
             let mut problems = Vec::new();
+            let mut settings = Settings::load(&settings_path, &mut problems);
+            let locks = locks_dir(app.handle());
             let card = startup_card(&mut settings, &data, &locks, &mut problems);
             if let Some(firmware) = settings.firmware.as_deref() {
                 if let Err(error) = check_firmware(firmware) {

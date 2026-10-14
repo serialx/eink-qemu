@@ -1,5 +1,5 @@
-/* Mock content for the static layout: an SD listing, a console log, a running
-   X4 Pro with a drawn page. Replaced by the Rust session in step 3. */
+/* Mock content for layout work in a plain browser (pnpm dev, or ?demo): an
+   SD listing, a console log and a running X4 Pro with a drawn page. */
 const $ = (id: string) => document.getElementById(id)!;
 
 interface Entry { name: string; size: number; isDir: boolean }
@@ -169,10 +169,10 @@ export function demo({ appendConsole }: { appendConsole: (text: string) => void 
   ($('screenshot') as HTMLButtonElement).disabled = false;
   $('flash-name').textContent = 'crosspoint-1.6.5-x4pro.bin';
   $('flash-name').classList.remove('empty');
-  $('machine').textContent = 'X4 Pro · UC8279 0x68 · native';
+  $('machine').textContent = 'Xteink X4 Pro · 480 × 800';
   $('status').textContent = 'Running · Turbo (not timing-accurate) · reader open';
   renderSd();
   renderKeys('x4pro');
-  renderScreen(528, 792);
+  renderScreen(480, 800);
   appendConsole(log);
 }

@@ -34,9 +34,17 @@ the Rust core.
 - The window's minimum size is 1000×640, so the stylesheet's phone layout
   never engages.
 - `src/app.ts` is the page's `app.js` with the runtime iframe replaced by
-  Rust commands. Screen zoom (whole physical pixels, Fit, Auto), the console
-  buffer and filter, help tips, key rows, theme toggle, status milestones and
-  the SD table carry over.
+  Rust commands: screen zoom (whole physical pixels, Fit, Auto), key rows,
+  status milestones and the SD table carry over. The console buffer and
+  filter are in `console.ts`; help tips, the theme toggle and the panel
+  gutters in `main.ts`.
+- Deliberate differences from the page: status milestones also recognise
+  the X4's plain `refresh` waits, restart counting when the guest reboots,
+  name an SD card the firmware could not mount and the stock X4 Pro
+  firmware's wait for a Power press; device keys are released by their own
+  key-up whatever the modifiers; the SD row action saves to the computer
+  through a save dialog ("Save to computer"); Turbo keeps idle time in real
+  time (see the README).
 - Without the Tauri runtime (`pnpm dev` in a browser) the page shows mock
   content from `src/demo.ts`, for layout work.
 

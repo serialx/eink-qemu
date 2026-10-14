@@ -1,53 +1,64 @@
-//! SD card explorer on the image file, with the `fatfs` crate. Synchronous:
-//! callers run these on a blocking thread, with the guest stopped.
+//! SD card explorer on the image file, with the `fatfs` crate (a vendored
+//! 0.3.6 with fixes, see vendor/fatfs/EINK-QEMU.md). Synchronous: callers
+//! run these on a blocking thread, with the guest stopped.
 //!
 //! CONTRACT (the session and commands depend on exactly these items):
 //! - Paths on the card are absolute ("/", "/books/a.epub"), case-insensitive,
 //!   never containing "." or ".." components.
 //! - Names follow fat.js `validName`: 1..=255 chars, none of `\x00-\x1f "*/:<>?\|`
 //!   or U+FFFF, no trailing space or dot, not "." / "..", not a DOS device
-//!   name (CON PRN AUX NUL COM1-9 LPT1-9, with or without extension).
-//! - The image may be a bare FAT volume or MBR-partitioned (first FAT
-//!   partition, types 0x01 0x04 0x06 0x0b 0x0c 0x0e).
+//!   name (CON PRN AUX NUL COM1-9 LPT1-9, with or without extension). New
+//!   names are further limited by fatfs (see the notes below).
+//! - The image may be a bare FAT volume or MBR-partitioned (the first
+//!   partition of type 0x01 0x04 0x06 0x0b 0x0c 0x0e). fat.js accepts only
+//!   cards with exactly one 0x0b/0x0c partition, and FAT32 only.
 //! - Every mutating operation (upload, mkdir, rename, remove) is one
 //!   transaction: its writes go to a journal and reach the image only after
 //!   the whole operation and fatfs's unmount succeeded, the edited FAT still
-//!   validates, the edit lost no clusters, and FSInfo was updated. Any error
-//!   before that leaves the image byte-identical (`changed` false).
-//!   Read-only operations (list, plan_upload, export) never write the image.
+//!   validates, the edit lost no clusters, and FSInfo was updated.
 //! - Committing writes the journal in three stages: (1) data in clusters
 //!   that were free in the original FAT, then a sync; (2) the rest of the
 //!   data region (folder clusters, data rewritten in place); (3) the
-//!   reserved sectors, FATs and fixed root folder, then a sync. If writing
-//!   fails in stage 1, only clusters the card does not use were touched: the
-//!   file system is unchanged (`changed` false, though those free clusters'
-//!   bytes may differ). A failure in stage 2 or 3 sets `changed`: the card
-//!   may be inconsistent (for example a replaced file whose data was
-//!   rewritten in place), and the device must at least remount it.
+//!   reserved sectors, FATs and fixed root folder, then a sync. Any error
+//!   before stage 2 leaves the file system unchanged (`changed` false): the
+//!   image is byte-identical, except that a failure in stage 1 may have
+//!   written to clusters nothing uses. A failure in stage 2 or 3 sets
+//!   `changed`: the card may be inconsistent and needs checking.
 //! - Errors carry fat.js-style codes: ENOENT EEXIST EINVAL ENOTDIR EISDIR
-//!   ENOTEMPTY ENOSPC ENOTSUP EIO. After `Ok` from a mutating operation, or
-//!   an error with `changed`, the device must remount the card (reset).
-//! - Cards whose FAT copies disagree, FAT32 cards with mirroring disabled,
-//!   FATs with broken, cross-linked or cyclic chains, or chains that run
-//!   into bad or reserved clusters are refused with ENOTSUP before fatfs
-//!   reads them, so a damaged card cannot hang or crash an operation.
-//!   Isolated bad or reserved marks are healthy. Before every edit the whole
-//!   folder tree is checked as well: two entries sharing clusters, an entry
-//!   starting inside another chain or at a free cluster, folders that loop
-//!   and files longer than their chains are refused with ENOTSUP.
+//!   ENOSPC ENOTSUP EIO. After `Ok` from a mutating operation, or an error
+//!   with `changed`, the device must remount the card (reset).
+//! - Damaged cards are refused before fatfs reads them, with ENOTSUP where
+//!   fat.js mostly says EINVAL: FAT copies that disagree, FAT32 with
+//!   mirroring disabled, broken, cross-linked or cyclic chains, and chains
+//!   into bad or reserved clusters (isolated bad or reserved marks are
+//!   healthy). Before every edit the whole folder tree is checked too: two
+//!   entries sharing clusters, an entry starting inside another chain or at
+//!   a free cluster, folders that loop and files longer than their chains.
 //! - Upload sources resolve, case-insensitively, against long and short
 //!   names, including the short names fatfs will generate for new entries
 //!   in the same upload: a source naming an existing entry replaces it, and
-//!   two sources naming one entry are refused with EINVAL. The plan follows
-//!   the upload step by step (folder slots, folder growth, replacements),
-//!   so `plan_upload` fails with ENOSPC exactly when `upload` would.
+//!   two sources naming one entry are refused with EINVAL. `upload` takes
+//!   the conflicts the user confirmed and refuses with EEXIST if they
+//!   changed since `plan_upload`. The plan follows the upload step by step
+//!   (folder slots, folder growth, replacements), so `plan_upload` fails
+//!   with ENOSPC exactly when `upload` would. Host files are opened without
+//!   following symbolic links.
 //!
-//! Notes on fatfs 0.3: it trusts the FSInfo free count, so free space is
-//! counted from the FAT here and both FSInfo copies are rewritten after every
-//! change, as fat.js does. Short names decode as code page 437, like fat.js;
-//! new short names stay ASCII. Its long-name encoder only accepts characters
-//! up to U+FFFF (no U+007F) and at most 255 UTF-8 bytes; such names are
-//! rejected with EINVAL before anything is written.
+//! Where this differs from fat.js (the browser page's explorer):
+//! - Uploads skip hidden entries inside folders and create empty folders;
+//!   the page copies dotfiles and drops empty folders.
+//! - New entries always get long-name records, and short names follow
+//!   fatfs (NAME~1..~4, then a checksum form) rather than fat.js's.
+//! - fatfs writes long names only up to U+FFFF (no U+007F) and 255 UTF-8
+//!   bytes; such names are rejected with EINVAL before anything is written.
+//! - Listing order compares code points, fat.js UTF-16 units (they differ
+//!   only for characters beyond U+FFFF).
+//! - Short names decode as code page 437, like fat.js; new ones stay ASCII.
+//! - fatfs trusts the FSInfo free count, so free space is counted from the
+//!   FAT here and both FSInfo copies are rewritten after every change, as
+//!   fat.js does. A FAT32 card without FSInfo (sector 0 or 0xFFFF) is fine.
+//! - Temporary disk space: changes over 32 MiB are staged in a temporary
+//!   file; running out of it is reported as such, not as a card error.
 
 use fatfs::{Dir, DirEntry, FileSystem, FsOptions, OemCpConverter};
 use serde::Serialize;
@@ -119,6 +130,7 @@ pub const MAX_UPLOAD_ENTRIES: usize = 10_000;
 pub const MAX_UPLOAD_DEPTH: usize = 64;
 
 const COPY_BUFFER: usize = 256 * 1024;
+const ROOT_FULL: &str = "The SD card's root folder is full; put the files in a folder.";
 const MAX_FILE: u64 = 0xffff_ffff;
 
 /// Whether `name` is a valid FAT long name (the rules above).
@@ -175,13 +187,35 @@ fn parts(path: &str) -> Result<Vec<&str>, SdError> {
     Ok(result)
 }
 
+/// An I/O error from the journal's temporary spill file (host disk space),
+/// not from the card.
+#[derive(Debug)]
+struct SpillError(io::Error);
+
+impl std::fmt::Display for SpillError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for SpillError {}
+
+fn spill_error(error: io::Error) -> io::Error {
+    io::Error::other(SpillError(error))
+}
+
 fn eio(error: io::Error) -> SdError {
+    if let Some(spill) = error.get_ref().and_then(|inner| inner.downcast_ref::<SpillError>()) {
+        return SdError::new("EIO", format!("Not enough temporary disk space to stage the change: {spill}"));
+    }
+    if error.kind() == io::ErrorKind::WriteZero {
+        // Only a fixed FAT12/16 root folder ends a write early.
+        return SdError::new("ENOSPC", ROOT_FULL);
+    }
     let message = error.to_string();
     let code = match error.kind() {
         io::ErrorKind::NotFound => "ENOENT",
         io::ErrorKind::AlreadyExists => "EEXIST",
-        // A fixed FAT12/16 root folder that is full ends the write early.
-        io::ErrorKind::WriteZero => "ENOSPC",
         _ if message.contains("No space left") => "ENOSPC",
         _ if message.contains("Directory not empty") => "ENOTEMPTY",
         _ if message.contains("Is a directory") => "EISDIR",
@@ -505,17 +539,17 @@ impl Journal {
     fn unspill(&mut self, index: u64) -> io::Result<Option<Vec<u8>>> {
         let Some(offset) = self.spilled.remove(&index) else { return Ok(None) };
         let mut data = vec![0u8; self.chunk_len(index)];
-        read_exact_at(self.spill.as_ref().unwrap(), &mut data, offset)?;
+        read_exact_at(self.spill.as_ref().unwrap(), &mut data, offset).map_err(spill_error)?;
         Ok(Some(data))
     }
 
     fn spill_all(&mut self) -> io::Result<()> {
         if self.spill.is_none() {
-            self.spill = Some(tempfile::tempfile()?);
+            self.spill = Some(tempfile::tempfile().map_err(spill_error)?);
         }
         let spill = self.spill.as_ref().unwrap();
         for (index, data) in self.dirty.drain() {
-            write_all_at(spill, &data, self.spill_end)?;
+            write_all_at(spill, &data, self.spill_end).map_err(spill_error)?;
             self.spilled.insert(index, self.spill_end);
             self.spill_end += CHUNK;
         }
@@ -577,7 +611,9 @@ impl Journal {
         let failed = |changed: bool| {
             move |error: io::Error| SdError {
                 code: "EIO",
-                message: if changed {
+                message: if error.get_ref().is_some_and(|inner| inner.is::<SpillError>()) {
+                    format!("Not enough temporary disk space to stage the change: {error}{}", if changed { "; the card may be inconsistent" } else { "" })
+                } else if changed {
                     format!("Writing the SD card image failed partway; the card may be inconsistent: {error}")
                 } else {
                     format!("Writing the SD card image failed before anything on it changed: {error}")
@@ -621,18 +657,22 @@ impl Journal {
     }
 }
 
+#[cfg(debug_assertions)]
 thread_local! {
     static COMMIT_BUDGET: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Tests: make commits on this thread fail after writing `bytes` more
-/// bytes to the image (None: never), to exercise partial commits.
+/// bytes to the image (None: never), to exercise partial commits. Only in
+/// debug builds, which is how tests run.
+#[cfg(debug_assertions)]
 #[doc(hidden)]
 pub fn fail_commit_after(bytes: Option<u64>) {
     COMMIT_BUDGET.with(|budget| budget.set(bytes));
 }
 
 fn commit_write(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    #[cfg(debug_assertions)]
     if let Some(budget) = COMMIT_BUDGET.with(|budget| budget.get()) {
         if (buf.len() as u64) > budget {
             write_all_at(file, &buf[..budget as usize], offset)?;
@@ -1532,14 +1572,23 @@ fn short_name(name: &str, existing: &HashSet<[u8; 11]>) -> Option<[u8; 11]> {
         (at, true, lossy)
     }
     let mut short = [b' '; 11];
-    let (stem_len, fits, lossy) = match name.rfind('.') {
+    // As the patched fatfs (vendor/fatfs): leading dots are dropped, and an
+    // empty stem becomes "_".
+    let base = name.trim_start_matches('.');
+    let (mut stem_len, fits, mut lossy) = match base.rfind('.') {
         Some(dot) => {
-            let (stem_len, stem_fits, stem_lossy) = copy_part(&mut short[..8], &name[..dot]);
-            let (_, ext_fits, ext_lossy) = copy_part(&mut short[8..], &name[dot + 1..]);
+            let (stem_len, stem_fits, stem_lossy) = copy_part(&mut short[..8], &base[..dot]);
+            let (_, ext_fits, ext_lossy) = copy_part(&mut short[8..], &base[dot + 1..]);
             (stem_len, stem_fits && ext_fits, stem_lossy || ext_lossy)
         }
-        None => copy_part(&mut short[..8], name),
+        None => copy_part(&mut short[..8], base),
     };
+    lossy = lossy || base.len() != name.len();
+    if stem_len == 0 {
+        short[0] = b'_';
+        stem_len = 1;
+        lossy = true;
+    }
     let mut checksum = name.chars().fold(0u16, |sum, c| (sum >> 1).wrapping_add(sum << 15).wrapping_add(c as u16));
     let hex = |value: u16| -> [u8; 4] { format!("{value:04X}").as_bytes().try_into().unwrap() };
     let digit = |byte: u8| (byte as char).to_digit(10);
@@ -1684,7 +1733,7 @@ impl Sim<'_> {
             .ok_or_else(|| SdError::new("EEXIST", format!("{parent} has too many names like \"{name}\".")))?;
         let slots = 1 + (name.encode_utf16().count() as u64).div_ceil(13);
         let grown = folder.slots.take(slots, per_cluster).map_err(|_| {
-            SdError::new("ENOSPC", "The SD card's root folder is full; put the files in a folder.")
+            SdError::new("ENOSPC", ROOT_FULL)
         })?;
         folder.shorts.insert(short);
         folder.names.entry(fold(name)).or_insert(id);
@@ -1784,8 +1833,25 @@ pub fn plan_upload(image: &Path, dir: &str, sources: &[PathBuf]) -> Result<Uploa
     with_fs(image, false, |journal, geo, fat| simulate(journal, geo, fat, dir, &plan), |_, _, summary| Ok(summary))
 }
 
+/// Open a host source without following a symbolic link swapped in since
+/// the walk, and only if it is still a regular file.
+fn open_source(source: &Path) -> Result<File, SdError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let input = options.open(source).map_err(|e| host(source, e))?;
+    if !input.metadata().map_err(|e| host(source, e))?.is_file() {
+        return Err(SdError::new("EINVAL", format!("{} is no longer a regular file.", source.display())));
+    }
+    Ok(input)
+}
+
 fn copy_in(file: &mut fatfs::File<&mut Disk>, source: &Path) -> Result<(), SdError> {
-    let mut input = File::open(source).map_err(|e| host(source, e))?;
+    let mut input = open_source(source)?;
     file.truncate().map_err(eio)?;
     let mut buffer = vec![0u8; COPY_BUFFER];
     loop {
@@ -1799,13 +1865,24 @@ fn copy_in(file: &mut fatfs::File<&mut Disk>, source: &Path) -> Result<(), SdErr
 }
 
 /// Copy `sources` into `dir`, creating folders as needed and replacing
-/// existing files (the caller confirmed `plan_upload`'s conflicts). Streams
-/// file contents; never loads a whole file or the card into memory. One
+/// existing files. `confirmed` lists the card paths `plan_upload` reported
+/// as conflicts and the user agreed to replace: if the conflicts are
+/// different now (the card or the host files changed since the plan), the
+/// upload is refused with EEXIST before anything is written. Streams file
+/// contents; never loads a whole file or the card into memory. One
 /// transaction (see the module header): nothing reaches the card unless
 /// every file was copied.
-pub fn upload(image: &Path, dir: &str, sources: &[PathBuf]) -> Result<UploadPlan, SdError> {
+pub fn upload(image: &Path, dir: &str, sources: &[PathBuf], confirmed: &[String]) -> Result<UploadPlan, SdError> {
     let plan = host_plan(dir, sources)?;
-    with_fs(image, true, |journal, geo, fat| simulate(journal, geo, fat, dir, &plan), |fs, _, summary| {
+    let agreed: HashSet<String> = confirmed.iter().map(|path| fold(path)).collect();
+    let pre = |journal: &mut Journal, geo: &Geometry, fat: &FatState| {
+        let summary = simulate(journal, geo, fat, dir, &plan)?;
+        if summary.conflicts.iter().map(|path| fold(path)).collect::<HashSet<_>>() != agreed {
+            return Err(SdError::new("EEXIST", "The SD card changed since the copy was planned; try again."));
+        }
+        Ok(summary)
+    };
+    with_fs(image, true, pre, |fs, _, summary| {
         let mut index = Index::new(fs);
         for folder in &plan.dirs {
             if index.lookup(folder)?.is_none() {

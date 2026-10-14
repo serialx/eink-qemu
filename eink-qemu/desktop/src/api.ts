@@ -8,6 +8,8 @@ export interface SessionInfo {
   turbo: boolean;
   exit: Exit | null;
   run: number;
+  /** Increases with every change: older snapshots are ignored. */
+  seq: number;
 }
 export interface Settings {
   device: 'auto' | Machine;
@@ -73,7 +75,7 @@ export const api = {
   sdList: (path: string) => call<SdListing>('sd_list', { path }),
   sdPickSources: () => call<string[]>('sd_pick_sources'),
   sdPlanUpload: (dir: string, sources: string[]) => call<UploadPlan>('sd_plan_upload', { dir, sources }),
-  sdUpload: (dir: string, sources: string[]) => call<UploadPlan>('sd_upload', { dir, sources }),
+  sdUpload: (dir: string, sources: string[], confirmed: string[]) => call<UploadPlan>('sd_upload', { dir, sources, confirmed }),
   sdPickExport: (path: string) => call<string | null>('sd_pick_export', { path }),
   sdMkdir: (path: string) => call<void>('sd_mkdir', { path }),
   sdRename: (path: string, name: string) => call<void>('sd_rename', { path, name }),

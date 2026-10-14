@@ -22,7 +22,6 @@ body { user-select: none; -webkit-user-select: none; }
 
 /* macOS: traffic lights sit over the top bar; the bar is the drag region. */
 html[data-platform="macos"] .topbar { padding-left: 84px; }
-.topbar button, .topbar select, .topbar label, .topbar a, .topbar .about { -webkit-app-region: no-drag; }
 
 /* Tauri hands files over as paths, so file inputs become buttons. */
 button.file-chip { padding: 6px 10px; font-weight: 500; color: var(--text-2); justify-content: flex-start; }

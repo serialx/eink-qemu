@@ -1,5 +1,4 @@
 import './desktop.css';
-import { demo } from './demo';
 import { appendLines } from './console';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -120,7 +119,10 @@ applyWidths();
 // Without the Tauri runtime (a plain browser on the dev server), the page
 // shows mock content so the layout can be checked.
 if ('__TAURI_INTERNALS__' in window && !new URLSearchParams(location.search).has('demo')) {
-  void import('./app').then((app) => app.boot());
+  import('./app').then((app) => app.boot()).catch((error) => {
+    document.getElementById('status')!.textContent = `The app could not start: ${(error as Error)?.message ?? error}`;
+    appendLines([`Error: the app could not start: ${(error as Error)?.message ?? error}`]);
+  });
 } else {
-  demo({ appendConsole: (text: string) => appendLines(text.trimEnd().split('\n')) });
+  void import('./demo').then(({ demo }) => demo({ appendConsole: (text: string) => appendLines(text.trimEnd().split('\n')) }));
 }

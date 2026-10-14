@@ -109,10 +109,12 @@
             </button>
             <div id="turbo-help" class="tip" role="tooltip">
               <strong>Turbo (fast, not timing-accurate)</strong>
-              <p>Runs the device as fast as your computer allows: idle waits are skipped and SD card,
-                screen refresh and SPI transfer delays are cut to a minimum.</p>
-              <p>Timing no longer matches real hardware. Turn it off to see how fast the firmware runs
-                on an actual device.</p>
+              <p>Runs the device as fast as your computer allows: SD card, screen refresh and SPI
+                transfer delays are cut to a minimum. Booting and page turns take a fraction of the
+                time. Idle time still passes in real time, so a resting device keeps its screen and
+                your CPU stays free.</p>
+              <p>Timing no longer matches real hardware, so log timestamps and refresh times are not
+                realistic. Turn it off to see how fast the firmware runs on an actual device.</p>
               <p class="fine">Applies when the emulator starts.</p>
             </div>
           </div>
@@ -133,8 +135,8 @@
         <p id="sd-save" role="status"></p>
       </div>
       <div class="sd-tools">
-        <button id="sd-upload" class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
-        <button id="sd-mkdir" class="icon-button" type="button" aria-label="New folder" title="New folder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
+        <button id="sd-upload" disabled class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
+        <button id="sd-mkdir" disabled class="icon-button" type="button" aria-label="New folder" title="New folder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
         <div class="card-choice">
           <button id="sd" class="icon-button" type="button" aria-label="Change SD card" title="Open another SD image or make a blank card" aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu"><svg class="icon"><use href="#i-card"/></svg></button>
           <div id="card-menu" class="menu" role="menu" aria-label="SD card" hidden>
@@ -143,7 +145,7 @@
           </div>
         </div>
         <button id="download" class="icon-button" type="button" aria-label="Save a copy of the SD card" title="Save a copy of the SD card"><svg class="icon"><use href="#i-download"/></svg></button>
-        <button id="sd-refresh" class="icon-button" type="button" aria-label="Refresh" title="Refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        <button id="sd-refresh" disabled class="icon-button" type="button" aria-label="Refresh" title="Refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
       </div>
       <nav id="sd-path" aria-label="Folder path"></nav>
       <div class="sd-scroll">

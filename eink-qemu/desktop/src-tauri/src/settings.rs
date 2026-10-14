@@ -46,15 +46,31 @@ pub const DEVICES: [&str; 5] = ["auto", "x3", "x4", "x4pro", "picco"];
 pub const PANELS: [&str; 2] = ["uc8279-68", "uc8179"];
 
 impl Settings {
-    pub fn load(path: &Path) -> Settings {
-        let mut settings: Settings = std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+    /// Read the settings. A file that cannot be parsed is renamed to
+    /// `settings.json.bad` and replaced by defaults; unknown values fall back
+    /// to defaults. Both are reported in `problems`.
+    pub fn load(path: &Path, problems: &mut Vec<String>) -> Settings {
+        let mut settings = match std::fs::read(path) {
+            Err(_) => Settings::default(),
+            Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    let bad = path.with_extension("json.bad");
+                    let _ = std::fs::rename(path, &bad);
+                    problems.push(format!(
+                        "The settings file could not be read ({error}); it was kept as {} and defaults are used.",
+                        bad.display()
+                    ));
+                    Settings::default()
+                }
+            },
+        };
         if !DEVICES.contains(&settings.device.as_str()) {
+            problems.push(format!("Unknown device \"{}\" in the settings; using Auto.", settings.device));
             settings.device = "auto".into();
         }
         if !PANELS.contains(&settings.panel.as_str()) {
+            problems.push(format!("Unknown X4 Pro panel \"{}\" in the settings; using UC8279 (0x68).", settings.panel));
             settings.panel = "uc8279-68".into();
         }
         settings

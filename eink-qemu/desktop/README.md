@@ -12,7 +12,7 @@ Build QEMU first ([EINK-QEMU.md](../../EINK-QEMU.md#build-and-run)); in
 development the app runs `build/qemu-system-riscv32` and
 `build/qemu-system-xtensa` from the repository root, or the directory in
 `EINK_QEMU_BIN`. QEMU must include the `eink` display (`ui/eink.c`). Then,
-with Node 22+, pnpm and Rust 1.89+:
+with Node 22.12+, pnpm 10+ and Rust 1.90+:
 
 ```sh
 cd eink-qemu/desktop
@@ -21,25 +21,27 @@ pnpm tauri dev
 ```
 
 `pnpm dev` and `pnpm build` first run `scripts/prepare-resources.sh`, which
-needs Python 3. It writes the boot assets for composing release apps to
+needs Python 3, and dosfstools and mtools for the blank card. It writes the boot assets for composing release apps to
 `public/boot/`, and the turbo overrides and a compressed blank 64 MiB card to
 `src-tauri/resources/`, which the Rust binary embeds.
 
-Checks:
+Checks (after `sh scripts/prepare-resources.sh`, which the Rust build needs):
 
 ```sh
 pnpm exec tsc --noEmit                         # front end
-cargo test --manifest-path src-tauri/Cargo.toml  # display reader, SD card
+cargo test --manifest-path src-tauri/Cargo.toml  # display reader, locks, SD card
 ```
 
 `pnpm dev` alone serves the front end in a browser at
-http://localhost:1420 with mock content, for layout work without Rust.
+http://localhost:1420 with mock content, for layout work without Rust;
+`?demo` shows the same mock content inside the app.
 
 ## Behaviour
 
 Device, panel and the three switches persist in `settings.json`, with the
-chosen firmware and SD card, in the app's config directory. Theme, zoom and
-panel widths stay in the WebView's storage, as on the page. Choosing a
+chosen firmware and SD card, in the app's config directory. Theme and zoom
+stay in the WebView's storage, as on the page, with the desktop's panel
+widths; that storage is shared by every instance. Choosing a
 firmware starts it, as in the browser; changing Device or the X4 Pro panel
 restarts it.
 
@@ -52,12 +54,16 @@ operation pauses the guest; a change resets the device so the firmware mounts
 the card again. Uploads take files from the native dialog, or files and
 folders dropped on the panel; hidden entries and symbolic links in folders
 are skipped. A card is used by one app instance at a time; an instance that
-cannot lock its card opens without one and says so. A saved card or firmware
-that is missing or invalid is reported when the window opens.
+cannot lock its card opens without one and says so. A saved card that is
+missing or invalid, a saved firmware file that is missing, and a settings
+file that cannot be read are reported when the window opens; firmware
+contents are checked at Start.
 
 Wi-Fi uses QEMU's user network, so the firmware reaches the internet; turning
 it off keeps the radio present without a host connection. Turbo uses the
-overrides from `turbo-args.sh`, like the other launchers.
+overrides from `turbo-args.sh`, like the other launchers, but keeps idle time
+in real time (`-icount sleep=on`): native QEMU would otherwise run a resting
+device through its 10-minute auto-sleep in under a minute at a full CPU core.
 
 ### Test hooks
 
