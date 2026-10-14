@@ -7,6 +7,7 @@
 //! accept only those recorded paths.
 
 mod display;
+mod host;
 mod qmp;
 pub mod sd;
 mod session;
@@ -109,10 +110,10 @@ fn locks_dir(app: &tauri::AppHandle) -> PathBuf {
 
 /// A stable name for a card path, also before the file exists.
 fn card_key(path: &Path) -> PathBuf {
-    if let Ok(path) = std::fs::canonicalize(path) {
+    if let Ok(path) = dunce::canonicalize(path) {
         return path;
     }
-    match (path.parent().and_then(|p| std::fs::canonicalize(p).ok()), path.file_name()) {
+    match (path.parent().and_then(|p| dunce::canonicalize(p).ok()), path.file_name()) {
         (Some(parent), Some(name)) => parent.join(name),
         _ => path.to_path_buf(),
     }
@@ -133,17 +134,7 @@ fn lock_file(locks: &Path, key: &str) -> Result<std::fs::File, AppError> {
 
 /// A file's identity, so hard links to one card share one owner.
 fn identity_key(path: &Path) -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).ok()?;
-        Some(format!("id:{}:{}", meta.dev(), meta.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        None
-    }
+    host::file_identity(path).map(|(device, file)| format!("id:{device}:{file}"))
 }
 
 /// Exclusive use of a host file among all eink-qemu instances of this user:
@@ -159,7 +150,12 @@ fn reserve(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
 /// Only the path lock: for a hard link to the card this instance already
 /// owns, whose identity lock it holds.
 fn reserve_path(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
-    let file = try_lock(locks, &format!("path:{}", card_key(path).display()), path)?;
+    let mut key = format!("path:{}", card_key(path).display());
+    if cfg!(windows) {
+        // NTFS names ignore case, so C:\Card.img and c:\card.img are one card.
+        key = key.to_lowercase();
+    }
+    let file = try_lock(locks, &key, path)?;
     Ok(Reservation { path: file, identity: None })
 }
 
@@ -191,7 +187,7 @@ impl Reservation {
 
 /// Check that `path` looks like an SD image and return its canonical form.
 fn validate_card(path: &Path) -> Result<PathBuf, AppError> {
-    let path = std::fs::canonicalize(path)
+    let path = dunce::canonicalize(path)
         .map_err(|_| AppError::new("ENOENT", format!("{} does not exist.", path.display())))?;
     let meta = std::fs::metadata(&path)?;
     if !meta.is_file() {
@@ -760,7 +756,6 @@ mod tests {
         assert!(reserve(&locks, &card).is_ok());
     }
 
-    #[cfg(unix)]
     #[test]
     fn hard_links_share_one_owner() {
         let dir = tempfile::tempdir().unwrap();
@@ -773,7 +768,6 @@ mod tests {
         assert_eq!(reserve(&locks, &alias).err().unwrap().code, "EBUSY");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_replaced_card_releases_its_old_identity() {
         let dir = tempfile::tempdir().unwrap();

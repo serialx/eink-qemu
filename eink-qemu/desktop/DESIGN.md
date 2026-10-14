@@ -137,9 +137,9 @@ One card is used by one app instance at a time. A reservation locks two
 files in the user's app data directory, shared by every instance whatever
 its data directory: one named after the card's path (so it also covers a
 card being created) and one after its identity (device and inode, so hard
-links share an owner; Windows has no stable file identity in Rust yet, so
-there only the path is locked). Without its reservation the card is not used at all;
-the app opens without a card and says why. Saving a copy, an exported file
+links share an owner; volume serial and file index on Windows). Without
+its reservation the card is not used at all; the app opens without a card
+and says why. Saving a copy, an exported file
 or a screenshot reserves its destination for the whole write, so it can
 never land on an open card, and the default card is reserved before it is
 created. Device input and the pause for an SD operation take one gate, so
@@ -159,4 +159,6 @@ because it writes NVS and OTA data to flash.
 `scripts/bundle-qemu.sh` stages QEMU, its non-system libraries and the two
 ESP32 ROMs into `src-tauri/qemu`; `tauri.bundle.conf.json` adds that folder
 to the bundle's resources, and a packaged app runs `qemu/bin` with
-`-L qemu/share`. macOS only so far; see the README.
+`-L qemu/share`. `scripts/bundle-qemu-windows.sh` does the same for a MinGW
+QEMU, with its DLLs beside the executables. Linux is not packaged yet; see
+the README.

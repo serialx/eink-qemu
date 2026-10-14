@@ -120,7 +120,43 @@ library" alert.
 Verified on macOS arm64: a copy of the directory, run from another location
 with `env -i` and `DYLD_PRINT_LIBRARIES`, boots CrossPoint 1.6.5 on `x4pro`
 and `x3` and loads all 19 libraries from `qemu/lib` and none from
-`/opt/homebrew`. The full `tauri build` with the fragment has not been run yet.
+`/opt/homebrew`. `tauri build` with the fragment produces a working `.app`
+and `.dmg`.
+
+### Windows
+
+The Windows QEMU is a MinGW build: the repository CI's
+`dist-qemu-*-x86_64-w64-mingw32` archives (static), or a cross build such as
+QEMU's `tests/docker/dockerfiles/fedora-win64-cross.docker` with
+`--target-list=xtensa-softmmu,riscv32-softmmu --enable-pixman --enable-gcrypt
+--enable-slirp`. `scripts/bundle-qemu-windows.sh <install dir>` stages it
+into `src-tauri/qemu` the same way, with the DLLs beside the `.exe` files
+(Windows finds them there). It strips debug information and, with
+`llvm-objdump` or `x86_64-w64-mingw32-objdump`, fails if an imported DLL is
+neither bundled nor part of Windows.
+
+On Windows, `pnpm tauri build --config src-tauri/tauri.bundle.conf.json`
+builds the NSIS and MSI installers. From macOS or Linux the NSIS installer
+can be cross-built with `cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
+(`brew install llvm lld nsis`, `cargo install --locked cargo-xwin`):
+
+```sh
+scripts/bundle-qemu-windows.sh /path/to/windows/qemu
+pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc \
+  --bundles nsis --config src-tauri/tauri.bundle.conf.json
+```
+
+The app links the C runtime statically and needs no Visual C++
+redistributable; the installer fetches WebView2 when Windows lacks it.
+Installers are unsigned, so SmartScreen warns on first run.
+
+Verified so far without Windows itself: the Windows QEMU (Fedora 43 MinGW
+cross build), run under Wine 10 from the installer's layout in
+`C:\Program Files`, connects to the app's loopback sockets, boots CrossPoint
+1.6.5 to Home on `x3` and `x4pro` (Turbo included), and takes keys, `stop`,
+`cont` and `quit`; the Rust unit and SD tests pass there except the symbolic
+link test (Wine). The app's window, dialogs and drops have not run on
+Windows yet.
 
 ### Distribution notes
 
@@ -139,5 +175,3 @@ and `x3` and loads all 19 libraries from `qemu/lib` and none from
 - **Linux:** collect `ldd` dependencies outside the base system into
   `qemu/lib`, set `RUNPATH` to `$ORIGIN/../lib` with `patchelf`, or build QEMU
   with fewer dependencies. Not implemented.
-- **Windows:** the MSYS2/MinGW build needs its DLLs next to the `.exe` in
-  `qemu/bin`; `ntldd -R` lists them. Not implemented.

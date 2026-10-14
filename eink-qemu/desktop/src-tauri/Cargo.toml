@@ -31,6 +31,7 @@ flate2 = "1"
 tempfile = "3"
 unicode-normalization = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dunce = "1"
 
 # SD card edits run in this crate and fatfs; keep debug builds responsive.
 [profile.dev.package.eink-qemu-desktop]
@@ -45,3 +46,6 @@ lto = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

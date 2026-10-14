@@ -70,6 +70,24 @@ fn upload_all(image: &Path, dir: &str, sources: &[PathBuf]) -> Result<sd::Upload
     sd::upload(image, dir, sources, &confirmed)
 }
 
+/// A symbolic link, or false where the host refuses one (Windows without
+/// Developer Mode or administrator rights).
+fn symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+    #[cfg(windows)]
+    {
+        if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link).is_ok()
+        } else {
+            std::os::windows::fs::symlink_file(target, link).is_ok()
+        }
+    }
+}
+
 fn write(path: &Path, bytes: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, bytes).unwrap();
@@ -252,16 +270,16 @@ fn upload_folder_tree_skips_hidden_and_links() {
     write(&lib.join(".hidden"), b"skip me");
     write(&lib.join("sub/.DS_Store"), b"skip me too");
     fs::create_dir_all(lib.join("empty")).unwrap();
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(lib.join("x.bin"), lib.join("link.bin")).unwrap();
-        std::os::unix::fs::symlink(lib.join("sub"), lib.join("linkdir")).unwrap();
-        std::os::unix::fs::symlink(lib.join("x.bin"), root.join("top-link.bin")).unwrap();
-    }
+    symlink(&lib.join("x.bin"), &lib.join("link.bin"));
+    symlink(&lib.join("sub"), &lib.join("linkdir"));
+    let top_link = symlink(&lib.join("x.bin"), &root.join("top-link.bin"));
     write(&root.join(".top"), b"explicitly chosen hidden file");
     sd::mkdir(&card.image, "/books").unwrap();
 
-    let sources = vec![lib.clone(), root.join(".top"), root.join("top-link.bin")];
+    let mut sources = vec![lib.clone(), root.join(".top")];
+    if top_link {
+        sources.push(root.join("top-link.bin"));
+    }
     let plan = sd::plan_upload(&card.image, "/books", &sources).unwrap();
     assert_eq!(plan.files, 4);
     assert_eq!(plan.bytes, 100_000 + 5 + 70_000 + 29);
@@ -451,6 +469,8 @@ fn unicode_names_round_trip() {
     assert_eq!(code(sd::plan_upload(&card.image, "/", &[host.join("📚.epub")])), "EINVAL");
 }
 
+// Windows cannot make these host files.
+#[cfg(not(windows))]
 #[test]
 fn invalid_host_names_are_rejected() {
     let card = Card::new();
@@ -1514,6 +1534,9 @@ fn running_out_of_temporary_space_is_not_a_card_error() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "temporary_space_child", "--nocapture", "--test-threads=1"])
         .env("TMPDIR", dir.path().join("missing"))
+        // Windows takes its temporary directory from TMP, then TEMP.
+        .env("TMP", dir.path().join("missing"))
+        .env("TEMP", dir.path().join("missing"))
         .env("SD_TEST_DIR", dir.path())
         .output()
         .unwrap();

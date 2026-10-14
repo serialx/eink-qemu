@@ -854,6 +854,7 @@ name = "eink-qemu-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dunce",
  "fatfs",
  "flate2",
  "fscommon",
@@ -867,6 +868,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -240,29 +240,29 @@ fn run_dir() -> std::io::Result<tempfile::TempDir> {
 /// Remove run directories left behind by an app that was killed: they
 /// name a process that no longer exists.
 fn scavenge_run_dirs() {
+    let Ok(entries) = std::fs::read_dir(run_parent()) else { return };
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let Ok(entries) = std::fs::read_dir(run_parent()) else { return };
-        let uid = unsafe { libc::getuid() };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if !name.to_string_lossy().starts_with(RUN_PREFIX) {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-            if !meta.is_dir() || meta.uid() != uid {
-                continue;
-            }
-            let Some(pid) = std::fs::read_to_string(path.join("owner.pid")).ok().and_then(|s| s.trim().parse::<i32>().ok()) else {
-                continue;
-            };
-            let alive = unsafe { libc::kill(pid, 0) } == 0
-                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
-            if !alive {
-                let _ = std::fs::remove_dir_all(&path);
-            }
+    let uid = unsafe { libc::getuid() };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(RUN_PREFIX) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        // /tmp is shared; Windows' temporary directory is the user's own.
+        #[cfg(unix)]
+        if std::os::unix::fs::MetadataExt::uid(&meta) != uid {
+            continue;
+        }
+        let Some(pid) = std::fs::read_to_string(path.join("owner.pid")).ok().and_then(|s| s.trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        if !crate::host::process_alive(pid) {
+            let _ = std::fs::remove_dir_all(&path);
         }
     }
 }
@@ -578,7 +578,10 @@ impl Session {
         let mut command = tokio::process::Command::new(&binary);
         command
             .args(&args)
-            .stdin(std::process::Stdio::null())
+            // On Windows QEMU's stdio chardev reads stdin on a thread that
+            // spins on a NUL handle's endless empty reads; a pipe nobody
+            // writes to blocks it instead.
+            .stdin(if cfg!(windows) { std::process::Stdio::piped() } else { std::process::Stdio::null() })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -610,7 +613,9 @@ impl Session {
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
         {
             let faults = faults_tx.clone();
+            let stdin = child.stdin.take();
             tokio::spawn(async move {
+                let _stdin = stdin;
                 let status = tokio::select! {
                     status = child.wait() => status,
                     _ = kill_rx => {

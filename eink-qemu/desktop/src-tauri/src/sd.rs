@@ -1934,22 +1934,17 @@ pub fn upload(image: &Path, dir: &str, sources: &[PathBuf], confirmed: &[String]
 
 /// Whether `dest` names the image file itself (or a hard link to it).
 fn is_image(image: &Path, dest: &Path) -> bool {
-    if let (Ok(a), Ok(b)) = (std::fs::metadata(image), std::fs::metadata(dest)) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if a.dev() == b.dev() && a.ino() == b.ino() {
-                return true;
-            }
+    if let (Some(a), Some(b)) = (crate::host::file_identity(image), crate::host::file_identity(dest)) {
+        if a == b {
+            return true;
         }
-        let _ = (a, b);
     }
     let canonical = |path: &Path| -> Option<PathBuf> {
-        if let Ok(path) = std::fs::canonicalize(path) {
+        if let Ok(path) = dunce::canonicalize(path) {
             return Some(path);
         }
         let folder = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        Some(std::fs::canonicalize(folder).ok()?.join(path.file_name()?))
+        Some(dunce::canonicalize(folder).ok()?.join(path.file_name()?))
     };
     canonical(image).is_some_and(|image| canonical(dest) == Some(image))
 }
