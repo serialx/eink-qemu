@@ -55,13 +55,36 @@ function showPanelChoice() {
 $('device').addEventListener('change', showPanelChoice);
 showPanelChoice();
 
-/* Panel widths: the gutters at the stage's edges set the grid's variables. */
-const widths = { sd: 300, output: 380 };
-try { Object.assign(widths, JSON.parse(localStorage.getItem('eink-qemu-panels') || '{}')); } catch {}
+/* Panel widths: the gutters at the stage's edges set the grid's variables.
+   The stage keeps room for a device; widths shrink with the window. */
+const defaults = { sd: 300, output: 380 };
+const widths = { ...defaults };
+try {
+  const saved = JSON.parse(localStorage.getItem('eink-qemu-panels') || '{}');
+  for (const side of ['sd', 'output'] as const) if (Number.isFinite(saved?.[side])) widths[side] = saved[side];
+} catch {}
 const limits = { sd: [240, 420], output: [280, 720] } as const;
-function applyWidths() {
+const MIN_STAGE = 360;
+function clampWidths(changed: 'sd' | 'output' = 'output') {
+  for (const side of ['sd', 'output'] as const) widths[side] = Math.round(Math.min(limits[side][1], Math.max(limits[side][0], widths[side])));
+  // Give back from the other panel first, then from this one.
+  const spare = app.clientWidth - MIN_STAGE;
+  const other = changed === 'sd' ? 'output' : 'sd';
+  let excess = widths.sd + widths.output - spare;
+  for (const side of [other, changed] as const) {
+    if (excess <= 0) break;
+    const give = Math.min(excess, widths[side] - limits[side][0]);
+    widths[side] -= give;
+    excess -= give;
+  }
+}
+function applyWidths(changed?: 'sd' | 'output') {
+  clampWidths(changed);
   app.style.setProperty('--sd-w', `${widths.sd}px`);
   app.style.setProperty('--output-w', `${widths.output}px`);
+}
+function saveWidths() {
+  try { localStorage.setItem('eink-qemu-panels', JSON.stringify(widths)); } catch {}
 }
 for (const gutter of document.querySelectorAll<HTMLElement>('.gutter')) {
   const side = gutter.dataset.side as 'sd' | 'output';
@@ -72,24 +95,25 @@ for (const gutter of document.querySelectorAll<HTMLElement>('.gutter')) {
     app.classList.add('resizing');
     const startX = event.clientX, start = widths[side];
     const move = (e: PointerEvent) => {
-      const delta = side === 'sd' ? e.clientX - startX : startX - e.clientX;
-      widths[side] = Math.round(Math.min(limits[side][1], Math.max(limits[side][0], start + delta)));
-      applyWidths();
+      widths[side] = start + (side === 'sd' ? e.clientX - startX : startX - e.clientX);
+      applyWidths(side);
     };
     const end = () => {
       gutter.classList.remove('active');
       app.classList.remove('resizing');
       gutter.removeEventListener('pointermove', move);
-      try { localStorage.setItem('eink-qemu-panels', JSON.stringify(widths)); } catch {}
+      saveWidths();
     };
     gutter.addEventListener('pointermove', move);
     gutter.addEventListener('lostpointercapture', end, { once: true });
   });
   gutter.addEventListener('dblclick', () => {
-    widths[side] = side === 'sd' ? 300 : 380;
-    applyWidths();
+    widths[side] = defaults[side];
+    applyWidths(side);
+    saveWidths();
   });
 }
+window.addEventListener('resize', () => applyWidths());
 applyWidths();
 
 // Without the Tauri runtime (a plain browser on the dev server), the page

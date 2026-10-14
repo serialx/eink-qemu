@@ -7,6 +7,7 @@ export interface SessionInfo {
   machine: Machine | null;
   turbo: boolean;
   exit: Exit | null;
+  run: number;
 }
 export interface Settings {
   device: 'auto' | Machine;
@@ -25,6 +26,7 @@ export interface Attached {
   firmware: FileInfo | null;
   platform: string;
   autostart: boolean;
+  problems: string[];
 }
 export interface SdEntry { name: string; size: number; isDir: boolean; mtime: number | null }
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
@@ -53,8 +55,11 @@ export const api = {
     frames.onmessage = onDisplay;
     return call<Attached>('attach', { logs, frames });
   },
+  note: (line: string) => call<void>('note', { line }).catch(() => {}),
   settings: (patch: Partial<Pick<Settings, 'device' | 'panel' | 'wifi' | 'ghosting' | 'turbo'>>) => call<Settings>('settings_set', { patch }),
-  chooseFirmware: (path: string) => call<FileInfo>('firmware_choose', { path }),
+  // Native dialogs run in Rust; host paths come back only as results.
+  pickFirmware: () => call<FileInfo | null>('firmware_pick'),
+  useFirmware: (path: string) => call<FileInfo>('firmware_use', { path }),
   readFirmware: async () => new Uint8Array(await call<ArrayBuffer>('firmware_read')),
   start: (flash: Uint8Array, options: StartOptions) =>
     call<SessionInfo>('start', flash, { headers: { 'x-options': JSON.stringify(options) } }),
@@ -62,16 +67,17 @@ export const api = {
   reset: () => call<void>('reset'),
   key: (key: string, down: boolean) => call<void>('key', { key, down }),
   touch: (x: number, y: number, down: boolean) => call<void>('touch', { x, y, down }),
-  openCard: (path: string) => call<FileInfo>('card_open', { path }),
-  newCard: (path: string) => call<FileInfo>('card_new', { path }),
-  copyCard: (dest: string) => call<void>('card_copy', { dest }),
+  pickOpenCard: () => call<FileInfo | null>('card_pick_open'),
+  pickNewCard: () => call<FileInfo | null>('card_pick_new'),
+  pickCopyCard: () => call<string | null>('card_pick_copy'),
   sdList: (path: string) => call<SdListing>('sd_list', { path }),
+  sdPickSources: () => call<string[]>('sd_pick_sources'),
   sdPlanUpload: (dir: string, sources: string[]) => call<UploadPlan>('sd_plan_upload', { dir, sources }),
   sdUpload: (dir: string, sources: string[]) => call<UploadPlan>('sd_upload', { dir, sources }),
-  sdExport: (path: string, dest: string) => call<void>('sd_export', { path, dest }),
+  sdPickExport: (path: string) => call<string | null>('sd_pick_export', { path }),
   sdMkdir: (path: string) => call<void>('sd_mkdir', { path }),
   sdRename: (path: string, name: string) => call<void>('sd_rename', { path, name }),
   sdRemove: (path: string) => call<void>('sd_remove', { path }),
-  saveScreenshot: (png: Uint8Array, path: string) =>
-    call<void>('screenshot_save', png, { headers: { 'x-path': encodeURIComponent(path) } }),
+  saveScreenshot: (png: Uint8Array, name: string) =>
+    call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),
 };

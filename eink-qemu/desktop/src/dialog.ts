@@ -1,6 +1,7 @@
 /* In-page prompt and confirm, styled with the page's tokens: the system
    WebViews do not all implement window.prompt. */
 let open: HTMLDialogElement | null = null;
+let count = 0;
 
 export const dialogOpen = () => !!open;
 
@@ -8,14 +9,19 @@ function show(options: { title: string; message?: string; value?: string; ok: st
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
     dialog.className = 'ask';
+    const id = `ask-${++count}`;
+    dialog.setAttribute('aria-labelledby', `${id}-title`);
     const form = document.createElement('form');
     form.method = 'dialog';
     const title = document.createElement('strong');
     title.textContent = options.title;
+    title.id = `${id}-title`;
     form.append(title);
     if (options.message) {
       const message = document.createElement('p');
       message.textContent = options.message;
+      message.id = `${id}-message`;
+      dialog.setAttribute('aria-describedby', message.id);
       form.append(message);
     }
     const input = document.createElement('input');
@@ -24,6 +30,7 @@ function show(options: { title: string; message?: string; value?: string; ok: st
       input.value = options.value ?? '';
       input.spellcheck = false;
       input.autocomplete = 'off';
+      input.setAttribute('aria-labelledby', `${id}-title`);
       form.append(input);
     }
     const buttons = document.createElement('div');

@@ -22,6 +22,9 @@ export async function prepareFlash(input: Uint8Array, device: string, progress: 
     bytes = await XOTA.decode(bytes);
   }
   if (bytes.length === 0x1000000) {
+    // The shared check covers boot magic, overlapping partitions and an
+    // application for the boot chip; then every application is verified.
+    if (!FlashImage.expandMerged(bytes)) throw new Error('This 16 MiB file is not an ESP flash image: no bootloader or partition table.');
     await validateFlash(bytes);
     return { flash: bytes, machine: FlashImage.selectMachine(chipOf(bytes), device), composed: false };
   }
@@ -80,6 +83,7 @@ async function validateFlash(bytes: Uint8Array): Promise<void> {
     const address = view.getUint32(offset + 4, true), size = view.getUint32(offset + 8, true);
     if (!size || address < 0x9000 || address + size > bytes.length) throw new Error('Invalid firmware partition bounds.');
     if (bytes[offset + 2] === 0 && bytes[address] === 0xe9) {
+      if (chipOf(bytes.subarray(address)) !== chipOf(bytes)) throw new Error('An application in this flash image is for a different chip than its bootloader.');
       await validateApp(bytes.subarray(address, address + size));
       applications++;
     }

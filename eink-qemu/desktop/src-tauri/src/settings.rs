@@ -64,33 +64,36 @@ impl Settings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let temp = path.with_extension("json.tmp");
+        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
         std::fs::write(&temp, serde_json::to_vec_pretty(self).unwrap())?;
         std::fs::rename(temp, path)
     }
 
+    /// Apply a whole patch, or nothing when any field is invalid.
     pub fn apply(&mut self, patch: SettingsPatch) -> Result<(), String> {
+        let mut next = self.clone();
         if let Some(device) = patch.device {
             if !DEVICES.contains(&device.as_str()) {
                 return Err(format!("Unknown device: {device}."));
             }
-            self.device = device;
+            next.device = device;
         }
         if let Some(panel) = patch.panel {
             if !PANELS.contains(&panel.as_str()) {
                 return Err(format!("Unknown X4 Pro panel: {panel}."));
             }
-            self.panel = panel;
+            next.panel = panel;
         }
         if let Some(wifi) = patch.wifi {
-            self.wifi = wifi;
+            next.wifi = wifi;
         }
         if let Some(ghosting) = patch.ghosting {
-            self.ghosting = ghosting;
+            next.ghosting = ghosting;
         }
         if let Some(turbo) = patch.turbo {
-            self.turbo = turbo;
+            next.turbo = turbo;
         }
+        *self = next;
         Ok(())
     }
 }

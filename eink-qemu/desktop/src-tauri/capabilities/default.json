@@ -1,15 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: app commands, native file dialogs, window dragging and opening project links.",
+  "description": "The main window: app commands, window dragging and opening project links. File dialogs run in Rust, so the WebView has no dialog or file permissions.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "dialog:allow-open",
-    "dialog:allow-save",
-    "dialog:allow-ask",
-    "dialog:allow-message",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://github.com/*" }]

@@ -51,7 +51,9 @@ edits the image in Rust with the `fatfs` crate. While the emulator runs, each
 operation pauses the guest; a change resets the device so the firmware mounts
 the card again. Uploads take files from the native dialog, or files and
 folders dropped on the panel; hidden entries and symbolic links in folders
-are skipped. A card is used by one app instance at a time.
+are skipped. A card is used by one app instance at a time; an instance that
+cannot lock its card opens without one and says so. A saved card or firmware
+that is missing or invalid is reported when the window opens.
 
 Wi-Fi uses QEMU's user network, so the firmware reaches the internet; turning
 it off keeps the radio present without a host connection. Turbo uses the
@@ -61,9 +63,9 @@ overrides from `turbo-args.sh`, like the other launchers.
 
 | Variable | Effect |
 |---|---|
-| `EINK_QEMU_DATA_DIR` | Settings, default card and locks in this directory instead of the app's, so instances are isolated |
+| `EINK_QEMU_DATA_DIR` | Settings and the default card in this directory instead of the app's, so instances are isolated (card locks stay shared) |
 | `EINK_QEMU_AUTOSTART=1` | Start the saved firmware as soon as the window loads |
-| `EINK_QEMU_LOG` | Also append console lines to this file |
+| `EINK_QEMU_LOG` | Also append console lines, including the window's own errors, to this file |
 | `EINK_QEMU_SCREEN_DUMP` | Write the panel as a binary PGM to this file after every update |
 | `EINK_QEMU_BIN`, `EINK_QEMU_SHARE` | QEMU binaries and `-L` data directory |
 

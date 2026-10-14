@@ -857,6 +857,7 @@ dependencies = [
  "fatfs",
  "flate2",
  "fscommon",
+ "libc",
  "serde",
  "serde_json",
  "tauri",

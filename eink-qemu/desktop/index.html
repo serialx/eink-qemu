@@ -4,11 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>eink-qemu</title>
-  <script>
-    // Apply a saved theme before the first paint.
-    try { const theme = localStorage.getItem('eink-qemu-theme'); if (theme) document.documentElement.dataset.theme = theme; } catch {}
-    if (navigator.userAgent.includes('Mac')) document.documentElement.dataset.platform = 'macos';
-  </script>
+  <script src="/theme.js"></script>
   <script type="module" src="/src/main.ts"></script>
 </head>
 <body>

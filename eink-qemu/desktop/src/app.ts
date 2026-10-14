@@ -2,7 +2,6 @@
    Rust commands instead of the WebAssembly runtime iframe. */
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, AppError, type FileInfo, type SdEntry, type SessionInfo, type Settings } from './api';
 import { appendLines, clearConsole } from './console';
@@ -21,7 +20,8 @@ const bootNames: Record<Machine, string> = {
   x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)', picco: 'BOOX Picco (ESP32-S3)',
 };
 
-let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null };
+let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null, run: 0 };
+let platform = '';
 let settings: Settings;
 let firmware: FileInfo | null = null;
 let card: FileInfo | null = null;
@@ -57,6 +57,11 @@ function onSession(info: SessionInfo) {
   const previous = session.state;
   session = info;
   if (info.state !== 'running') releaseAll();
+  // A WebView reloaded during startup learns the board here.
+  if ((info.state === 'starting' || info.state === 'running') && info.machine && !canvas) {
+    buttons(info.machine);
+    createScreen(info.machine);
+  }
   if (info.state === 'running' && previous !== 'running') {
     status(`${deviceLabel()} · ${timingLabel()} · Booting…`);
     void sdRefresh();
@@ -75,12 +80,17 @@ function onSession(info: SessionInfo) {
 function fail(message: string) {
   status(message);
   appendLines([`Error: ${message}`]);
+  void api.note(`Error: ${message}`);
 }
 
 async function start() {
   if (pending || session.state !== 'idle') return;
   if (!firmware) {
     await chooseFirmware();
+    return;
+  }
+  if (!card) {
+    fail('No SD card is open. Open an SD image or make a new card from the card menu.');
     return;
   }
   pending = true;
@@ -92,7 +102,10 @@ async function start() {
     const input = await api.readFirmware();
     const { flash, machine, composed } = await prepareFlash(input, settings.device, status);
     const composition = composed ? 'Composed 16 MiB flash from release app · ' : '';
-    if (composed) appendLines([composition.replace(/ · $/, '')]);
+    if (composed) {
+      appendLines([composition.replace(/ · $/, '')]);
+      void api.note(composition.replace(/ · $/, ''));
+    }
     buttons(machine);
     createScreen(machine);
     status(`${composition}Booting ${bootNames[machine]} · ${settings.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing'}…`);
@@ -118,12 +131,22 @@ function resetting(prefix = '') {
 }
 
 /* Readiness from the firmware log, as on the page. */
+// Panel refresh completions: UC8179/UC8279 boards log their DRF command,
+// the X4 (SSD1677) a plain refresh.
+const refreshDone = /Wait complete:\s+(?:(?:8179|8279|8279x4|X3)_DRF|refresh)\b/;
 function watchLog(lines: string[]) {
+  // Late lines from a run that has ended must not overwrite its status.
+  if (session.state !== 'running' && session.state !== 'starting') return;
   for (const line of lines) {
+    if (line.startsWith('ESP-ROM:') && milestones) {
+      // The guest rebooted (a crash, a firmware reset): count again.
+      milestones = 0; lastDrawAt = 0; bootSeconds = null; startedAt = performance.now();
+      status(`${deviceLabel()} · ${timingLabel()} · Restarting…`);
+    }
     if (/main_task: Returned from app_main\(\)/.test(line) && bootSeconds === null) {
       status(`${deviceLabel()} · ${timingLabel()} · Firmware running`);
     }
-    if (/Wait complete:\s+(?:8179|8279|8279x4|X3)_DRF/.test(line)) {
+    if (refreshDone.test(line)) {
       lastDrawAt = performance.now();
       if (++milestones === 3) {
         bootSeconds = (lastDrawAt - startedAt) / 1000;
@@ -163,6 +186,7 @@ function createScreen(machine: Machine) {
 }
 
 function removeScreen(message: string) {
+  releaseTouch?.();
   canvas = null; context = null; image = null;
   $('screen').style.width = '';
   $('screen').style.height = '';
@@ -170,7 +194,15 @@ function removeScreen(message: string) {
   $('keys').replaceChildren();
 }
 
+// Display messages that arrive before attach() returns (the current screen
+// is sent first) wait until the session and canvas are known.
+let attached = false;
+const early: ArrayBuffer[] = [];
 function onDisplay(buffer: ArrayBuffer) {
+  if (!attached) {
+    early.push(buffer);
+    return;
+  }
   const view = new DataView(buffer);
   const kind = view.getUint32(0, true);
   if (kind === 1) {
@@ -298,11 +330,9 @@ async function screenshot() {
   const machine = session.machine;
   const blob = await new Promise<Blob | null>((resolve) => canvas!.toBlob(resolve, 'image/png'));
   if (!blob) return;
-  const path = await saveDialog({ defaultPath: `${machine}-screen.png`, filters: [{ name: 'PNG image', extensions: ['png'] }] });
-  if (!path) return;
   try {
-    await api.saveScreenshot(new Uint8Array(await blob.arrayBuffer()), path);
-    status(`Screenshot saved to ${path}`);
+    const path = await api.saveScreenshot(new Uint8Array(await blob.arrayBuffer()), `${machine}-screen.png`);
+    if (path) status(`Screenshot saved to ${path}`);
   } catch (error) { fail(errorMessage(error)); }
 }
 
@@ -328,6 +358,7 @@ function press(name: string, owner: string, down: boolean) {
   for (const element of $('keys').querySelectorAll<HTMLElement>(`button[data-key="${name}"]`)) element.classList.toggle('held', isDown);
 }
 function releaseAll() {
+  releaseTouch?.();
   for (const [name] of held) {
     held.delete(name);
     if (session.state === 'running') void api.key(name, false);
@@ -369,9 +400,21 @@ function buttons(machine: Machine) {
   }
 }
 
+// Lifts the emulated finger, if one is down (lost capture, blur, reset, stop).
+let releaseTouch: (() => void) | null = null;
+
 function attachTouch(target: HTMLCanvasElement, machine: Machine) {
+  releaseTouch?.();
+  releaseTouch = null;
   if (machine !== 'x4pro' && machine !== 'picco') return;
   let active: number | null = null, frame = 0, last: [number, number] = [0, 0];
+  releaseTouch = () => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    if (active === null) return;
+    active = null;
+    void api.touch(last[0], last[1], false);
+  };
   const point = (event: PointerEvent): [number, number] => {
     const rect = target.getBoundingClientRect();
     return [(event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height];
@@ -395,12 +438,11 @@ function attachTouch(target: HTMLCanvasElement, machine: Machine) {
     });
   });
   const end = (event: PointerEvent) => {
-    if (event.pointerId !== active) return;
-    active = null;
-    void api.touch(last[0], last[1], false);
+    if (event.pointerId === active) releaseTouch?.();
   };
   target.addEventListener('pointerup', end);
   target.addEventListener('pointercancel', end);
+  target.addEventListener('lostpointercapture', end);
 }
 
 function deviceKeyboard(event: KeyboardEvent) {
@@ -428,9 +470,11 @@ function paintFirmware() {
   $('flash').title = firmware ? firmware.path : 'Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump';
 }
 
-async function setFirmware(path: string) {
+async function useFirmware(choice: Promise<FileInfo | null>) {
   try {
-    firmware = await api.chooseFirmware(path);
+    const chosen = await choice;
+    if (!chosen) return;
+    firmware = chosen;
     paintFirmware();
     // Choosing a firmware starts it; Start reruns the same file after Stop.
     await start();
@@ -439,32 +483,23 @@ async function setFirmware(path: string) {
 
 async function chooseFirmware() {
   if (session.state !== 'idle' || pending) return;
-  const path = await openDialog({
-    title: 'Choose firmware',
-    filters: [{ name: 'Firmware', extensions: ['bin', 'xota'] }],
-  });
-  if (typeof path === 'string') await setFirmware(path);
+  await useFirmware(api.pickFirmware());
 }
 
 function paintCard() {
-  const text = card ? card.path : 'No SD card';
+  const text = card ? card.path : 'No SD card is open: use the card menu.';
   $('sd-save').textContent = text;
   $('sd-save').title = text;
+  $('sd-save').classList.toggle('error', !card);
 }
 
 async function cardMenu() {
   if (session.state !== 'idle' || pending) return;
   const choice = await chooseCardAction();
   try {
-    if (choice === 'open') {
-      const path = await openDialog({ title: 'Open SD image', filters: [{ name: 'SD image', extensions: ['img', 'bin'] }] });
-      if (typeof path !== 'string') return;
-      card = await api.openCard(path);
-    } else if (choice === 'new') {
-      const path = await saveDialog({ title: 'New blank SD card', defaultPath: 'sd.img', filters: [{ name: 'SD image', extensions: ['img'] }] });
-      if (!path) return;
-      card = await api.newCard(path);
-    } else return;
+    const chosen = choice === 'open' ? await api.pickOpenCard() : choice === 'new' ? await api.pickNewCard() : null;
+    if (!chosen) return;
+    card = chosen;
     paintCard();
     sd.cwd = '/';
     await sdRefresh();
@@ -476,37 +511,50 @@ function chooseCardAction(): Promise<'open' | 'new' | null> {
     const menu = $('card-menu');
     const anchor = button('sd');
     menu.hidden = false;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('button')];
     const close = (value: 'open' | 'new' | null) => {
       menu.hidden = true;
       document.removeEventListener('pointerdown', outside, true);
-      document.removeEventListener('keydown', escape, true);
+      document.removeEventListener('keydown', keys, true);
+      menu.removeEventListener('focusout', leave);
       anchor.setAttribute('aria-expanded', 'false');
+      anchor.focus();
       resolve(value);
     };
-    const outside = (event: Event) => { if (!menu.contains(event.target as Node)) close(null); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(null); } };
+    const outside = (event: Event) => { if (!menu.contains(event.target as Node) && event.target !== anchor) close(null); };
+    const leave = (event: FocusEvent) => { if (!menu.contains(event.relatedTarget as Node)) close(null); };
+    // Escape closes; arrows, Home and End move between the items.
+    const keys = (event: KeyboardEvent) => {
+      const at = items.indexOf(document.activeElement as HTMLButtonElement);
+      const move = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
+      if (event.key === 'Escape') { event.preventDefault(); close(null); } else if (move !== undefined) {
+        event.preventDefault();
+        items[(move + items.length) % items.length].focus();
+      }
+    };
     menu.querySelector<HTMLButtonElement>('[data-card="open"]')!.onclick = () => close('open');
     menu.querySelector<HTMLButtonElement>('[data-card="new"]')!.onclick = () => close('new');
     anchor.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
-    document.addEventListener('keydown', escape, true);
-    menu.querySelector<HTMLButtonElement>('button')!.focus();
+    document.addEventListener('keydown', keys, true);
+    menu.addEventListener('focusout', leave);
+    items[0].focus();
   });
 }
 
 async function copyCard() {
-  const path = await saveDialog({ title: 'Save a copy of the SD card', defaultPath: card?.name ?? 'sd.img', filters: [{ name: 'SD image', extensions: ['img'] }] });
-  if (!path) return;
   await sdRun(async () => {
-    await api.copyCard(path);
-    sdStatusFlash(`Saved a copy to ${path}`);
+    const path = await api.pickCopyCard();
+    if (path) sdStatusFlash(`Saved a copy to ${path}`);
   });
 }
 
 /* SD card explorer: operations run in Rust on the image file. While the
    emulator runs, Rust pauses the guest around them and resets the device
    after a change so the firmware mounts the card afresh. */
-const sd = { cwd: '/', entries: [] as SdEntry[], free: 0, busy: false, info: '' };
+// ready: the last listing worked. An unreadable card can still be used by
+// the emulator, but the explorer only allows retrying and switching cards.
+const sd = { cwd: '/', entries: [] as SdEntry[], free: 0, busy: false, info: '', ready: false };
 const sdPanel = document.querySelector<HTMLElement>('.sd')!;
 const sdUsable = () => !sd.busy && !pending && (session.state === 'idle' || session.state === 'running');
 const joinPath = (dir: string, name: string) => dir === '/' ? `/${name}` : `${dir}/${name}`;
@@ -542,8 +590,9 @@ function sdError(error: unknown) {
 function sdPaint() {
   const on = sdUsable();
   for (const element of sdPanel.querySelectorAll<HTMLButtonElement>('button')) {
-    if (element.id === 'sd') continue;
-    element.disabled = !on || element.hasAttribute('aria-current');
+    if (element.id === 'sd' || element.closest('#card-menu')) continue;
+    const needsListing = element.id !== 'sd-refresh' && element.id !== 'download';
+    element.disabled = !on || element.hasAttribute('aria-current') || (needsListing && !sd.ready) || (!card && element.id === 'download');
   }
   sdPanel.classList.toggle('busy', sd.busy);
 }
@@ -570,10 +619,16 @@ async function sdRefresh(path = sd.cwd): Promise<void> {
     // The folder may have gone away (rename, delete, new card): fall back.
     if ((error as AppError).code === 'ENOENT' && path !== '/') return sdRefresh('/');
     sd.entries = [];
-    sdRender();
-    sdStatus(`${errorMessage(error)} The emulator can still use this image.`, true);
+    sd.ready = false;
+    $('sd-rows').replaceChildren();
+    $('sd-path').replaceChildren();
+    $('sd-meter').style.width = '0';
+    const code = (error as AppError).code;
+    sdStatus(code === 'ENOCARD' || code === 'EBUSY' ? errorMessage(error) : `${errorMessage(error)} The emulator can still use this image.`, true);
+    sdPaint();
     return;
   }
+  sd.ready = true;
   sd.cwd = path;
   sd.entries = listing.entries;
   sd.free = listing.free;
@@ -693,10 +748,8 @@ async function sdRowAction(action: string, name: string) {
   if (action === 'open') {
     await sdRefresh(path);
   } else if (action === 'download') {
-    const dest = await saveDialog({ title: 'Save from the SD card', defaultPath: name });
-    if (!dest) return;
-    await api.sdExport(path, dest);
-    sdStatusFlash(`Saved ${name}`);
+    const dest = await api.sdPickExport(path);
+    if (dest) sdStatusFlash(`Saved ${name}`);
   } else if (action === 'rename') {
     const target = await prompt(`Rename "${name}"`, name, 'Rename');
     if (!target || target === name) return;
@@ -713,7 +766,10 @@ async function sdRowAction(action: string, name: string) {
 /* File drops: Tauri hands over paths and a position. Firmware drops onto the
    chooser or the device stage; files and folders drop onto the SD panel. */
 function dropTarget(x: number, y: number): 'sd' | 'firmware' | null {
-  const element = document.elementFromPoint(x / window.devicePixelRatio, y / window.devicePixelRatio);
+  // macOS reports drop positions in points already (wry passes Cocoa
+  // coordinates through); other platforms report physical pixels.
+  const scale = platform === 'macos' ? 1 : window.devicePixelRatio;
+  const element = document.elementFromPoint(x / scale, y / scale);
   if (element?.closest('.sd')) return sdUsable() ? 'sd' : null;
   if (element?.closest('.stage, .file-chip')) return session.state === 'idle' && !pending ? 'firmware' : null;
   return null;
@@ -734,7 +790,7 @@ async function onDrop(paths: string[], x: number, y: number) {
       status('Drop one firmware file: a .bin, or an X4 Pro .xota update.');
       return;
     }
-    await setFirmware(paths[0]);
+    await useFirmware(api.useFirmware(paths[0]));
   }
 }
 
@@ -746,14 +802,15 @@ export async function boot() {
   await listen('sd-reset', () => {
     resetting('SD card changed · ');
   });
-  const attached = await api.attach((lines) => {
+  const state = await api.attach((lines) => {
     appendLines(lines);
     watchLog(lines);
   }, onDisplay);
-  settings = attached.settings;
-  firmware = attached.firmware;
-  card = attached.card;
-  session = attached.session;
+  settings = state.settings;
+  firmware = state.firmware;
+  card = state.card;
+  session = state.session;
+  platform = state.platform;
   $<HTMLSelectElement>('device').value = settings.device;
   $<HTMLSelectElement>('panel').value = settings.panel;
   $<HTMLInputElement>('wifi').checked = settings.wifi;
@@ -766,11 +823,19 @@ export async function boot() {
     // A reloaded WebView: the session kept running; the screen follows.
     buttons(session.machine);
     createScreen(session.machine);
-    status(`${deviceLabel()} · ${timingLabel()} · Running`);
+    status(`${deviceLabel()} · ${timingLabel()} · ${session.state === 'running' ? 'Running' : 'Starting…'}`);
   } else status(firmware ? 'Start boots the chosen firmware.' : 'Choose a flash image to begin.');
+  // The current screen came with attach; draw it on the canvas made above.
+  attached = true;
+  for (const message of early.splice(0)) onDisplay(message);
+  for (const problem of state.problems) {
+    appendLines([`Error: ${problem}`]);
+    void api.note(`Error: ${problem}`);
+  }
+  if (state.problems.length) status(state.problems[0]);
   paintControls();
   void sdRefresh();
-  if (attached.autostart && firmware && session.state === 'idle') void start();
+  if (state.autostart && firmware && session.state === 'idle') void start();
 
   const save = async (patch: Parameters<typeof api.settings>[0]) => {
     try { settings = await api.settings(patch); } catch (error) { fail(errorMessage(error)); }
@@ -816,9 +881,7 @@ export async function boot() {
   button('download').addEventListener('click', () => void copyCard());
   button('sd-refresh').addEventListener('click', () => void sdRun(() => sdRefresh()));
   button('sd-upload').addEventListener('click', () => void sdRun(async () => {
-    const paths = await openDialog({ title: 'Copy to the SD card', multiple: true });
-    if (Array.isArray(paths)) await sdUpload(paths);
-    else if (typeof paths === 'string') await sdUpload([paths]);
+    await sdUpload(await api.sdPickSources());
   }));
   button('sd-mkdir').addEventListener('click', () => void sdRun(async () => {
     const name = await prompt('New folder name', '', 'Create');

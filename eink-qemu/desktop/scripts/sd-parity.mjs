@@ -3,7 +3,8 @@
 // usage: node scripts/sd-parity.mjs card.img
 // Prints JSON: {type, free, total, order: {dir: [names in list order]},
 // tree: {path: {dir: true} | {size, fnv1a}}}. fat.js validates the boot
-// sector, FSInfo signatures, FAT mirroring and every cluster chain it reads.
+// sector, FSInfo signatures, FAT mirroring and every cluster chain it reads;
+// this script also checks every FSInfo copy's free count against the FAT.
 import { readFileSync } from 'node:fs';
 import FAT from '../../wasm/web/fat.mjs';
 
@@ -30,4 +31,12 @@ function walk(dir) {
   }
 }
 walk('/');
+// FSInfo (every copy) must hold the FAT's free count; the next-free hint
+// must name a cluster or be unset (fresh cards start it at 2).
+const image = fs.image, view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+for (const offset of fs.fsInfo) {
+  const free = view.getUint32(offset + 488, true), next = view.getUint32(offset + 492, true);
+  if (free !== fs.freeClusters) throw new Error(`FSInfo at ${offset} says ${free} free clusters; the FAT has ${fs.freeClusters}`);
+  if (next !== 0xffffffff && (next < 2 || next >= fs.clusterCount + 2)) throw new Error(`FSInfo at ${offset} has next-free hint ${next}`);
+}
 console.log(JSON.stringify({ type: fs.type, free: fs.freeBytes(), total: fs.totalBytes, order, tree }));

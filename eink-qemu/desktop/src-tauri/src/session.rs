@@ -31,6 +31,9 @@ impl AppError {
     pub fn busy() -> Self {
         Self::new("EBUSY", "The emulator is busy; try again in a moment.")
     }
+    pub fn no_card() -> Self {
+        Self::new("ENOCARD", "No SD card is open. Open an SD image or make a new card from the card menu.")
+    }
 }
 
 impl From<SdError> for AppError {
@@ -43,6 +46,12 @@ impl From<std::io::Error> for AppError {
     fn from(error: std::io::Error) -> Self {
         Self::new("EIO", error.to_string())
     }
+}
+
+/// Whether a failed SD operation may have written to the card (then the
+/// device must remount it). Successful mutating operations always count.
+fn sd_changed(error: &SdError) -> bool {
+    error.changed
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,9 +67,12 @@ pub struct Exit {
 pub struct SessionInfo {
     /// "idle", "starting", "running" or "stopping".
     pub state: &'static str,
+    /// The board while starting, running or stopping.
     pub machine: Option<String>,
     pub turbo: bool,
     pub exit: Option<Exit>,
+    /// Increases with every start, so the WebView can tell runs apart.
+    pub run: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,16 +99,31 @@ impl QemuPaths {
     }
 }
 
+/// The open SD card and the lock that makes this app instance its only user.
+pub struct Card {
+    pub path: PathBuf,
+    /// Held, never read: the lock lasts as long as the card is in use.
+    #[allow(dead_code)]
+    pub lock: std::fs::File,
+}
+
 const TURBO_ARGS: &str = include_str!("../resources/turbo-args.json");
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_INTERVAL: Duration = Duration::from_millis(30);
+/// Console lines waiting for the WebView; beyond this, lines are dropped.
+const LOG_QUEUE: usize = 20_000;
+/// Longer console lines are split.
+const MAX_LINE: usize = 16 * 1024;
+const RUN_PREFIX: &str = "eink-qemu-";
 
 struct Run {
     id: u64,
     machine: String,
     qmp: Qmp,
     input: mpsc::UnboundedSender<Input>,
+    /// True while an SD operation has the guest stopped: input waits.
+    paused: watch::Sender<bool>,
     kill: StdMutex<Option<oneshot::Sender<()>>>,
     exited: watch::Receiver<Option<String>>,
     stopping: AtomicBool,
@@ -123,15 +150,17 @@ struct Framebuffer {
 pub struct Session {
     app: AppHandle,
     qemu: QemuPaths,
-    /// Serialises start, stop, reset and SD card operations.
+    /// Serialises start, stop, reset, faults and SD card operations.
     ops: Mutex<()>,
     shared: StdMutex<Shared>,
     runs: AtomicU64,
-    log_tx: mpsc::UnboundedSender<String>,
+    log_tx: mpsc::Sender<String>,
+    dropped: Arc<AtomicU64>,
+    log_file: Arc<StdMutex<Option<std::fs::File>>>,
     logs: Arc<StdMutex<Option<Channel<Vec<String>>>>>,
     frames: StdMutex<Option<Channel<InvokeResponseBody>>>,
     screen: StdMutex<Option<Framebuffer>>,
-    card: StdMutex<PathBuf>,
+    card: StdMutex<Option<Card>>,
 }
 
 fn escape(value: &str) -> String {
@@ -157,44 +186,131 @@ fn describe(status: std::io::Result<std::process::ExitStatus>) -> String {
     }
 }
 
-impl Session {
-    pub fn new(app: AppHandle, qemu: QemuPaths, card: PathBuf) -> Arc<Session> {
-        let (log_tx, mut log_rx) = mpsc::unbounded_channel::<String>();
-        let logs: Arc<StdMutex<Option<Channel<Vec<String>>>>> = Arc::default();
-        let sink = logs.clone();
-        // Console lines are batched so a chatty firmware costs one IPC message per tick.
-        // EINK_QEMU_LOG: also append console lines to a file (tests).
-        let mut log_file = std::env::var_os("EINK_QEMU_LOG").and_then(|path| {
-            std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
-        });
-        tauri::async_runtime::spawn(async move {
-            let mut batch = Vec::new();
-            while log_rx.recv_many(&mut batch, 4096).await > 0 {
-                tokio::time::sleep(LOG_INTERVAL).await;
-                while let Ok(line) = log_rx.try_recv() {
-                    batch.push(line);
-                }
-                if let Some(file) = log_file.as_mut() {
-                    use std::io::Write;
-                    let _ = file.write_all((batch.join("\n") + "\n").as_bytes());
-                }
-                if let Some(channel) = sink.lock().unwrap().as_ref() {
-                    let _ = channel.send(std::mem::take(&mut batch));
-                }
-                batch.clear();
+/// Read one line of at most `MAX_LINE` bytes (a longer line is returned in
+/// pieces). Ok(false) at the end of the stream.
+async fn read_line_limited<R: AsyncBufReadExt + Unpin>(reader: &mut R, line: &mut Vec<u8>) -> std::io::Result<bool> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(!line.is_empty());
+        }
+        let room = MAX_LINE - line.len();
+        let (take, done) = match available.iter().take(room).position(|&b| b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (available.len().min(room), available.len() >= room),
+        };
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if done || line.len() >= MAX_LINE {
+            return Ok(true);
+        }
+    }
+}
+
+/// Where run directories go: a short path, so socket names fit the platform
+/// limit (104 bytes on macOS) even when TMPDIR is long.
+fn run_parent() -> PathBuf {
+    if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() }
+}
+
+/// A private directory (0700 on Unix) for one run's flash copy and sockets.
+fn run_dir() -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(RUN_PREFIX);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let dir = builder.tempdir_in(run_parent())?;
+    std::fs::write(dir.path().join("owner.pid"), std::process::id().to_string())?;
+    Ok(dir)
+}
+
+/// Remove run directories left behind by an app that was killed: they
+/// name a process that no longer exists.
+fn scavenge_run_dirs() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(entries) = std::fs::read_dir(run_parent()) else { return };
+        let uid = unsafe { libc::getuid() };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(RUN_PREFIX) {
+                continue;
             }
-        });
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            if !meta.is_dir() || meta.uid() != uid {
+                continue;
+            }
+            let Some(pid) = std::fs::read_to_string(path.join("owner.pid")).ok().and_then(|s| s.trim().parse::<i32>().ok()) else {
+                continue;
+            };
+            let alive = unsafe { libc::kill(pid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+            if !alive {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+    }
+}
+
+impl Session {
+    pub fn new(app: AppHandle, qemu: QemuPaths, card: Option<Card>) -> Arc<Session> {
+        scavenge_run_dirs();
+        let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_QUEUE);
+        let logs: Arc<StdMutex<Option<Channel<Vec<String>>>>> = Arc::default();
+        let dropped = Arc::new(AtomicU64::new(0));
+        // EINK_QEMU_LOG: also append console lines to a file (tests).
+        let log_file = Arc::new(StdMutex::new(std::env::var_os("EINK_QEMU_LOG").and_then(|path| {
+            std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+        })));
+        {
+            let sink = logs.clone();
+            let dropped = dropped.clone();
+            let file = log_file.clone();
+            // Console lines are batched so a chatty firmware costs one IPC message per tick.
+            tauri::async_runtime::spawn(async move {
+                let mut batch = Vec::new();
+                while log_rx.recv_many(&mut batch, 4096).await > 0 {
+                    tokio::time::sleep(LOG_INTERVAL).await;
+                    while batch.len() < LOG_QUEUE {
+                        match log_rx.try_recv() {
+                            Ok(line) => batch.push(line),
+                            Err(_) => break,
+                        }
+                    }
+                    let lost = dropped.swap(0, Ordering::Relaxed);
+                    if lost > 0 {
+                        batch.push(format!("[eink-qemu: {lost} console lines dropped while the console was busy]"));
+                    }
+                    if let Some(file) = file.lock().unwrap().as_mut() {
+                        use std::io::Write;
+                        let _ = file.write_all((batch.join("\n") + "\n").as_bytes());
+                    }
+                    if let Some(channel) = sink.lock().unwrap().as_ref() {
+                        let _ = channel.send(std::mem::take(&mut batch));
+                    }
+                    batch.clear();
+                }
+            });
+        }
         Arc::new(Session {
             app,
             qemu,
             ops: Mutex::new(()),
             shared: StdMutex::new(Shared {
-                info: SessionInfo { state: "idle", machine: None, turbo: false, exit: None },
+                info: SessionInfo { state: "idle", machine: None, turbo: false, exit: None, run: 0 },
                 run: None,
                 cancel: None,
             }),
             runs: AtomicU64::new(0),
             log_tx,
+            dropped,
+            log_file,
             logs,
             frames: StdMutex::new(None),
             screen: StdMutex::new(None),
@@ -203,25 +319,47 @@ impl Session {
     }
 
     pub fn log(&self, line: impl Into<String>) {
-        let _ = self.log_tx.send(line.into());
+        if self.log_tx.try_send(line.into()).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A line the WebView already shows (its own diagnostics): only the
+    /// EINK_QEMU_LOG file gets it.
+    pub fn note(&self, line: &str) {
+        if let Some(file) = self.log_file.lock().unwrap().as_mut() {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
     }
 
     pub fn info(&self) -> SessionInfo {
         self.shared.lock().unwrap().info.clone()
     }
 
-    pub fn card(&self) -> PathBuf {
-        self.card.lock().unwrap().clone()
+    pub fn card_path(&self) -> Option<PathBuf> {
+        self.card.lock().unwrap().as_ref().map(|card| card.path.clone())
     }
 
-    /// Replace the card. Only while idle; the caller holds the card lock.
-    pub async fn set_card(&self, path: PathBuf) -> Result<(), AppError> {
+    /// Replace the card. Only while idle; returns the previous card (and its
+    /// lock) so the caller decides when to release it.
+    pub async fn set_card(&self, card: Card) -> Result<Option<Card>, AppError> {
         let _ops = self.ops.lock().await;
         if self.info().state != "idle" {
             return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
         }
-        *self.card.lock().unwrap() = path;
-        Ok(())
+        Ok(self.card.lock().unwrap().replace(card))
+    }
+
+    /// Run `action` while idle with the operations lock held, so no start or
+    /// SD operation overlaps it (used to create a card in place).
+    pub async fn while_idle<T>(&self, action: impl FnOnce(Option<&Card>) -> Result<T, AppError>) -> Result<T, AppError> {
+        let _ops = self.ops.lock().await;
+        if self.info().state != "idle" {
+            return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
+        }
+        let card = self.card.lock().unwrap();
+        action(card.as_ref())
     }
 
     /// Connect a (possibly reloaded) WebView: console lines and display
@@ -293,32 +431,41 @@ impl Session {
 
     pub async fn start(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>) -> Result<SessionInfo, AppError> {
         let (cancel_tx, cancel_rx) = watch::channel(false);
+        let id = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut shared = self.shared.lock().unwrap();
             if shared.info.state != "idle" {
                 return Err(AppError::busy());
             }
             shared.cancel = Some(cancel_tx);
-            shared.info = SessionInfo { state: "starting", machine: None, turbo: options.turbo, exit: None };
+            shared.info = SessionInfo {
+                state: "starting",
+                machine: Some(options.machine.clone()),
+                turbo: options.turbo,
+                exit: None,
+                run: id,
+            };
         }
         self.set(|_| {});
         let _ops = self.ops.lock().await;
         *self.screen.lock().unwrap() = None;
-        let id = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
-        let result = self.launch(id, &options, flash, cancel_rx).await;
+        let result = match self.card_path() {
+            Some(card) => self.launch(id, &options, flash, &card, cancel_rx).await,
+            None => Err((Exit { kind: "failed", reason: Some(AppError::no_card().message) }, AppError::no_card())),
+        };
         self.shared.lock().unwrap().cancel = None;
         match result {
             Ok(run) => {
                 self.shared.lock().unwrap().run = Some(run);
-                self.set(|info| {
-                    info.state = "running";
-                    info.machine = Some(options.machine.clone());
-                });
+                self.set(|info| info.state = "running");
                 Ok(self.info())
             }
             Err((exit, error)) => {
-                self.log(format!("Error: {}", error.message));
-                self.set(|info| *info = SessionInfo { state: "idle", machine: None, turbo: options.turbo, exit: Some(exit) });
+                self.set(|info| {
+                    info.state = "idle";
+                    info.machine = None;
+                    info.exit = Some(exit);
+                });
                 Err(error)
             }
         }
@@ -348,6 +495,7 @@ impl Session {
             args.extend(list.iter().filter_map(|arg| arg.as_str().map(String::from)));
         }
         if machine != "x4" && machine != "picco" {
+            // uc8279-68, the default X4 Pro panel, is a UC8179 subtype.
             args.extend([
                 "-global".into(),
                 format!("{}.ghosting={}", if machine == "x3" { "uc8279" } else { "uc8179" }, if options.ghosting { "on" } else { "off" }),
@@ -373,6 +521,7 @@ impl Session {
         id: u64,
         options: &StartOptions,
         flash: Vec<u8>,
+        card: &Path,
         mut cancel: watch::Receiver<bool>,
     ) -> Result<Arc<Run>, (Exit, AppError)> {
         let failed = |error: AppError| (Exit { kind: "failed", reason: Some(error.message.clone()) }, error);
@@ -383,14 +532,20 @@ impl Session {
                 format!("QEMU is missing at {}. Build it or set EINK_QEMU_BIN.", binary.display()),
             )));
         }
-        let dir = tempfile::Builder::new().prefix("eink-qemu-").tempdir().map_err(|e| failed(e.into()))?;
+        let dir = run_dir().map_err(|e| failed(e.into()))?;
         let flash_path = dir.path().join("flash.bin");
-        std::fs::write(&flash_path, &flash).map_err(|e| failed(e.into()))?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new();
+            file.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+            file.open(&flash_path).and_then(|mut f| f.write_all(&flash)).map_err(|e| failed(e.into()))?;
+        }
         let qmp_listener = Listener::bind(dir.path(), "qmp").await.map_err(|e| failed(e.into()))?;
         let display_listener = Listener::bind(dir.path(), "display").await.map_err(|e| failed(e.into()))?;
-        let card = self.card();
         let args = self
-            .args(options, &flash_path, &card, &qmp_listener.chardev(), &display_listener.address())
+            .args(options, &flash_path, card, &qmp_listener.chardev(), &display_listener.address())
             .map_err(failed)?;
         self.log(format!(
             "$ {} {}",
@@ -417,19 +572,13 @@ impl Session {
         .into_iter()
         .flatten()
         {
-            let log = self.log_tx.clone();
+            let session = self.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stream);
                 let mut line = Vec::new();
-                loop {
-                    line.clear();
-                    match reader.read_until(b'\n', &mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            let text = String::from_utf8_lossy(&line);
-                            let _ = log.send(text.trim_end_matches(['\n', '\r']).to_string());
-                        }
-                    }
+                while let Ok(true) = read_line_limited(&mut reader, &mut line).await {
+                    let text = String::from_utf8_lossy(&line);
+                    session.log(text.trim_end_matches(['\n', '\r']));
                 }
             });
         }
@@ -472,11 +621,11 @@ impl Session {
                         let _ = faults.send(reason);
                     }
                 });
-                let log = self.log_tx.clone();
+                let session = self.clone();
                 tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
                         if event["event"] == "SHUTDOWN" {
-                            let _ = log.send("Guest shut down.".to_string());
+                            session.log("Guest shut down.");
                         }
                     }
                 });
@@ -531,23 +680,32 @@ impl Session {
         };
 
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
+        let (paused, mut paused_rx) = watch::channel(false);
         let run = Arc::new(Run {
             id,
             machine: options.machine.clone(),
             qmp: qmp.clone(),
             input: input_tx,
+            paused,
             kill,
             exited,
             stopping: AtomicBool::new(false),
             _dir: dir,
         });
-        // Device input in arrival order, so a release never overtakes its press.
+        // Device input in arrival order, so a release never overtakes its
+        // press. While an SD operation has the guest stopped, QEMU rejects
+        // input, so it waits here instead.
         {
             let qmp = qmp.clone();
             let machine = options.machine.clone();
+            let session = self.clone();
             tokio::spawn(async move {
                 let mut home = false;
+                let mut reported = false;
                 while let Some(input) = input_rx.recv().await {
+                    if paused_rx.wait_for(|paused| !*paused).await.is_err() {
+                        break;
+                    }
                     let result = match input {
                         Input::Key(key, down) if key == "Home" => {
                             if machine != "x4pro" || home == down {
@@ -571,13 +729,19 @@ impl Session {
                             ]}))).await
                         }
                     };
-                    if result.is_err() {
-                        break;
+                    // A rejected event is not fatal; monitor loss is a fault of its own.
+                    if let Err(error) = result {
+                        if !reported {
+                            session.log(format!("Device input failed: {error}"));
+                            reported = true;
+                        }
                     }
                 }
             });
         }
         // The first fault (QEMU exit, monitor or display loss) ends the run.
+        // It waits for the operations lock, so a fault during startup is
+        // handled once start has published the run.
         {
             let session = self.clone();
             tokio::spawn(async move {
@@ -590,6 +754,7 @@ impl Session {
     }
 
     async fn fault(self: &Arc<Self>, id: u64, reason: String) {
+        let _ops = self.ops.lock().await;
         let run = {
             let shared = self.shared.lock().unwrap();
             match &shared.run {
@@ -598,8 +763,9 @@ impl Session {
             }
         };
         self.log(reason.clone());
+        // Prefer QEMU's exit status when the process is what ended.
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let status = run.exited.borrow().clone();
-        let _ops = self.ops.lock().await;
         self.finish(&run, Exit { kind: "crashed", reason: Some(status.map(|s| format!("QEMU exited ({s})")).unwrap_or(reason)) })
             .await;
     }
@@ -614,6 +780,7 @@ impl Session {
             return;
         }
         self.set(|info| info.state = "stopping");
+        let _ = run.paused.send(false);
         terminate(Some(&run.qmp), &run.kill, &run.exited).await;
         self.shared.lock().unwrap().run = None;
         self.set(|info| {
@@ -674,7 +841,7 @@ impl Session {
         F: FnOnce(&Path) -> Result<T, SdError> + Send + 'static,
     {
         let _ops = self.ops.lock().await;
-        let card = self.card();
+        let card = self.card_path().ok_or_else(AppError::no_card)?;
         let state = self.info().state;
         let blocking = |card: PathBuf| async move {
             tokio::task::spawn_blocking(move || op(&card))
@@ -685,11 +852,16 @@ impl Session {
             "idle" => blocking(card).await.map_err(AppError::from),
             "running" => {
                 let run = self.current().ok_or_else(AppError::busy)?;
+                let _ = run.paused.send(true);
                 if let Err(error) = run.qmp.execute("stop", None).await {
+                    // The guest may or may not have stopped: end the run
+                    // rather than leave it in an unknown state.
+                    self.log(format!("Could not pause the emulator for the SD card: {error}"));
+                    self.finish(&run, Exit { kind: "failed", reason: Some(format!("SD operation failed: {error}")) }).await;
                     return Err(AppError::new("EQEMU", error));
                 }
                 let result = blocking(card).await;
-                let changed = mutates && result.as_ref().err().is_none_or(|error| !error.precheck());
+                let changed = mutates && result.as_ref().err().is_none_or(sd_changed);
                 let resumed = async {
                     if changed {
                         self.reset_device(&run).await?;
@@ -698,6 +870,7 @@ impl Session {
                     run.qmp.execute("cont", None).await.map(|_| ())
                 }
                 .await;
+                let _ = run.paused.send(false);
                 if let Err(error) = resumed {
                     self.log(format!("SD operation stopped the emulator: {error}"));
                     self.finish(&run, Exit { kind: "failed", reason: Some(format!("SD operation failed: {error}")) }).await;
@@ -771,6 +944,13 @@ impl Listener {
         #[cfg(unix)]
         {
             let path = dir.join(format!("{name}.sock"));
+            // sun_path holds 104 bytes on macOS and 108 on Linux.
+            if path.as_os_str().len() >= 100 {
+                return Err(std::io::Error::other(format!(
+                    "The socket path {} is too long for this platform.",
+                    path.display()
+                )));
+            }
             Ok(Listener::Unix(tokio::net::UnixListener::bind(&path)?, path))
         }
         #[cfg(not(unix))]
@@ -812,4 +992,3 @@ impl Listener {
         }
     }
 }
-

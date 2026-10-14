@@ -255,7 +255,7 @@ fn type_clashes() {
     write(&clash.join("Note.TXT/inner.txt"), b"in a folder");
     let error = sd::plan_upload(&card.image, "/", &[clash.join("BOOKS")]).unwrap_err();
     assert_eq!(error.code, "EISDIR");
-    assert!(error.precheck());
+    assert!(!error.changed);
     assert_eq!(code(sd::upload(&card.image, "/", &[clash.join("Note.TXT")])), "ENOTDIR");
     assert_eq!(code(sd::upload(&card.image, "/", &[clash.join("BOOKS")])), "EISDIR");
 
@@ -269,9 +269,10 @@ fn type_clashes() {
 }
 
 #[test]
-fn not_enough_space_is_a_precheck() {
+fn not_enough_space_changes_nothing() {
     let card = Card::new();
     let before = card.list("/").free;
+    let image = fs::read(&card.image).unwrap();
     let host = card.host("big");
     let big = host.join("big.bin");
     let file = fs::File::create(&big).unwrap();
@@ -281,6 +282,8 @@ fn not_enough_space_is_a_precheck() {
     assert!(error.message.contains("Not enough space"), "{}", error.message);
     let error = sd::upload(&card.image, "/", &[big]).unwrap_err();
     assert_eq!(error.code, "ENOSPC");
+    assert!(!error.changed);
+    assert!(fs::read(&card.image).unwrap() == image, "the image is unchanged");
     assert_eq!(card.list("/").free, before);
     assert!(card.list("/").entries.is_empty());
     parity(&card);
@@ -311,12 +314,7 @@ fn missing_paths_and_wrong_types() {
     sd::mkdir(&card.image, "/dir").unwrap();
     assert_eq!(code(sd::export(&card.image, "/dir", &dest)), "EISDIR");
     assert!(!dest.exists());
-    for error in [SdError::new("EEXIST", ""), SdError::new("ENOENT", ""), SdError::new("ENOTEMPTY", "")] {
-        assert!(error.precheck());
-    }
-    for error in [SdError::new("ENOSPC", ""), SdError::new("EIO", "")] {
-        assert!(!error.precheck());
-    }
+    assert!(!SdError::new("EIO", "").changed);
     parity(&card);
 }
 
@@ -535,5 +533,438 @@ fn uploaded_names_are_composed() {
     sd::upload(&card.image, "/", &[root.join(decomposed)]).unwrap();
     assert_eq!(card.names("/"), vec![composed.to_string()]);
     assert_eq!(card.read(&format!("/{composed}")), b"hangul");
+    parity(&card);
+}
+
+/// Timing for wide folders on a stock 2050 MiB card (32 KiB clusters).
+/// Run with `cargo test --release --test sd bench_wide_folder -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_wide_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("stock.img");
+    let mksd = Path::new(DESKTOP).join("../mksd.py");
+    let status = Command::new("python3").arg(mksd).arg(&image).output().unwrap();
+    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    let host = dir.path().join("host/wide");
+    fs::create_dir_all(&host).unwrap();
+    for n in 0..1000 {
+        fs::write(host.join(format!("file-{n:04}.txt")), b"").unwrap();
+    }
+    let start = std::time::Instant::now();
+    sd::upload(&image, "/", &[host.clone()]).unwrap();
+    let upload = start.elapsed();
+    assert_eq!(sd::list(&image, "/wide").unwrap().entries.len(), 1000);
+    let start = std::time::Instant::now();
+    sd::remove(&image, "/wide").unwrap();
+    let remove = start.elapsed();
+    eprintln!("1000 empty files: upload {upload:?}, remove {remove:?}");
+}
+
+/* Raw access to FAT32 cards, to build damaged or unusual images. */
+
+struct Raw {
+    base: usize,
+    bps: usize,
+    cluster: usize,
+    reserved: usize,
+    fats: usize,
+    fat_size: usize,
+    data: usize,
+    root: u32,
+    info: Option<usize>,
+    backup_info: Option<usize>,
+}
+
+fn u16_le(image: &[u8], at: usize) -> usize {
+    u16::from_le_bytes([image[at], image[at + 1]]) as usize
+}
+fn u32_le(image: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(image[at..at + 4].try_into().unwrap())
+}
+
+impl Raw {
+    fn of(image: &[u8]) -> Raw {
+        let base = if matches!(u16_le(image, 11), 512 | 1024 | 2048 | 4096) { 0 } else { u32_le(image, 454) as usize * 512 };
+        let b = |at: usize| base + at;
+        let bps = u16_le(image, b(11));
+        let reserved = u16_le(image, b(14));
+        let fats = image[b(16)] as usize;
+        let fat_size = u32_le(image, b(36)) as usize * bps;
+        let info_sector = u16_le(image, b(48));
+        let backup = u16_le(image, b(50));
+        Raw {
+            base,
+            bps,
+            cluster: bps * image[b(13)] as usize,
+            reserved,
+            fats,
+            fat_size,
+            data: base + reserved * bps + fats * fat_size,
+            root: u32_le(image, b(44)),
+            info: (info_sector != 0 && info_sector != 0xffff).then(|| base + info_sector * bps),
+            backup_info: (backup != 0 && backup != 0xffff).then(|| base + (backup + info_sector) * bps),
+        }
+    }
+    fn fat_offset(&self, copy: usize, cluster: u32) -> usize {
+        self.base + self.reserved * self.bps + copy * self.fat_size + cluster as usize * 4
+    }
+    fn get(&self, image: &[u8], cluster: u32) -> u32 {
+        u32_le(image, self.fat_offset(0, cluster)) & 0x0fff_ffff
+    }
+    fn set(&self, image: &mut [u8], copy: usize, cluster: u32, value: u32) {
+        let at = self.fat_offset(copy, cluster);
+        image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    fn set_all(&self, image: &mut [u8], cluster: u32, value: u32) {
+        for copy in 0..self.fats {
+            self.set(image, copy, cluster, value);
+        }
+    }
+    fn chain(&self, image: &[u8], first: u32) -> Vec<u32> {
+        let mut result = vec![first];
+        while self.get(image, *result.last().unwrap()) < 0x0fff_fff8 {
+            result.push(self.get(image, *result.last().unwrap()));
+        }
+        result
+    }
+    /// Short-name records of a folder: (offset of the record, 11-byte name, start cluster).
+    fn records(&self, image: &[u8], first: u32) -> Vec<(usize, Vec<u8>, u32)> {
+        let mut result = Vec::new();
+        for cluster in self.chain(image, first) {
+            let start = self.data + (cluster as usize - 2) * self.cluster;
+            for at in (start..start + self.cluster).step_by(32) {
+                if image[at] == 0 {
+                    return result;
+                }
+                if image[at] == 0xe5 || image[at + 11] & 0x3f == 0x0f || image[at + 11] & 0x08 != 0 {
+                    continue;
+                }
+                let first = (u16_le(image, at + 20) << 16 | u16_le(image, at + 26)) as u32;
+                result.push((at, image[at..at + 11].to_vec(), first));
+            }
+        }
+        result
+    }
+    fn record(&self, image: &[u8], folder: u32, name: &[u8; 11]) -> (usize, u32) {
+        let (at, _, first) = self.records(image, folder).into_iter().find(|(_, n, _)| n == name).expect("record");
+        (at, first)
+    }
+}
+
+fn identical(card: &Card, before: &[u8]) {
+    assert!(fs::read(&card.image).unwrap() == before, "the image must be unchanged");
+}
+
+/// The cluster size, from the free space one byte takes.
+fn cluster_size(card: &Card) -> u64 {
+    let before = card.list("/").free;
+    let host = card.host("probe");
+    write(&host.join("probe.bin"), b"x");
+    sd::upload(&card.image, "/", &[host.join("probe.bin")]).unwrap();
+    let size = before - card.list("/").free;
+    sd::remove(&card.image, "/probe.bin").unwrap();
+    size
+}
+
+#[test]
+fn upload_failing_midway_leaves_the_image_unchanged() {
+    let card = formatted(fatfs::FatType::Fat12, 1_474_560);
+    let cluster = cluster_size(&card);
+    let host = card.host("first");
+    write(&host.join("a.txt"), &data(1, 400));
+    sd::upload(&card.image, "/", &[host.join("a.txt")]).unwrap();
+    let free = card.list("/").free;
+    write(&host.join("b.txt"), &data(2, free as usize));
+    sd::upload(&card.image, "/", &[host.join("b.txt")]).unwrap();
+    assert_eq!(card.list("/").free, 0);
+    let before = fs::read(&card.image).unwrap();
+
+    // Growing a.txt first needs space that only shrinking b.txt frees.
+    let second = card.host("second");
+    let grown = data(3, 3 * cluster as usize);
+    write(&second.join("a.txt"), &grown);
+    write(&second.join("b.txt"), b"");
+    let sources = [second.join("a.txt"), second.join("b.txt")];
+    let plan = sd::plan_upload(&card.image, "/", &sources).unwrap();
+    assert_eq!(plan.conflicts, ["/a.txt", "/b.txt"]);
+    let error = sd::upload(&card.image, "/", &sources).unwrap_err();
+    assert_eq!(error.code, "ENOSPC");
+    assert!(!error.changed);
+    identical(&card, &before);
+    assert_eq!(card.read("/a.txt"), data(1, 400));
+
+    // In the other order it fits.
+    sd::upload(&card.image, "/", &[second.join("b.txt"), second.join("a.txt")]).unwrap();
+    assert_eq!(card.read("/a.txt"), grown);
+    assert_eq!(card.read("/b.txt"), b"");
+}
+
+#[cfg(unix)]
+#[test]
+fn host_read_error_rolls_back_the_upload() {
+    use std::os::unix::fs::PermissionsExt;
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("precious.txt"), b"original");
+    sd::upload(&card.image, "/", &[host.join("precious.txt")]).unwrap();
+    let before = fs::read(&card.image).unwrap();
+    let next = card.host("next");
+    write(&next.join("large.bin"), &data(4, 3 << 20));
+    write(&next.join("precious.txt"), b"replacement");
+    fs::set_permissions(next.join("precious.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(next.join("precious.txt")).is_ok() {
+        eprintln!("running with permission overrides: skipping");
+        return;
+    }
+    let error = sd::upload(&card.image, "/", &[next.join("large.bin"), next.join("precious.txt")]).unwrap_err();
+    assert_eq!(error.code, "EIO");
+    assert!(!error.changed);
+    identical(&card, &before);
+    assert_eq!(card.read("/precious.txt"), b"original");
+    parity(&card);
+}
+
+#[test]
+fn rename_into_a_full_fixed_root_leaves_the_image_unchanged() {
+    let card = formatted(fatfs::FatType::Fat12, 1_474_560);
+    let image = fs::read(&card.image).unwrap();
+    let root_entries = u16_le(&image, 17);
+    // Lower-case names take a long-name slot and a short slot each.
+    let host = card.host("many");
+    let count = root_entries / 2 - 1;
+    let sources: Vec<PathBuf> = (0..count)
+        .map(|n| {
+            let path = host.join(format!("f{n:04}.txt"));
+            write(&path, b"");
+            path
+        })
+        .collect();
+    sd::upload(&card.image, "/", &sources).unwrap();
+    let before = fs::read(&card.image).unwrap();
+    let long = format!("{}.txt", "x".repeat(200));
+    let error = sd::rename(&card.image, "/f0000.txt", &long).unwrap_err();
+    assert_eq!(error.code, "ENOSPC", "{error:?}");
+    assert!(!error.changed);
+    identical(&card, &before);
+    assert_eq!(card.list("/").entries.len(), count);
+    // The planner sees the full root folder too.
+    write(&host.join("one-more-file-with-a-long-name.txt"), b"");
+    assert_eq!(code(sd::plan_upload(&card.image, "/", &[host.join("one-more-file-with-a-long-name.txt")])), "ENOSPC");
+}
+
+#[test]
+fn read_only_operations_never_write() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("a.txt"), b"contents");
+    sd::upload(&card.image, "/", &[host.join("a.txt")]).unwrap();
+    // Stale FSInfo hints must not be repaired on a read.
+    let mut image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    let info = raw.info.unwrap();
+    image[info + 488..info + 492].copy_from_slice(&0u32.to_le_bytes());
+    fs::write(&card.image, &image).unwrap();
+    let before = image;
+
+    card.list("/");
+    sd::plan_upload(&card.image, "/", &[host.join("a.txt")]).unwrap();
+    card.read("/a.txt");
+    for error in [
+        sd::mkdir(&card.image, "/A.TXT").unwrap_err(),
+        sd::rename(&card.image, "/missing", "x").unwrap_err(),
+        sd::remove(&card.image, "/missing").unwrap_err(),
+        sd::upload(&card.image, "/missing", &[host.join("a.txt")]).unwrap_err(),
+        sd::mkdir(&card.image, "/bad:name").unwrap_err(),
+    ] {
+        assert!(!error.changed, "{error:?}");
+    }
+    identical(&card, &before);
+
+    // A change rewrites both FSInfo copies from the FAT.
+    sd::mkdir(&card.image, "/new").unwrap();
+    fsinfo_agrees(&card);
+}
+
+/// Both FSInfo copies hold the FAT's free count and first free cluster.
+fn fsinfo_agrees(card: &Card) {
+    let image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    let clusters = (card.list("/").total / raw.cluster as u64) as u32;
+    let free = (2..clusters + 2).filter(|&c| raw.get(&image, c) == 0).count() as u32;
+    let first = (2..clusters + 2).find(|&c| raw.get(&image, c) == 0).unwrap_or(0xffff_ffff);
+    assert_eq!(free as u64 * raw.cluster as u64, card.list("/").free);
+    let copies = [raw.info, raw.backup_info];
+    assert!(copies.iter().all(Option::is_some), "the blank card has a backup FSInfo");
+    for at in copies.into_iter().flatten() {
+        assert_eq!(u32_le(&image, at), 0x4161_5252);
+        assert_eq!((u32_le(&image, at + 488), u32_le(&image, at + 492)), (free, first), "FSInfo at {at:#x}");
+    }
+}
+
+#[test]
+fn both_fsinfo_copies_follow_changes() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("dir/a.bin"), &data(6, 70_000));
+    sd::upload(&card.image, "/", &[host.join("dir")]).unwrap();
+    fsinfo_agrees(&card);
+    sd::rename(&card.image, "/dir", "renamed").unwrap();
+    fsinfo_agrees(&card);
+    sd::remove(&card.image, "/renamed").unwrap();
+    fsinfo_agrees(&card);
+    parity(&card);
+}
+
+#[test]
+fn damaged_fats_are_refused() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("a.bin"), &data(7, 2000));
+    write(&host.join("b.bin"), &data(8, 2000));
+    sd::upload(&card.image, "/", &[host.join("a.bin"), host.join("b.bin")]).unwrap();
+    let good = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&good);
+    let (_, a) = raw.record(&good, raw.root, b"A       BIN");
+    let (_, b) = raw.record(&good, raw.root, b"B       BIN");
+    let a_chain = raw.chain(&good, a);
+    let b_chain = raw.chain(&good, b);
+    let free_cluster = (2..).find(|&c| raw.get(&good, c) == 0).unwrap();
+
+    let cases: Vec<(&str, Box<dyn Fn(&mut Vec<u8>)>)> = vec![
+        ("copies disagree", Box::new(|image: &mut Vec<u8>| raw.set(image, 1, free_cluster, 0x0fff_ffff))),
+        ("mirroring disabled", Box::new(|image: &mut Vec<u8>| image[raw.base + 40] = 0x81)),
+        ("root loops", Box::new(|image: &mut Vec<u8>| raw.set_all(image, raw.root, raw.root))),
+        ("cross-link", Box::new(|image: &mut Vec<u8>| raw.set_all(image, b_chain[0], a_chain[1]))),
+        ("into free space", Box::new(|image: &mut Vec<u8>| raw.set_all(image, *a_chain.last().unwrap(), free_cluster))),
+        ("out of range", Box::new(|image: &mut Vec<u8>| raw.set_all(image, *a_chain.last().unwrap(), 0x0fff_0000))),
+    ];
+    for (name, damage) in cases {
+        let mut image = good.clone();
+        damage(&mut image);
+        fs::write(&card.image, &image).unwrap();
+        let started = std::time::Instant::now();
+        let error = sd::list(&card.image, "/").unwrap_err();
+        assert!(started.elapsed().as_secs() < 5, "{name}: listing must terminate");
+        assert_eq!(error.code, "ENOTSUP", "{name}: {error:?}");
+        assert_eq!(code(sd::mkdir(&card.image, "/x")), "ENOTSUP", "{name}");
+        assert_eq!(code(sd::remove(&card.image, "/a.bin")), "ENOTSUP", "{name}");
+        assert!(fs::read(&card.image).unwrap() == image, "{name}: the image is unchanged");
+    }
+}
+
+#[test]
+fn cross_linked_trees_are_not_removed() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("tree/a.txt"), &data(9, 1500));
+    write(&host.join("tree/b.txt"), &data(10, 1500));
+    sd::upload(&card.image, "/", &[host.join("tree")]).unwrap();
+    let mut image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    let (_, tree) = raw.record(&image, raw.root, b"TREE       ");
+    let (_, a) = raw.record(&image, tree, b"A       TXT");
+    let (b_record, _) = raw.record(&image, tree, b"B       TXT");
+    // b.txt now starts at a.txt's first cluster; its own chain is orphaned.
+    image[b_record + 20..b_record + 22].copy_from_slice(&((a >> 16) as u16).to_le_bytes());
+    image[b_record + 26..b_record + 28].copy_from_slice(&(a as u16).to_le_bytes());
+    fs::write(&card.image, &image).unwrap();
+    let error = sd::remove(&card.image, "/tree").unwrap_err();
+    assert_eq!(error.code, "EINVAL");
+    assert!(error.message.contains("Cross-linked"), "{}", error.message);
+    identical(&card, &image);
+}
+
+#[test]
+fn code_page_437_short_names() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("x1.txt"), b"A");
+    write(&host.join("x2.txt"), b"B");
+    sd::upload(&card.image, "/", &[host.join("x1.txt"), host.join("x2.txt")]).unwrap();
+    let mut image = fs::read(&card.image).unwrap();
+    let raw = Raw::of(&image);
+    for (name, byte) in [(b"X1      TXT", 0x82u8), (b"X2      TXT", 0x84)] {
+        let (at, _) = raw.record(&image, raw.root, name);
+        image[at] = byte;
+        image[at + 1] = b' ';
+        image[at + 12] = 0; // no lower-case flags
+        // Drop the long name so only the short name remains.
+        let mut slot = at - 32;
+        while image[slot + 11] & 0x3f == 0x0f {
+            image[slot] = 0xe5;
+            slot -= 32;
+        }
+    }
+    fs::write(&card.image, &image).unwrap();
+    assert_eq!(card.names("/"), ["\u{e4}.TXT", "\u{e9}.TXT"]);
+    assert_eq!(card.read("/\u{e9}.TXT"), b"A");
+    assert_eq!(card.read("/\u{e4}.TXT"), b"B");
+    parity(&card);
+    sd::remove(&card.image, "/\u{e4}.TXT").unwrap();
+    assert_eq!(card.names("/"), ["\u{e9}.TXT"]);
+    assert_eq!(card.read("/\u{e9}.TXT"), b"A");
+    parity(&card);
+}
+
+#[test]
+fn export_refuses_the_card_image() {
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("a.txt"), b"a");
+    sd::upload(&card.image, "/", &[host.join("a.txt")]).unwrap();
+    let before = fs::read(&card.image).unwrap();
+    let dotted = card.dir.path().join(".").join("sd.img");
+    let mut targets = vec![card.image.clone(), dotted];
+    let link = card.dir.path().join("link.img");
+    if fs::hard_link(&card.image, &link).is_ok() {
+        targets.push(link);
+    }
+    for target in targets {
+        let error = sd::export(&card.image, "/a.txt", &target).unwrap_err();
+        assert_eq!(error.code, "EINVAL", "{}", target.display());
+    }
+    identical(&card, &before);
+    assert_eq!(card.read("/a.txt"), b"a");
+}
+
+#[cfg(unix)]
+#[test]
+fn exports_and_new_cards_respect_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let card = Card::new();
+    let host = card.host("files");
+    write(&host.join("a.txt"), b"a");
+    sd::upload(&card.image, "/", &[host.join("a.txt")]).unwrap();
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let private = card.dir.path().join("private.txt");
+    fs::write(&private, b"old").unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o600)).unwrap();
+    sd::export(&card.image, "/a.txt", &private).unwrap();
+    assert_eq!(fs::read(&private).unwrap(), b"a");
+    assert_eq!(mode(&private), 0o600);
+    // New files get what the umask gives an ordinary new file.
+    let reference = card.dir.path().join("reference.txt");
+    fs::File::create(&reference).unwrap();
+    let fresh = card.dir.path().join("fresh.txt");
+    sd::export(&card.image, "/a.txt", &fresh).unwrap();
+    assert_eq!(mode(&fresh), mode(&reference));
+    let new_card = card.dir.path().join("new.img");
+    sd::create_blank(&new_card).unwrap();
+    assert_eq!(mode(&new_card), mode(&reference));
+    fs::set_permissions(&new_card, fs::Permissions::from_mode(0o600)).unwrap();
+    sd::create_blank(&new_card).unwrap();
+    assert_eq!(mode(&new_card), 0o600);
+}
+
+#[test]
+fn large_uploads_spill_and_round_trip() {
+    // More than the journal keeps in memory (32 MiB).
+    let card = Card::new();
+    let host = card.host("big");
+    let bytes = data(11, 40 << 20);
+    write(&host.join("big.bin"), &bytes);
+    sd::upload(&card.image, "/", &[host.join("big.bin")]).unwrap();
+    assert!(card.read("/big.bin") == bytes);
     parity(&card);
 }

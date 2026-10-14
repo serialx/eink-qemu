@@ -29,13 +29,24 @@ cp "$build/qemu-system-riscv32" "$build/qemu-system-xtensa" "$out/bin/"
 cp "$root/pc-bios/esp32c3-rom.bin" "$root/pc-bios/esp32s3_rev0_rom.bin" "$out/share/"
 cp "$root/COPYING" "$out/COPYING"
 
-python3 - "$out" <<'PY'
+python3 - "$out" "$build" <<'PY'
 import os, re, shutil, subprocess, sys
 
-out = sys.argv[1]
+out, build = sys.argv[1], sys.argv[2]
 bindir, libdir = os.path.join(out, 'bin'), os.path.join(out, 'lib')
 SYSTEM = ('/usr/lib/', '/System/')
-HOMEBREW_LIB = '/opt/homebrew/lib'
+
+def homebrew_lib():
+    """Homebrew's lib directory: /opt/homebrew on Apple silicon, /usr/local on Intel."""
+    try:
+        prefix = subprocess.run(['brew', '--prefix'], check=True, capture_output=True, text=True).stdout.strip()
+        if prefix:
+            return os.path.join(prefix, 'lib')
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return '/opt/homebrew/lib' if os.path.isdir('/opt/homebrew/lib') else '/usr/local/lib'
+
+HOMEBREW_LIB = homebrew_lib()
 # Libraries opened with dlopen() that otool cannot see: (Homebrew name, bundled
 # name). QEMU links SDL2 even with -display eink, and Homebrew's sdl2-compat
 # opens SDL3 from its load-time initializer, trying @loader_path/libSDL3.dylib
@@ -78,7 +89,8 @@ sources = {}   # bundled file -> host real path it was copied from
 queue = []
 for name in sorted(os.listdir(bindir)):
     path = os.path.join(bindir, name)
-    sources[path] = os.path.realpath(path)
+    # Resolve loader-relative names from the original build binary, not the copy.
+    sources[path] = os.path.realpath(os.path.join(build, name))
     queue.append(path)
 changes = {}   # bundled file -> [(old install name, basename)]
 while queue:
@@ -99,7 +111,9 @@ while queue:
             queue.append(target)
             for source, extra in DLOPENED.get(base, []):
                 if extra not in bundled:
-                    real_extra = resolve(os.path.join(HOMEBREW_LIB, source), real)
+                    # Beside the library that opens it first, then Homebrew's lib.
+                    beside = os.path.join(os.path.dirname(real), source)
+                    real_extra = resolve(beside if os.path.exists(beside) else os.path.join(HOMEBREW_LIB, source), real)
                     bundled[extra] = real_extra
                     extra_target = os.path.join(libdir, extra)
                     shutil.copyfile(real_extra, extra_target)

@@ -54,10 +54,23 @@ sd.rs  (fatfs on the image file)
 
 Rust listens on both sockets before spawning QEMU, and QEMU connects as a
 client, so there is no wait for a socket file. Unix sockets on macOS and
-Linux; loopback TCP on Windows. Startup succeeds once QMP has negotiated and
-the display has sent its first size; it fails after 30 seconds, when QEMU
-exits, or when Stop cancels it. Any later loss of QEMU, the monitor or the
-display ends the run as crashed.
+Linux, in a private (0700) run directory under `/tmp` so socket paths stay
+short; the flash copy in it is 0600. Windows uses loopback TCP, which does
+not authenticate the peer: another local user could race QEMU to connect
+during startup. Startup succeeds once QMP has negotiated and the display has
+sent its first size; it fails after 30 seconds, when QEMU exits, or when
+Stop cancels it. Any later loss of QEMU, the monitor or the display ends the
+run as crashed. SIGTERM and SIGINT quit the app like the menu does; a run
+directory left by a killed app is removed at the next launch.
+
+## Host files
+
+The WebView never names a host path on its own. Native dialogs (firmware,
+cards, uploads, saving files and screenshots) run in Rust, and files dropped
+on the window are recorded from the window's drop event. Commands that take
+a path from the WebView (`firmware_use`, `sd_plan_upload`, `sd_upload`)
+accept only paths recorded that way. The capability file grants the WebView
+no dialog or file permissions, and the CSP allows no inline script.
 
 ## Display: `-display eink,addr=<socket>`
 
@@ -98,9 +111,17 @@ images), streaming file contents rather than loading the card, so stock
 
 While the emulator runs, every operation is bracketed: QMP `stop`, the
 operation, then `system_reset` if it may have changed the card (the firmware
-caches FAT and directory sectors), then `cont`. Errors raised before any
-write (`EEXIST`, `ENOENT`, `EINVAL`, …) skip the reset. One card is used by
-one app instance at a time, through a lock file in the app's data directory.
+caches FAT and directory sectors), then `cont`. Edits are transactional: fatfs
+writes into a journal (spilled to a temporary file), which reaches the image
+only when the whole operation has succeeded, so a failed upload, rename or
+delete leaves the card byte-for-byte unchanged and needs no reset. Input
+sent while the guest is paused waits for it to resume.
+
+One card is used by one app instance at a time: a lock file per card in the
+user's app data directory, shared by every instance whatever its data
+directory. Without the lock the card is not used at all; the app opens
+without a card and says why. Saving a copy, an exported file or a screenshot
+over a card that is open is refused.
 
 ## Firmware
 

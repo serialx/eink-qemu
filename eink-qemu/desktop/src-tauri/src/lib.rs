@@ -1,5 +1,10 @@
 //! eink-qemu desktop: Tauri commands over the emulator session, the SD card
 //! image and the app's settings. The WebView is the browser page's interface.
+//!
+//! Host files are reached only through paths the user chose: native dialogs
+//! run here in Rust, and files dropped on the window are recorded from the
+//! window's drop event. Commands that take a host path from the WebView
+//! accept only those recorded paths.
 
 mod display;
 mod qmp;
@@ -8,44 +13,63 @@ mod session;
 mod settings;
 
 use serde::Serialize;
-use session::{AppError, QemuPaths, Session, SessionInfo, StartOptions};
+use session::{AppError, Card, QemuPaths, Session, SessionInfo, StartOptions};
 use settings::{Settings, SettingsPatch};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request, Response};
-use tauri::{Manager, RunEvent, State};
+use tauri::{DragDropEvent, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
+use tokio::sync::oneshot;
 
 const FLASH_SIZE: usize = 0x100_0000;
 const MAX_FIRMWARE: u64 = 64 * 1024 * 1024;
+const MAX_SCREENSHOT: usize = 64 * 1024 * 1024;
+const MAX_GRANTS: usize = 20_000;
 
 struct App {
     session: Arc<Session>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
     locks: PathBuf,
-    card_lock: Mutex<Option<std::fs::File>>,
+    /// Host paths the user chose in a dialog or dropped on the window.
+    grants: Mutex<HashSet<PathBuf>>,
+    /// Startup problems the WebView shows once it attaches.
+    problems: Mutex<Vec<String>>,
 }
 
 impl App {
-    fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, AppError> {
+    /// Change the settings and save them; nothing changes when saving fails.
+    fn update(&self, change: impl FnOnce(&mut Settings) -> Result<(), AppError>) -> Result<Settings, AppError> {
         let mut settings = self.settings.lock().unwrap();
-        change(&mut settings);
-        settings.save(&self.settings_path)?;
+        let mut next = settings.clone();
+        change(&mut next)?;
+        next.save(&self.settings_path)?;
+        *settings = next;
         Ok(settings.clone())
+    }
+
+    fn grant(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        let mut grants = self.grants.lock().unwrap();
+        if grants.len() > MAX_GRANTS {
+            grants.clear();
+        }
+        grants.extend(paths);
+    }
+
+    fn granted(&self, path: &Path) -> Result<(), AppError> {
+        if self.grants.lock().unwrap().contains(path) {
+            Ok(())
+        } else {
+            Err(AppError::new("EPERM", format!("{} was not chosen in a dialog or dropped on the window.", path.display())))
+        }
     }
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CardInfo {
-    path: String,
-    name: String,
-    size: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FirmwareInfo {
+struct FileInfo {
     path: String,
     name: String,
     size: u64,
@@ -56,43 +80,70 @@ struct FirmwareInfo {
 struct Attached {
     session: SessionInfo,
     settings: Settings,
-    card: Option<CardInfo>,
-    firmware: Option<FirmwareInfo>,
+    card: Option<FileInfo>,
+    firmware: Option<FileInfo>,
     platform: &'static str,
     /// EINK_QEMU_AUTOSTART: start the chosen firmware as soon as the WebView attaches.
     autostart: bool,
+    /// Startup problems to show: a saved card or firmware that is unusable.
+    problems: Vec<String>,
 }
 
-fn card_info(path: &Path) -> Option<CardInfo> {
+fn file_info(path: &Path) -> Option<FileInfo> {
     let size = std::fs::metadata(path).ok()?.len();
-    Some(CardInfo {
+    Some(FileInfo {
         path: path.to_string_lossy().into_owned(),
         name: path.file_name()?.to_string_lossy().into_owned(),
         size,
     })
 }
 
-fn firmware_info(path: &Path) -> Option<FirmwareInfo> {
-    let size = std::fs::metadata(path).ok()?.len();
-    Some(FirmwareInfo {
-        path: path.to_string_lossy().into_owned(),
-        name: path.file_name()?.to_string_lossy().into_owned(),
-        size,
-    })
+/// The lock directory shared by every instance of this user, whatever data
+/// directory each uses, so a card has one owner across instances.
+fn locks_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("eink-qemu"))
+        .join("locks")
 }
 
-/// A card is used by one app instance at a time: a lock file per card in
-/// the app data directory (QEMU's own image locks guard other QEMUs).
-fn lock_card(locks: &Path, card: &Path) -> Result<std::fs::File, AppError> {
+/// A stable name for a card path, also before the file exists.
+fn card_key(path: &Path) -> PathBuf {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path;
+    }
+    match (path.parent().and_then(|p| std::fs::canonicalize(p).ok()), path.file_name()) {
+        (Some(parent), Some(name)) => parent.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+fn lock_path(locks: &Path, card: &Path) -> PathBuf {
     use std::hash::{Hash, Hasher};
-    std::fs::create_dir_all(locks)?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    card.hash(&mut hasher);
+    card_key(card).hash(&mut hasher);
+    locks.join(format!("{:016x}.lock", hasher.finish()))
+}
+
+/// Refuse to write over a card that an instance (this one included) has open.
+fn not_an_open_card(locks: &Path, dest: &Path) -> Result<(), AppError> {
+    let Ok(file) = std::fs::OpenOptions::new().write(true).open(lock_path(locks, dest)) else {
+        return Ok(());
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(_) => Err(AppError::new("EBUSY", format!("{} is an SD card open in eink-qemu.", dest.display()))),
+    }
+}
+
+/// Lock a card for this instance. Fails when another instance holds it.
+fn lock_card(locks: &Path, card: &Path) -> Result<std::fs::File, AppError> {
+    std::fs::create_dir_all(locks)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(locks.join(format!("{:016x}.lock", hasher.finish())))?;
+        .open(lock_path(locks, card))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(AppError::new(
@@ -117,6 +168,67 @@ fn validate_card(path: &Path) -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
+fn open_card(locks: &Path, path: &Path) -> Result<Card, AppError> {
+    let path = validate_card(path)?;
+    let lock = lock_card(locks, &path)?;
+    Ok(Card { path, lock })
+}
+
+fn check_firmware(path: &Path) -> Result<FileInfo, AppError> {
+    let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+    if !matches!(extension.as_deref(), Some("bin" | "xota")) {
+        return Err(AppError::new("EINVAL", "Choose one firmware file: a .bin, or an X4 Pro .xota update."));
+    }
+    let meta = std::fs::metadata(path).map_err(|_| AppError::new("ENOENT", format!("{} does not exist.", path.display())))?;
+    if !meta.is_file() || meta.len() > MAX_FIRMWARE {
+        return Err(AppError::new("EINVAL", "Firmware must be a file of at most 64 MiB."));
+    }
+    file_info(path).ok_or_else(|| AppError::new("EINVAL", "Unreadable firmware path."))
+}
+
+/// Native dialogs, run from Rust so the WebView never names host paths.
+enum Pick<'a> {
+    Open { title: &'a str, filter: Option<(&'a str, &'a [&'a str])> },
+    OpenMany { title: &'a str },
+    Save { title: &'a str, name: &'a str, filter: Option<(&'a str, &'a [&'a str])> },
+}
+
+async fn pick(app: &tauri::AppHandle, pick: Pick<'_>) -> Vec<PathBuf> {
+    let mut builder = app.dialog().file();
+    if let Some(window) = app.get_webview_window("main") {
+        builder = builder.set_parent(&window);
+    }
+    let (tx, rx) = oneshot::channel::<Vec<PathBuf>>();
+    let one = |path: Option<tauri_plugin_dialog::FilePath>| path.and_then(|p| p.into_path().ok()).into_iter().collect::<Vec<_>>();
+    match pick {
+        Pick::Open { title, filter } => {
+            builder = builder.set_title(title);
+            if let Some((name, extensions)) = filter {
+                builder = builder.add_filter(name, extensions);
+            }
+            builder.pick_file(move |path| {
+                let _ = tx.send(one(path));
+            });
+        }
+        Pick::OpenMany { title } => {
+            builder.set_title(title).pick_files(move |paths| {
+                let paths = paths.unwrap_or_default().into_iter().filter_map(|p| p.into_path().ok()).collect();
+                let _ = tx.send(paths);
+            });
+        }
+        Pick::Save { title, name, filter } => {
+            builder = builder.set_title(title).set_file_name(name);
+            if let Some((name, extensions)) = filter {
+                builder = builder.add_filter(name, extensions);
+            }
+            builder.save_file(move |path| {
+                let _ = tx.send(one(path));
+            });
+        }
+    }
+    rx.await.unwrap_or_default()
+}
+
 #[tauri::command]
 fn attach(
     app: State<'_, App>,
@@ -125,39 +237,56 @@ fn attach(
 ) -> Attached {
     app.session.attach(logs, frames);
     let settings = app.settings.lock().unwrap().clone();
+    let firmware = settings.firmware.as_deref().and_then(|path| check_firmware(path).ok());
     Attached {
         session: app.session.info(),
-        firmware: settings.firmware.as_deref().and_then(firmware_info),
-        card: card_info(&app.session.card()),
+        firmware,
+        card: app.session.card_path().as_deref().and_then(file_info),
         settings,
         platform: std::env::consts::OS,
         autostart: std::env::var_os("EINK_QEMU_AUTOSTART").is_some_and(|v| v == "1"),
+        problems: std::mem::take(&mut *app.problems.lock().unwrap()),
     }
+}
+
+/// The WebView's own diagnostics, for the EINK_QEMU_LOG file.
+#[tauri::command]
+fn note(app: State<'_, App>, line: String) {
+    app.session.note(&line);
 }
 
 #[tauri::command]
 fn settings_set(app: State<'_, App>, patch: SettingsPatch) -> Result<Settings, AppError> {
-    let mut error = None;
-    let settings = app.update(|settings| {
-        if let Err(message) = settings.apply(patch) {
-            error = Some(AppError::new("EINVAL", message));
-        }
-    })?;
-    error.map_or(Ok(settings), Err)
+    app.update(|settings| settings.apply(patch).map_err(|message| AppError::new("EINVAL", message)))
 }
 
+/// Choose the firmware in a native dialog. None when cancelled.
 #[tauri::command]
-fn firmware_choose(app: State<'_, App>, path: PathBuf) -> Result<FirmwareInfo, AppError> {
-    let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
-    if !matches!(extension.as_deref(), Some("bin" | "xota")) {
-        return Err(AppError::new("EINVAL", "Choose one firmware file: a .bin, or an X4 Pro .xota update."));
-    }
-    let meta = std::fs::metadata(&path).map_err(|_| AppError::new("ENOENT", format!("{} does not exist.", path.display())))?;
-    if !meta.is_file() || meta.len() > MAX_FIRMWARE {
-        return Err(AppError::new("EINVAL", "Firmware must be a file of at most 64 MiB."));
-    }
-    let info = firmware_info(&path).ok_or_else(|| AppError::new("EINVAL", "Unreadable firmware path."))?;
-    app.update(|settings| settings.firmware = Some(path))?;
+async fn firmware_pick(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
+    let Some(path) = pick(&handle, Pick::Open { title: "Choose firmware", filter: Some(("Firmware", &["bin", "xota"])) })
+        .await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let info = check_firmware(&path)?;
+    app.update(|settings| {
+        settings.firmware = Some(path);
+        Ok(())
+    })?;
+    Ok(Some(info))
+}
+
+/// Use a firmware file that was dropped on the window.
+#[tauri::command]
+fn firmware_use(app: State<'_, App>, path: PathBuf) -> Result<FileInfo, AppError> {
+    app.granted(&path)?;
+    let info = check_firmware(&path)?;
+    app.update(|settings| {
+        settings.firmware = Some(path);
+        Ok(())
+    })?;
     Ok(info)
 }
 
@@ -165,6 +294,7 @@ fn firmware_choose(app: State<'_, App>, path: PathBuf) -> Result<FirmwareInfo, A
 async fn firmware_read(app: State<'_, App>) -> Result<Response, AppError> {
     let path = app.settings.lock().unwrap().firmware.clone()
         .ok_or_else(|| AppError::new("ENOENT", "Choose a firmware .bin, an X4 Pro .xota update, or a 16 MiB flash dump."))?;
+    check_firmware(&path)?;
     let bytes = tokio::fs::read(&path).await
         .map_err(|e| AppError::new("ENOENT", format!("Cannot read {}: {e}", path.display())))?;
     if bytes.len() as u64 > MAX_FIRMWARE {
@@ -219,40 +349,91 @@ fn touch(app: State<'_, App>, x: f64, y: f64, down: bool) {
     app.session.touch(x, y, down);
 }
 
-#[tauri::command]
-async fn card_open(app: State<'_, App>, path: PathBuf) -> Result<CardInfo, AppError> {
-    let path = validate_card(&path)?;
-    let lock = lock_card(&app.locks, &path)?;
-    app.session.set_card(path.clone()).await?;
-    *app.card_lock.lock().unwrap() = Some(lock);
-    app.update(|settings| settings.card = Some(path.clone()))?;
-    card_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
+async fn use_card(app: &App, card: Card) -> Result<FileInfo, AppError> {
+    let path = card.path.clone();
+    let previous = app.session.set_card(card).await?;
+    drop(previous);
+    app.update(|settings| {
+        settings.card = Some(path.clone());
+        Ok(())
+    })?;
+    file_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
 }
 
-/// A new blank 64 MiB FAT32 card at `path`, which becomes the card in use.
+/// Open another SD image (native dialog). None when cancelled.
 #[tauri::command]
-async fn card_new(app: State<'_, App>, path: PathBuf) -> Result<CardInfo, AppError> {
+async fn card_pick_open(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
     if app.session.info().state != "idle" {
         return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
     }
-    let target = path.clone();
-    tokio::task::spawn_blocking(move || sd::create_blank(&target))
+    let Some(path) = pick(&handle, Pick::Open { title: "Open SD image", filter: Some(("SD image", &["img", "bin"])) })
         .await
-        .map_err(|_| AppError::new("EIO", "Could not create the card."))??;
-    card_open(app, path).await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let card = open_card(&app.locks, &path)?;
+    use_card(&app, card).await.map(Some)
 }
 
-/// Save a copy of the card (the guest is paused while it is copied).
+/// Make a new blank 64 MiB FAT32 card (native save dialog), which becomes
+/// the card in use. The destination is locked before it is replaced.
 #[tauri::command]
-async fn card_copy(app: State<'_, App>, dest: PathBuf) -> Result<(), AppError> {
+async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
+    if app.session.info().state != "idle" {
+        return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
+    }
+    let Some(path) = pick(&handle, Pick::Save { title: "New blank SD card", name: "sd.img", filter: Some(("SD image", &["img"])) })
+        .await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let key = card_key(&path);
+    let locks = app.locks.clone();
+    // The card in use is replaced in place under its own lock; any other
+    // destination must be free before anything is written.
+    let lock = app
+        .session
+        .while_idle(|current| {
+            let ours = current.is_some_and(|card| card_key(&card.path) == key);
+            let lock = if ours { None } else { Some(lock_card(&locks, &path)?) };
+            sd::create_blank(&path).map_err(AppError::from)?;
+            Ok(lock)
+        })
+        .await?;
+    match lock {
+        Some(lock) => use_card(&app, Card { path: validate_card(&path)?, lock }).await.map(Some),
+        None => Ok(file_info(&path)),
+    }
+}
+
+/// Save a copy of the card (native save dialog; the guest is paused while
+/// it is copied). Returns where it went, or None when cancelled.
+#[tauri::command]
+async fn card_pick_copy(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<String>, AppError> {
+    let name = app.session.card_path().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "sd.img".into());
+    let Some(dest) = pick(&handle, Pick::Save { title: "Save a copy of the SD card", name: &name, filter: Some(("SD image", &["img"])) })
+        .await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    not_an_open_card(&app.locks, &dest)?;
+    let target = dest.clone();
     app.session
         .with_card(false, move |card| {
-            if std::fs::canonicalize(&dest).ok().as_deref() == Some(card) {
+            if card_key(&target) == card_key(card) {
                 return Err(sd::SdError::new("EINVAL", "Choose a different file for the copy."));
             }
-            std::fs::copy(card, &dest).map(|_| ()).map_err(|e| sd::SdError::new("EIO", e.to_string()))
+            std::fs::copy(card, &target).map(|_| ()).map_err(|e| sd::SdError::new("EIO", e.to_string()))
         })
-        .await
+        .await?;
+    Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -260,19 +441,46 @@ async fn sd_list(app: State<'_, App>, path: String) -> Result<sd::SdListing, App
     app.session.with_card(false, move |card| sd::list(card, &path)).await
 }
 
+/// Choose host files to copy onto the card (native dialog). They become
+/// valid sources for sd_plan_upload and sd_upload.
+#[tauri::command]
+async fn sd_pick_sources(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Vec<String>, AppError> {
+    let paths = pick(&handle, Pick::OpenMany { title: "Copy to the SD card" }).await;
+    app.grant(paths.iter().cloned());
+    Ok(paths.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+fn granted_sources(app: &App, sources: &[PathBuf]) -> Result<(), AppError> {
+    sources.iter().try_for_each(|source| app.granted(source))
+}
+
 #[tauri::command]
 async fn sd_plan_upload(app: State<'_, App>, dir: String, sources: Vec<PathBuf>) -> Result<sd::UploadPlan, AppError> {
+    granted_sources(&app, &sources)?;
     app.session.with_card(false, move |card| sd::plan_upload(card, &dir, &sources)).await
 }
 
 #[tauri::command]
 async fn sd_upload(app: State<'_, App>, dir: String, sources: Vec<PathBuf>) -> Result<sd::UploadPlan, AppError> {
+    granted_sources(&app, &sources)?;
     app.session.with_card(true, move |card| sd::upload(card, &dir, &sources)).await
 }
 
+/// Save a file from the card to the computer (native save dialog).
 #[tauri::command]
-async fn sd_export(app: State<'_, App>, path: String, dest: PathBuf) -> Result<(), AppError> {
-    app.session.with_card(false, move |card| sd::export(card, &path, &dest)).await
+async fn sd_pick_export(handle: tauri::AppHandle, app: State<'_, App>, path: String) -> Result<Option<String>, AppError> {
+    let name = path.rsplit('/').next().unwrap_or("file").to_string();
+    let Some(dest) = pick(&handle, Pick::Save { title: "Save from the SD card", name: &name, filter: None })
+        .await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    not_an_open_card(&app.locks, &dest)?;
+    let target = dest.clone();
+    app.session.with_card(false, move |card| sd::export(card, &path, &target)).await?;
+    Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -290,42 +498,34 @@ async fn sd_remove(app: State<'_, App>, path: String) -> Result<(), AppError> {
     app.session.with_card(true, move |card| sd::remove(card, &path)).await
 }
 
-/// Body: PNG bytes. Header `x-path`: where the save dialog said to write.
+/// Body: PNG bytes. Header `x-name`: the suggested file name. Opens a native
+/// save dialog; returns where it was saved, or None when cancelled.
 #[tauri::command]
-async fn screenshot_save(request: Request<'_>) -> Result<(), AppError> {
+async fn screenshot_save(handle: tauri::AppHandle, app: State<'_, App>, request: Request<'_>) -> Result<Option<String>, AppError> {
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err(AppError::new("EINVAL", "Expected PNG bytes."));
     };
-    let path = request
-        .headers()
-        .get("x-path")
-        .and_then(|value| value.to_str().ok())
-        .map(|text| PathBuf::from(percent_decode(text)))
-        .ok_or_else(|| AppError::new("EINVAL", "Missing screenshot path."))?;
-    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.len() > MAX_SCREENSHOT {
         return Err(AppError::new("EINVAL", "Expected PNG bytes."));
     }
-    tokio::fs::write(&path, bytes).await?;
-    Ok(())
-}
-
-/// Headers are ASCII: the WebView percent-encodes the path.
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(value) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
-                out.push(value);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    let name = request
+        .headers()
+        .get("x-name")
+        .and_then(|value| value.to_str().ok())
+        .filter(|name| name.len() < 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
+        .unwrap_or("screen.png")
+        .to_string();
+    let bytes = bytes.clone();
+    let Some(dest) = pick(&handle, Pick::Save { title: "Save screenshot", name: &name, filter: Some(("PNG image", &["png"])) })
+        .await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    not_an_open_card(&app.locks, &dest)?;
+    tokio::fs::write(&dest, bytes).await?;
+    Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
 fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
@@ -342,14 +542,54 @@ fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
     QemuPaths { bin: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build"), share: None }
 }
 
+/// Open the saved card, or the default card when none was chosen. Problems
+/// are reported, never fatal: the app opens without a card instead.
+fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &mut Vec<String>) -> Option<Card> {
+    if let Some(saved) = settings.card.clone() {
+        return match open_card(locks, &saved) {
+            Ok(card) => Some(card),
+            Err(error) => {
+                problems.push(format!(
+                    "The SD card {} cannot be used: {} Open another card or make a new one from the card menu.",
+                    saved.display(),
+                    error.message
+                ));
+                None
+            }
+        };
+    }
+    let default = data.join("sd.img");
+    if !default.exists() {
+        if let Err(error) = sd::create_blank(&default) {
+            problems.push(format!("Could not create the default SD card {}: {error}", default.display()));
+            return None;
+        }
+    }
+    match open_card(locks, &default) {
+        Ok(card) => {
+            settings.card = Some(card.path.clone());
+            Some(card)
+        }
+        Err(error) => {
+            problems.push(format!(
+                "The SD card {} cannot be used: {} Open another card or make a new one from the card menu.",
+                default.display(),
+                error.message
+            ));
+            None
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // EINK_QEMU_DATA_DIR isolates an instance (settings, default card,
-            // locks), e.g. for tests running beside a normal window.
+            // EINK_QEMU_DATA_DIR isolates an instance (settings, default card),
+            // e.g. for tests running beside a normal window. Card locks stay
+            // shared so two instances never edit one card.
             let (config, data) = match std::env::var_os("EINK_QEMU_DATA_DIR") {
                 Some(dir) => (PathBuf::from(&dir), PathBuf::from(dir)),
                 None => (app.path().app_config_dir()?, app.path().app_data_dir()?),
@@ -357,52 +597,71 @@ pub fn run() {
             std::fs::create_dir_all(&data)?;
             let settings_path = config.join("settings.json");
             let mut settings = Settings::load(&settings_path);
-            let locks = data.join("locks");
-            // The last card, or the default card (created blank on first run).
-            let default_card = data.join("sd.img");
-            let mut chosen = settings.card.clone().and_then(|card| validate_card(&card).ok());
-            let mut lock = chosen.as_ref().and_then(|card| lock_card(&locks, card).ok());
-            if lock.is_none() {
-                if !default_card.exists() {
-                    sd::create_blank(&default_card)?;
+            let locks = locks_dir(app.handle());
+            let mut problems = Vec::new();
+            let card = startup_card(&mut settings, &data, &locks, &mut problems);
+            if let Some(firmware) = settings.firmware.as_deref() {
+                if let Err(error) = check_firmware(firmware) {
+                    problems.push(format!("The firmware {} cannot be used: {}", firmware.display(), error.message));
                 }
-                let card = validate_card(&default_card).map_err(|e| e.message)?;
-                lock = lock_card(&locks, &card).ok();
-                chosen = Some(card);
-                settings.card = chosen.clone();
             }
-            let card = chosen.unwrap();
             let session = Session::new(app.handle().clone(), qemu_paths(app.handle()), card);
-            if lock.is_none() {
-                session.log("The SD card is open in another eink-qemu window; changes may conflict.");
-            }
             let _ = settings.save(&settings_path);
             app.manage(App {
                 session,
                 settings: Mutex::new(settings),
                 settings_path,
                 locks,
-                card_lock: Mutex::new(lock),
+                grants: Mutex::default(),
+                problems: Mutex::new(problems),
             });
+            // SIGTERM and SIGINT quit like the menu does, so QEMU stops and
+            // the run directory is removed.
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    handle.exit(0);
+                });
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Dropped files become valid sources for the commands that take paths.
+            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+                if let Some(app) = window.app_handle().try_state::<App>() {
+                    app.grant(paths.iter().cloned());
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             attach,
+            note,
             settings_set,
-            firmware_choose,
+            firmware_pick,
+            firmware_use,
             firmware_read,
             start,
             stop,
             reset,
             key,
             touch,
-            card_open,
-            card_new,
-            card_copy,
+            card_pick_open,
+            card_pick_new,
+            card_pick_copy,
             sd_list,
+            sd_pick_sources,
             sd_plan_upload,
             sd_upload,
-            sd_export,
+            sd_pick_export,
             sd_mkdir,
             sd_rename,
             sd_remove,
@@ -412,8 +671,10 @@ pub fn run() {
         .expect("error while building eink-qemu");
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            let session = handle.state::<App>().session.clone();
-            tauri::async_runtime::block_on(session.shutdown());
+            if let Some(app) = handle.try_state::<App>() {
+                let session = app.session.clone();
+                tauri::async_runtime::block_on(session.shutdown());
+            }
         }
     });
 }
