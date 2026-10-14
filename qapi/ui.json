@@ -1483,6 +1483,23 @@
   'data'    : { '*grab-mod'   : 'HotKeyMod' } }
 
 ##
+# @DisplayEink:
+#
+# eink display options.
+#
+# @addr: The front end's listening socket: "unix:PATH" or
+#     "HOST:PORT".  QEMU connects to it at startup.
+#
+# @device: qdev id of the display device to stream (default: "panel",
+#     or the first graphic console when no device has that id).
+#
+# Since: 11.1
+##
+{ 'struct'  : 'DisplayEink',
+  'data'    : { 'addr' : 'str', '*device' : 'str' },
+  'if'      : 'CONFIG_PIXMAN' }
+
+##
 # @DisplayType:
 #
 # Display (user interface) type.
@@ -1517,6 +1534,9 @@
 #
 # @dbus: Start a D-Bus service for the display.  (Since 7.0)
 #
+# @eink: Stream the panel to a front end over a socket, as used by
+#     the eink-qemu desktop app.  (Since 11.1)
+#
 # Since: 2.12
 ##
 { 'enum'    : 'DisplayType',
@@ -1529,7 +1549,8 @@
     { 'name': 'curses', 'if': 'CONFIG_CURSES' },
     { 'name': 'cocoa', 'if': 'CONFIG_COCOA' },
     { 'name': 'spice-app', 'if': 'CONFIG_SPICE' },
-    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' }
+    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
+    { 'name': 'eink', 'if': 'CONFIG_PIXMAN' }
   ]
 }
 
@@ -1567,7 +1588,8 @@
       'egl-headless': { 'type': 'DisplayEGLHeadless',
                         'if': 'CONFIG_OPENGL' },
       'dbus': { 'type': 'DisplayDBus', 'if': 'CONFIG_DBUS_DISPLAY' },
-      'sdl': { 'type': 'DisplaySDL', 'if': 'CONFIG_SDL' }
+      'sdl': { 'type': 'DisplaySDL', 'if': 'CONFIG_SDL' },
+      'eink': { 'type': 'DisplayEink', 'if': 'CONFIG_PIXMAN' }
   }
 }
 

@@ -62,6 +62,7 @@ system_ss.add(files(
 ))
 system_ss.add(ui)
 system_ss.add(when: pixman, if_true: files('console-vc.c'), if_false: files('console-vc-stubs.c'))
+system_ss.add(when: pixman, if_true: files('eink.c'))
 if dbus_display
   system_ss.add(files('dbus-module.c'))
 endif
