@@ -102,7 +102,10 @@ impl QemuPaths {
 /// Locks that give this app instance exclusive use of a host file (see
 /// `reserve` in lib.rs). Held, never read.
 pub struct Reservation {
-    pub(crate) files: Vec<std::fs::File>,
+    #[allow(dead_code)]
+    pub(crate) path: std::fs::File,
+    /// The current identity's key and lock; replaced when the file is.
+    pub(crate) identity: Option<(String, std::fs::File)>,
 }
 
 /// The open SD card and the reservation that makes this instance its only user.
@@ -348,14 +351,17 @@ impl Session {
         self.card.lock().unwrap().as_ref().map(|card| card.path.clone())
     }
 
-    /// Replace the card. Only while idle; returns the previous card (and its
-    /// lock) so the caller decides when to release it.
-    pub async fn set_card(&self, card: Option<Card>) -> Result<Option<Card>, AppError> {
+    /// Make `card` the card in use, after `persist` has recorded it; both
+    /// happen under the operations lock, so no start slips in between.
+    pub async fn select_card(&self, card: Card, persist: impl FnOnce(&Path) -> Result<(), AppError>) -> Result<(), AppError> {
         let _ops = self.ops.lock().await;
         if self.info().state != "idle" {
             return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
         }
-        Ok(std::mem::replace(&mut *self.card.lock().unwrap(), card))
+        persist(&card.path)?;
+        let previous = self.card.lock().unwrap().replace(card);
+        drop(previous);
+        Ok(())
     }
 
     /// Run `action` while idle with the operations lock held, so no start or

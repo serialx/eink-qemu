@@ -152,34 +152,41 @@ fn identity_key(path: &Path) -> Option<String> {
 /// identity. Cards hold one while open; writes to a host file hold one for
 /// the whole write, so they can never land on an open card.
 fn reserve(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
-    let mut reservation = Reservation { files: Vec::new() };
-    reservation.add(locks, &format!("path:{}", card_key(path).display()), path)?;
+    let mut reservation = reserve_path(locks, path)?;
     reservation.refresh(locks, path)?;
     Ok(reservation)
 }
 
-impl Reservation {
-    fn add(&mut self, locks: &Path, key: &str, path: &Path) -> Result<(), AppError> {
-        let file = lock_file(locks, key)?;
-        match file.try_lock() {
-            Ok(()) => {
-                self.files.push(file);
-                Ok(())
-            }
-            Err(std::fs::TryLockError::WouldBlock) => Err(AppError::new(
-                "EBUSY",
-                format!("{} is an SD card open in eink-qemu.", path.display()),
-            )),
-            Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-        }
-    }
+/// Only the path lock: for a hard link to the card this instance already
+/// owns, whose identity lock it holds.
+fn reserve_path(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
+    let file = try_lock(locks, &format!("path:{}", card_key(path).display()), path)?;
+    Ok(Reservation { path: file, identity: None })
+}
 
-    /// Also lock the file's current identity (after it was created or replaced).
+fn try_lock(locks: &Path, key: &str, path: &Path) -> Result<std::fs::File, AppError> {
+    let file = lock_file(locks, key)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::new(
+            "EBUSY",
+            format!("{} is an SD card open in eink-qemu.", path.display()),
+        )),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+impl Reservation {
+    /// Lock the file's current identity (after it was created or replaced),
+    /// releasing the identity of a file it replaced.
     fn refresh(&mut self, locks: &Path, path: &Path) -> Result<(), AppError> {
-        match identity_key(path) {
-            Some(id) => self.add(locks, &id, path),
-            None => Ok(()),
+        let Some(id) = identity_key(path) else { return Ok(()) };
+        if self.identity.as_ref().is_some_and(|(held, _)| *held == id) {
+            return Ok(());
         }
+        let file = try_lock(locks, &id, path)?;
+        self.identity = Some((id, file));
+        Ok(())
     }
 }
 
@@ -380,18 +387,15 @@ fn touch(app: State<'_, App>, x: f64, y: f64, down: bool) {
 
 async fn use_card(app: &App, card: Card) -> Result<FileInfo, AppError> {
     let path = card.path.clone();
-    let previous = app.session.set_card(Some(card)).await?;
-    let previous_path = previous.as_ref().map(|card| card.path.clone());
-    if let Err(error) = app.update(|settings| {
-        settings.card = Some(path.clone());
-        Ok(())
-    }) {
-        // Keep the card the settings still name.
-        let _ = app.session.set_card(previous).await;
-        return Err(error);
-    }
-    drop(previous);
-    let _ = previous_path;
+    app.session
+        .select_card(card, |path| {
+            app.update(|settings| {
+                settings.card = Some(path.to_path_buf());
+                Ok(())
+            })
+            .map(|_| ())
+        })
+        .await?;
     file_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
 }
 
@@ -432,16 +436,17 @@ async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>) -> Result<
     let made = app
         .session
         .while_idle(|current| {
-            let ours = current.is_some_and(|card| {
-                card_key(&card.path) == card_key(&path) || (identity_key(&card.path).is_some() && identity_key(&card.path) == identity_key(&path))
-            });
+            // Only the very same path is replaced in place; a hard link to
+            // the card in use is another name, which becomes its own card.
+            let ours = current.is_some_and(|card| card_key(&card.path) == card_key(&path));
             if ours {
                 sd::create_blank(&path).map_err(AppError::from)?;
-                // The blank card is a new file: lock its identity too.
+                // The blank card is a new file: its identity replaces the old one.
                 current.unwrap().lock.lock().unwrap().refresh(&locks, &path)?;
                 Ok(None)
             } else {
-                let mut reservation = reserve(&locks, &path)?;
+                let alias = current.is_some_and(|card| identity_key(&card.path).is_some() && identity_key(&card.path) == identity_key(&path));
+                let mut reservation = if alias { reserve_path(&locks, &path)? } else { reserve(&locks, &path)? };
                 sd::create_blank(&path).map_err(AppError::from)?;
                 reservation.refresh(&locks, &path)?;
                 Ok(Some(reservation))
@@ -757,6 +762,25 @@ mod tests {
         std::fs::hard_link(&card, &alias).unwrap();
         let _owner = reserve(&locks, &card).unwrap();
         assert_eq!(reserve(&locks, &alias).err().unwrap().code, "EBUSY");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_card_releases_its_old_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let locks = dir.path().join("locks");
+        let card = dir.path().join("card.img");
+        let old_alias = dir.path().join("old.img");
+        std::fs::write(&card, vec![0u8; 1024]).unwrap();
+        std::fs::hard_link(&card, &old_alias).unwrap();
+        let mut owner = reserve(&locks, &card).unwrap();
+        // Replace the card with a new file, as a blank card does.
+        let fresh = dir.path().join("fresh.tmp");
+        std::fs::write(&fresh, vec![1u8; 1024]).unwrap();
+        std::fs::rename(&fresh, &card).unwrap();
+        owner.refresh(&locks, &card).unwrap();
+        assert!(reserve(&locks, &old_alias).is_ok(), "the replaced file is no longer the card");
+        assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
     }
 
     #[test]

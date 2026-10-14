@@ -121,7 +121,8 @@ One card is used by one app instance at a time. A reservation locks two
 files in the user's app data directory, shared by every instance whatever
 its data directory: one named after the card's path (so it also covers a
 card being created) and one after its identity (device and inode, so hard
-links share an owner). Without its reservation the card is not used at all;
+links share an owner; Windows has no stable file identity in Rust yet, so
+there only the path is locked). Without its reservation the card is not used at all;
 the app opens without a card and says why. Saving a copy, an exported file
 or a screenshot reserves its destination for the whole write, so it can
 never land on an open card, and the default card is reserved before it is

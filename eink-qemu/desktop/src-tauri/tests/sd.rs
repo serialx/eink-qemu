@@ -285,7 +285,7 @@ fn not_enough_space_changes_nothing() {
     let big = host.join("big.bin");
     let file = fs::File::create(&big).unwrap();
     file.set_len(100 * 1024 * 1024).unwrap();
-    let error = sd::plan_upload(&card.image, "/", &[big.clone()]).unwrap_err();
+    let error = sd::plan_upload(&card.image, "/", std::slice::from_ref(&big)).unwrap_err();
     assert_eq!(error.code, "ENOSPC");
     assert!(error.message.contains("Not enough space"), "{}", error.message);
     let error = sd::upload(&card.image, "/", &[big]).unwrap_err();
@@ -560,7 +560,7 @@ fn bench_wide_folder() {
         fs::write(host.join(format!("file-{n:04}.txt")), b"").unwrap();
     }
     let start = std::time::Instant::now();
-    sd::upload(&image, "/", &[host.clone()]).unwrap();
+    sd::upload(&image, "/", std::slice::from_ref(&host)).unwrap();
     let upload = start.elapsed();
     assert_eq!(sd::list(&image, "/wide").unwrap().entries.len(), 1000);
     let start = std::time::Instant::now();
@@ -842,7 +842,8 @@ fn damaged_fats_are_refused() {
     let b_chain = raw.chain(&good, b);
     let free_cluster = (2..).find(|&c| raw.get(&good, c) == 0).unwrap();
 
-    let cases: Vec<(&str, Box<dyn Fn(&mut Vec<u8>)>)> = vec![
+    type Damage<'a> = Box<dyn Fn(&mut Vec<u8>) + 'a>;
+    let cases: Vec<(&str, Damage<'_>)> = vec![
         ("copies disagree", Box::new(|image: &mut Vec<u8>| raw.set(image, 1, free_cluster, 0x0fff_ffff))),
         ("mirroring disabled", Box::new(|image: &mut Vec<u8>| image[raw.base + 40] = 0x81)),
         ("root loops", Box::new(|image: &mut Vec<u8>| raw.set_all(image, raw.root, raw.root))),
