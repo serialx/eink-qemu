@@ -3,6 +3,7 @@ contrib_plugins = [
 'cache.c',
 'cflow.c',
 'drcov.c',
+'heaptrace.c',
 'execlog.c',
 'hotblocks.c',
 'hotpages.c',

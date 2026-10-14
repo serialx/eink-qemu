@@ -121,6 +121,38 @@ Keep `firmware.elf` beside you for symbols. To find a hang: run with `-s -S`, at
 `bt`. Or `info registers -a` on the HMP socket `/tmp/eink-qemu-mon.sock` and
 `xtensa-esp32s3-elf-addr2line -pfiaC -e firmware.elf <PC>`.
 
+To watch the firmware's heaps live, run `eink-qemu/heapview.py firmware.elf` beside
+`run.sh` and open <http://127.0.0.1:8765>. It maps every ESP-IDF 5.x TLSF heap
+(DRAM, RTC, and PSRAM on the X4 Pro) block by block: fresh allocations and frees,
+requested sizes and corrupt canaries (with the default light heap poisoning),
+fragmentation and a free-memory trend. Each refresh stops the VM, copies the heap
+regions with `pmemsave` and resumes; under `-icount` the guest does not see the
+pause. It takes the monitor socket (`--monitor` for another one, e.g. drive.py's);
+`--once` prints a text summary. The ELF must match the running app.
+
+To see which code allocated each block, also load the heaptrace plugin:
+`run.sh flash.bin sd.img -plugin build/contrib/plugins/libheaptrace.so,elf=firmware.elf`.
+It hooks `poison_allocated_region()` (present with the default light heap
+poisoning), `multi_heap_free()` and `multi_heap_realloc()`, and logs every
+allocation, free and realloc with its time and call stack to
+`/tmp/eink-qemu-heaptrace.bin`, unwinding RISC-V with the ELF's `.debug_frame`
+and `.eh_frame` and Xtensa through its register windows. Hovering a block then
+shows "allocated by" and the stack; clicking keeps the full stack open. The map
+is colored by allocation site (the "allocated by" function; "Color by"
+switches back to block state). Above the heaps, tabs list live bytes by site
+(hover or click one to highlight its blocks), allocation churn by site over
+the last 10 s, and the newest events.
+
+The page replays the log too: drag the timeline (or use ←/→, shift for 1 s,
+space to play, Esc for live) to see the heaps as they were at any moment since
+QEMU started, with the churn and event tabs following the cursor; clicking an
+event jumps to it and marks its block. Replayed blocks still alive keep their
+walked size; freed ones are drawn at the TLSF minimum for their request.
+Replaying up to a snapshot reproduces its walk exactly on the X3 and X4 Pro.
+heapview symbolizes with the toolchain's `addr2line` (PATH or `~/.platformio`).
+Boot to the first X3 `[MEM]` line took 10.77 s instead of 10.57 s with the
+plugin (mean of three runs).
+
 Unmapped peripheral registers read as 0 and ignore writes (catch-all
 `esp32s3.iomem`), so a missing model usually shows up as a busy-wait on a status
 bit, an `ESP_ERR_INVALID_STATE`, or a timeout in the log. Map new devices with
