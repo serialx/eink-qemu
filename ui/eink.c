@@ -3,8 +3,9 @@
  *
  * '-display eink,addr=unix:/path' (or host:port) connects to a listening
  * front end, such as the eink-qemu desktop app, and sends the console of the
- * device with qdev id 'panel' (or device=ID) as 8-bit gray. Records are
- * little-endian: u32 type, u32 payload length, payload.
+ * device with qdev id 'panel' (or device=ID) as 8-bit gray. Without device=ID,
+ * it falls back to the first graphic console if 'panel' has none. Records
+ * are little-endian: u32 type, u32 payload length, payload.
  *
  *   HELLO   "EINK", u32 version, u32 width, u32 height   on connect
  *   RESIZE  u32 width, u32 height                        surface switch
@@ -30,6 +31,7 @@
 #include "qemu/bswap.h"
 #include "io/channel-socket.h"
 #include "system/runstate.h"
+#include "system/runstate-action.h"
 #include "ui/console.h"
 #include "ui/qemu-pixman.h"
 
@@ -82,6 +84,7 @@ static void eink_disconnect(EinkDisplay *e)
     g_byte_array_set_size(e->out, 0);
     e->sent = 0;
     if (e->window_close) {
+        shutdown_action = SHUTDOWN_ACTION_POWEROFF;
         qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
     }
 }

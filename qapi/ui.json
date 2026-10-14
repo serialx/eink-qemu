@@ -1491,7 +1491,8 @@
 #     "HOST:PORT".  QEMU connects to it at startup.
 #
 # @device: qdev id of the display device to stream (default: "panel",
-#     or the first graphic console when no device has that id).
+#     or the first graphic console when that device has no graphic
+#     console or does not exist).
 #
 # Since: 11.1
 ##
