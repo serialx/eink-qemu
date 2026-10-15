@@ -56,6 +56,17 @@ timing. Turn it off, or open the page with `?turbo=0`, for accurate timing.
 **Ghosting** is on to show real e-ink artifacts. Turn it off, or use
 `?ghosting=0`, when you need clean pixels.
 
+## Desktop app
+
+The same interface as a macOS and Windows app, running native QEMU, several
+times faster than the browser. Its SD card explorer edits card images of any
+size in place. Download `eink-qemu-desktop-*.dmg` (macOS 12.3+) or
+`eink-qemu-desktop-*-setup.exe` (Windows 10/11) from
+[Releases](../../releases). The builds are not signed: on macOS run
+`xattr -dr com.apple.quarantine /Applications/eink-qemu.app` once after
+copying the app; on Windows choose *More info*, then *Run anyway*. Building
+it yourself is covered in [eink-qemu/desktop](eink-qemu/desktop/README.md).
+
 ## Run it on your computer
 
 ### Get the emulator
@@ -222,6 +233,8 @@ requirements, benchmarks and limits are in the
 - [EINK-QEMU.md](EINK-QEMU.md): the full guide. It covers building firmware
   for the emulator, debugging a hang with gdb, every model and its options, the
   X4 Pro pin map, the WebAssembly build, and what's still missing.
+- [eink-qemu/desktop](eink-qemu/desktop/README.md): the desktop app, how
+  to build and package it, and its [design](eink-qemu/desktop/DESIGN.md).
 - [eink-qemu/sdcal](eink-qemu/sdcal/README.md): how the X3's SD, panel and CPU
   timing was measured and fitted.
 - [eink-qemu/ghosting](eink-qemu/ghosting/README.md): how the e-ink model

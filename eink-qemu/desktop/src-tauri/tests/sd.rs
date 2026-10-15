@@ -1065,11 +1065,14 @@ fn large_uploads_spill_and_round_trip() {
 fn sources_colliding_through_a_short_alias_are_refused() {
     let card = Card::new();
     let host = card.host("alias");
+    // A folder of its own: NTFS gives LongLongFileName.txt the short name
+    // LONGLO~1.TXT on the host too, so beside it this would be the same file.
+    let aliases = card.host("alias-short");
     write(&host.join("LongLongFileName.txt"), &[b'A'; 1000]);
-    write(&host.join("LONGLO~1.TXT"), &[b'B'; 1000]);
+    write(&aliases.join("LONGLO~1.TXT"), &[b'B'; 1000]);
     let before = fs::read(&card.image).unwrap();
     // LongLongFileName.txt gets the short name LONGLO~1.TXT.
-    let sources = [host.join("LongLongFileName.txt"), host.join("LONGLO~1.TXT")];
+    let sources = [host.join("LongLongFileName.txt"), aliases.join("LONGLO~1.TXT")];
     assert_eq!(code(sd::plan_upload(&card.image, "/", &sources)), "EINVAL");
     let error = upload_all(&card.image, "/", &sources).unwrap_err();
     assert_eq!(error.code, "EINVAL");
@@ -1077,7 +1080,7 @@ fn sources_colliding_through_a_short_alias_are_refused() {
     identical(&card, &before);
 
     // The other way round, the long name gets LONGLO~2.TXT: two files.
-    upload_all(&card.image, "/", &[host.join("LONGLO~1.TXT"), host.join("LongLongFileName.txt")]).unwrap();
+    upload_all(&card.image, "/", &[aliases.join("LONGLO~1.TXT"), host.join("LongLongFileName.txt")]).unwrap();
     assert_eq!(card.names("/"), ["LongLongFileName.txt", "LONGLO~1.TXT"]);
     assert_eq!(card.read("/LONGLO~1.TXT"), [b'B'; 1000]);
     assert_eq!(card.read("/LongLongFileName.txt"), [b'A'; 1000]);
@@ -1094,17 +1097,18 @@ fn a_short_alias_names_the_existing_file() {
 
     // Both names refer to the one file on the card.
     let next = card.host("next");
+    let aliases = card.host("next-short");
     write(&next.join("LongLongFileName.txt"), &[b'A'; 3000]);
-    write(&next.join("LONGLO~1.TXT"), &[b'B'; 3000]);
-    let sources = [next.join("LongLongFileName.txt"), next.join("LONGLO~1.TXT")];
+    write(&aliases.join("LONGLO~1.TXT"), &[b'B'; 3000]);
+    let sources = [next.join("LongLongFileName.txt"), aliases.join("LONGLO~1.TXT")];
     assert_eq!(code(sd::plan_upload(&card.image, "/", &sources)), "EINVAL");
     assert_eq!(code(upload_all(&card.image, "/", &sources)), "EINVAL");
     identical(&card, &before);
 
     // The alias alone replaces that file, as fat.js would.
-    let plan = sd::plan_upload(&card.image, "/", &[next.join("LONGLO~1.TXT")]).unwrap();
+    let plan = sd::plan_upload(&card.image, "/", &[aliases.join("LONGLO~1.TXT")]).unwrap();
     assert_eq!(plan.conflicts, ["/LongLongFileName.txt"]);
-    upload_all(&card.image, "/", &[next.join("LONGLO~1.TXT")]).unwrap();
+    upload_all(&card.image, "/", &[aliases.join("LONGLO~1.TXT")]).unwrap();
     assert_eq!(card.names("/"), ["LongLongFileName.txt"]);
     assert_eq!(card.read("/LongLongFileName.txt"), [b'B'; 3000]);
     parity(&card);
@@ -1121,16 +1125,19 @@ fn planned_short_names_follow_fatfs() {
             path
         })
         .collect();
+    // Short names live in a folder of their own, apart from the NTFS short
+    // names the long ones get on a Windows host.
+    let aliases = card.host("names-short");
     // The third long name takes LONGNA~3.TXT, so this one is the same file.
-    write(&host.join("LONGNA~3.TXT"), b"x");
+    write(&aliases.join("LONGNA~3.TXT"), b"x");
     let mut clash = sources.clone();
-    clash.push(host.join("LONGNA~3.TXT"));
+    clash.push(aliases.join("LONGNA~3.TXT"));
     assert_eq!(code(sd::plan_upload(&card.image, "/", &clash)), "EINVAL");
     // A fifth long name gets a checksum alias, not LONGNA~5.TXT.
     write(&host.join("LongName5.txt"), b"5");
-    write(&host.join("LONGNA~5.TXT"), b"y");
+    write(&aliases.join("LONGNA~5.TXT"), b"y");
     sources.push(host.join("LongName5.txt"));
-    sources.push(host.join("LONGNA~5.TXT"));
+    sources.push(aliases.join("LONGNA~5.TXT"));
     let plan = sd::plan_upload(&card.image, "/", &sources).unwrap();
     assert!(plan.conflicts.is_empty());
     upload_all(&card.image, "/", &sources).unwrap();
