@@ -161,6 +161,16 @@ mid-update, leaving out a heap that never walks. Before walking, the guest's
 the ELF's SHA-256, or, when the image has none, the ELF's version, name and
 build time. A failed stop or resume ends the run, as for the SD card.
 
+Without an ELF, or with one that is not the running firmware's (the snapshot
+then carries why, as `elfNote`), the list is found by a scan of internal DRAM
+(`find_list`): every word that reads as a `heap_t` (start equal to the
+handle, a sane end, caps without MALLOC_CAP_INVALID) is a candidate, and the
+list is the longest chain of candidates joined by `next` from one no other
+points to, every entry in the same layout, so stale copies (heap_caps_init's
+stack array) and an entry read four bytes off as the other layout drop out.
+The first node is kept for the run and checked by walking it each time; a
+failed walk scans again. Blocks then have no sites or stacks.
+
 At Start, when the chosen ELF is one of the flash image's apps, has the
 plugin's hooks (heap poisoning) and, on RISC-V, unwind tables, QEMU gets
 `-plugin libheaptrace,elf=…,out=<run dir>/heaptrace.bin`; otherwise the run
@@ -170,7 +180,10 @@ allocations), its symbolizer (the `addr2line` crate on the ELF's DWARF, with
 the symbol table for functions DWARF names without their scope, so names
 match binutils) and its allocation sites. `heapview.rs` keeps that state with
 the free-memory history and the last snapshot, which the tab and the window
-share for 0.8 s so two viewers do not pause the guest twice. Its commands
+share for 0.8 s so two viewers do not pause the guest twice. Each history
+point keeps its snapshot as deflated JSON (about 2 KB on the X4 Pro, so the
+15 minutes cost a few MB); `heap_snapshot_at` returns the one nearest a time
+with the one before it, which the tab diffs to light what changed. Its commands
 answer in the shape of heapview.py's endpoints, plus `heap_sites` for the
 tab, which colours blocks by site id and fetches the names it has not seen.
 The tab updates its cards in place and moves one only when the order

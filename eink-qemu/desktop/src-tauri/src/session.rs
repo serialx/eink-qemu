@@ -977,7 +977,8 @@ impl Session {
 
     /// Read the firmware's heaps (heap.rs). The guest is stopped around it,
     /// as for an SD operation; while another operation runs, EBUSY.
-    pub async fn heap_snapshot(self: &Arc<Self>, elf: &heap::Elf) -> Result<HeapRead, AppError> {
+    /// Without an ELF the heap list is found by a scan of internal DRAM.
+    pub async fn heap_snapshot(self: &Arc<Self>, elf: Option<&heap::Elf>) -> Result<HeapRead, AppError> {
         let Ok(_ops) = self.ops.try_lock() else { return Err(AppError::busy()) };
         let run = self.current().ok_or_else(|| AppError::new("EIDLE", "Start the emulator to see its heaps."))?;
         {
@@ -985,7 +986,11 @@ impl Session {
             let _ = run.paused.send(true);
         }
         let mut guest = QmpGuest { qmp: &run.qmp, path: run.dir.path().join("memory.bin") };
-        let result = heap::snapshot(&mut guest, elf, &mut *run.pools.lock().await).await;
+        let lookup = match elf {
+            Some(elf) => heap::Lookup::Elf(elf),
+            None => heap::Lookup::Scan(heap::dram(&run.machine)),
+        };
+        let result = heap::snapshot(&mut guest, &lookup, &mut *run.pools.lock().await).await;
         let _ = run.paused.send(false);
         match result {
             Ok(snapshot) => Ok(HeapRead { run: run.id, snapshot, trace: run.trace.clone() }),

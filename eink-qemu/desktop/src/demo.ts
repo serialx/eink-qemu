@@ -2,6 +2,8 @@
    SD listing, a console log, a running X4 Pro with a drawn page and heaps
    that change with every snapshot. */
 import type { Heap, HeapSite, HeapSnapshot, Setup } from './api';
+/** Whether the mock firmware card has an ELF: without one, snapshots are unlabelled. */
+let demoElf = true;
 import { attachHeap, heapSession, setElf } from './heap';
 import { attachSetup, paintSetup } from './setup';
 const $ = (id: string) => document.getElementById(id)!;
@@ -42,8 +44,11 @@ function renderSd() {
   $('sd-path').replaceChildren(root);
   $('sd-info').textContent = 'FAT32 · 61.2 MiB free of 63.9 MiB';
   $('sd-meter').style.width = '4%';
-  $('sd-save').textContent = '~/Library/Application Support/eink-qemu/sd.img';
-  $('sd-save').title = '~/Library/Application Support/eink-qemu/sd.img';
+  const card = '/Users/me/Library/Application Support/net.serialx.eink-qemu/cards/', name = 'reading-test.img';
+  $('sd-save').querySelector('.sd-dir')!.textContent = card;
+  $('sd-save').querySelector('.sd-name')!.textContent = name;
+  $('sd-save').title = card + name;
+  $('sd-reveal').hidden = false;
   const rows = $('sd-rows');
   rows.replaceChildren();
   for (const entry of entries) {
@@ -245,9 +250,23 @@ export function demo({ appendConsole }: { appendConsole: (text: string) => void 
     mockHeap('RTC', ['32BIT', '8BIT', 'INTERNAL', 'DEFAULT', 'RTCRAM'], 0x600fe000, 0x1e00, 24, 3),
     mockHeap('PSRAM', ['32BIT', '8BIT', 'SPIRAM', 'DEFAULT'], 0x3d000000, 0x800000, 9000, 11),
   ];
+  // Every snapshot is kept, as Rust keeps one per trend point.
+  const kept: HeapSnapshot[] = [];
   attachHeap({
-    snapshot: async (): Promise<HeapSnapshot> => ({ time: Date.now() / 1000, heaps: heaps.map((h) => h()), missing: 0, took: 4,
-      traced: true, traceNote: null }),
+    snapshot: async (): Promise<HeapSnapshot> => {
+      const snap: HeapSnapshot = { time: Date.now() / 1000, heaps: heaps.map((h) => h()), missing: 0, took: 4,
+        traced: demoElf, traceNote: null, elf: demoElf ? 'firmware.elf' : null, elfNote: null };
+      if (!demoElf) for (const h of snap.heaps) { delete h.sites; delete h.stk; }
+      kept.push(snap);
+      if (kept.length > 900) kept.shift();
+      return snap;
+    },
+    at: async (time: number) => {
+      if (!kept.length) return null;
+      let i = 0;
+      kept.forEach((k, j) => { if (Math.abs(k.time - time) < Math.abs(kept[i].time - time)) i = j; });
+      return { snapshot: kept[i], prev: kept[i - 1] ?? null };
+    },
     stack: async (id: number) => id >= 0 && id < sites.length ? mockStack(id) : null,
     sites: async (from: number) => sites.slice(from),
     history: async () => [],
@@ -278,7 +297,7 @@ function demoSetup() {
       { path: builds.default.path, name: 'firmware.bin', parent: 'default', device: 'x3', elf: true },
     ],
   };
-  const paint = (next: Setup) => { setup = next; setElf(next.elf); paintSetup(setup, true); };
+  const paint = (next: Setup) => { setup = next; demoElf = !!next.elf; setElf(next.elf); paintSetup(setup, true); };
   const settings = (patch: Partial<Setup['settings']>) => paint({ ...setup, settings: { ...setup.settings, ...patch } });
   attachSetup({
     choose: () => {},

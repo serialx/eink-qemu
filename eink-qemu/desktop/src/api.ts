@@ -74,7 +74,13 @@ export interface HeapSnapshot {
   traceNote?: string | null;
   /** Milliseconds the read took, the emulator paused for most of it. */
   took?: number;
+  /** The ELF's name; null when the heaps were found without one. */
+  elf?: string | null;
+  /** Why the chosen ELF was not used (not the running firmware's, unreadable). */
+  elfNote?: string | null;
 }
+/** A kept snapshot from the run's history and the one before it. */
+export interface HeapPast { snapshot: HeapSnapshot; prev: HeapSnapshot | null }
 /** One free-memory history point: time in seconds, and per heap (start in
     hex, no prefix) its free bytes, largest free block and lowest free. */
 export interface HeapHistoryPoint { t: number; h: Record<string, [number, number, number]> }
@@ -126,6 +132,7 @@ export const api = {
   pickOpenCard: () => call<FileInfo | null>('card_pick_open'),
   pickNewCard: () => call<FileInfo | null>('card_pick_new'),
   pickCopyCard: () => call<string | null>('card_pick_copy'),
+  revealCard: () => call<void>('card_reveal'),
   sdList: (path: string) => call<SdListing>('sd_list', { path }),
   sdPickSources: () => call<string[]>('sd_pick_sources'),
   sdPlanUpload: (dir: string, sources: string[]) => call<UploadPlan>('sd_plan_upload', { dir, sources }),
@@ -138,6 +145,7 @@ export const api = {
   heapUseElf: (path: string) => call<FileInfo>('heap_use_elf', { path }),
   heapForgetElf: () => call<void>('heap_forget_elf'),
   heapSnapshot: () => call<HeapSnapshot>('heap_snapshot'),
+  heapSnapshotAt: (time: number) => call<HeapPast | null>('heap_snapshot_at', { time }),
   heapStack: (id: number) => call<HeapStack | null>('heap_stack', { id }),
   heapSites: (from: number) => call<HeapSite[]>('heap_sites', { from }),
   heapHistory: () => call<HeapHistoryPoint[]>('heap_history'),

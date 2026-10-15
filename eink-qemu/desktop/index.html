@@ -162,7 +162,10 @@
       <div class="sd-head">
         <div class="sd-title"><h2>SD card</h2><span id="sd-info" role="status"></span></div>
         <div class="meter" aria-hidden="true"><span id="sd-meter"></span></div>
-        <p id="sd-save" role="status"></p>
+        <div class="sd-file">
+          <p id="sd-save" role="status"><span class="sd-dir"></span><span class="sd-name"></span></p>
+          <button id="sd-reveal" class="icon-button small" type="button" aria-label="Show in Finder" title="Show in Finder" hidden><svg class="icon"><use href="#i-folder"/></svg></button>
+        </div>
       </div>
       <div class="sd-tools">
         <button id="sd-upload" disabled class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
@@ -243,8 +246,11 @@
           <p id="heap-message-text"></p>
           <button id="heap-message-action" class="button tint" type="button" hidden></button>
         </div>
-        <div id="heap-live" class="heap-live" hidden><span class="heap-dot" aria-hidden="true"></span><span id="heap-state"></span></div>
-        <p id="heap-note" class="heap-note"></p>
+        <div id="heap-live" class="heap-live" hidden>
+          <span class="heap-dot" aria-hidden="true"></span><span id="heap-state"></span>
+          <button id="heap-golive" class="small tint" type="button" title="Back to the live heaps (Esc)" hidden><svg class="icon small"><use href="#i-play"/></svg>Live</button>
+        </div>
+        <p id="heap-note" class="heap-note" hidden><span id="heap-note-text"></span> <button id="heap-note-action" class="link" type="button" hidden></button></p>
         <div id="heap-bar" class="heap-bar" hidden>
           <p id="heap-summary" class="heap-summary num"></p>
           <div class="zoom" role="group" aria-label="Map scale">
@@ -259,7 +265,7 @@
             <span><i class="line free"></i>free</span><span><i class="line largest"></i>largest block</span><span><i class="line low"></i>lowest since boot</span>
             <span id="heap-trend-span" class="heap-trend-span"></span>
           </div>
-          <canvas id="heap-trend-canvas" aria-label="Internal RAM free over time"></canvas>
+          <canvas id="heap-trend-canvas" tabindex="0" aria-label="Internal RAM free over time. Click, drag or use the arrow keys to see the heaps at an earlier moment; Escape returns to live."></canvas>
         </div>
         <div id="heap-list"></div>
         <div id="heap-legend" class="heap-legend" hidden>

@@ -34,7 +34,12 @@ button.file-chip:hover:enabled { background: var(--surface-2); }
 #screen:not(:has(canvas)) { width: min(380px, calc(100vw - 72px)); aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; }
 
 /* The card is a file on disk: show its path on one line, full path on hover. */
-#sd-save { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-file { display: flex; align-items: center; gap: 4px; min-width: 0; }
+#sd-save { flex: 1; min-width: 0; display: flex; white-space: nowrap; }
+#sd-save .sd-dir { min-width: 1.5em; overflow: hidden; text-overflow: ellipsis; }
+#sd-save .sd-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#sd-reveal { width: 24px; height: 24px; margin: -4px -4px -4px 0; border-color: transparent; }
+#sd-reveal .icon { width: 14px; height: 14px; }
 
 /* The card button's menu: the page's tip surface. */
 .card-choice { position: relative; display: inline-flex; }
@@ -325,3 +330,14 @@ button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint)
 .option:has(.toggle:hover) .tip, .option:has(.toggle:focus-visible) .tip { visibility: visible; opacity: 1; }
 .option:has(.toggle:hover) .tip { transition-delay: .35s; }
 .tip-state { font-weight: 500; color: var(--faint); }
+
+/* Heap tab: looking back at a kept snapshot, and the note without an ELF. */
+.heap-live.past .heap-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-tint); }
+.heap-live.past #heap-state { color: var(--text-2); font-weight: 500; }
+#heap-golive { margin-left: auto; padding: 2px 10px; font-size: 12px; gap: 5px; }
+#heap-golive .icon.small { width: 9px; height: 9px; }
+.heap-note[hidden] { display: none; }
+button.link { padding: 0; border: 0; background: none; color: var(--brand-text); font: inherit; font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+button.link:hover:enabled { background: none; }
+#heap-trend-canvas { cursor: ew-resize; touch-action: none; }
+#heap-trend-canvas:focus-visible { outline: 2px solid var(--brand-text); outline-offset: 2px; border-radius: 4px; }

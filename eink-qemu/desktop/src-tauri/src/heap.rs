@@ -7,7 +7,8 @@
 //!
 //! The ELF must be the running app's: the guest's `esp_app_desc` carries the
 //! SHA-256 of the ELF it was built from (or, without one, its version, name
-//! and build time, which are compared instead).
+//! and build time, which are compared instead). Without an ELF the heap list
+//! is found by scanning internal DRAM for its entries (`find_list`).
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -218,8 +219,34 @@ pub struct Snapshot {
     pub missing: usize,
 }
 
-/// Pool start of each heap by (region start, TLSF control address).
-pub type Pools = HashMap<(u32, u32), u32>;
+/// What a run's snapshots learned: each heap's pool start by (region start,
+/// TLSF control address), and without an ELF where the heap list is.
+#[derive(Default)]
+pub struct Pools {
+    starts: HashMap<(u32, u32), u32>,
+    list: Option<u32>,
+}
+
+impl Pools {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Where the heap list comes from: the ELF's `registered_heaps`, or a scan
+/// of this internal DRAM range.
+pub enum Lookup<'a> {
+    Elf(&'a Elf),
+    Scan(std::ops::Range<u32>),
+}
+
+/// Internal DRAM, where ESP-IDF keeps the heap list, by machine.
+pub fn dram(machine: &str) -> std::ops::Range<u32> {
+    match machine {
+        "x3" | "x4" => 0x3FC8_0000..0x3FCE_0000,
+        _ => 0x3FC8_8000..0x3FD0_0000,
+    }
+}
 
 struct HeapEntry {
     caps: u32,
@@ -288,24 +315,60 @@ fn find_pool(mem: &[u8], base: u32, end: u32, heap_data: u32) -> Option<(u32, Ve
     })
 }
 
-/// registered_heaps is an SLIST of heap_t; CONFIG_HEAP_TASK_TRACKING
-/// prepends a name pointer. multi_heap_register() puts the handle at the
-/// region start, which tells the two layouts apart.
-async fn heap_list<G: Guest>(guest: &mut G, head: u32) -> Result<Vec<HeapEntry>, String> {
-    let first = u32_at(&guest.read(head, 4).await?, 0).unwrap_or(0);
+/// A heap_t at `at`, with the offset of its fields: registered_heaps is an
+/// SLIST of heap_t; CONFIG_HEAP_TASK_TRACKING prepends a name pointer.
+/// multi_heap_register() puts the handle at the region start, which tells
+/// the two layouts apart. Returns the entry, the next node and the layout.
+fn entry_at(raw: &[u8]) -> Option<(HeapEntry, u32, usize)> {
+    [0, 4].into_iter().find_map(|skip| {
+        let word = |i: usize| u32_at(raw, skip + 4 * i).unwrap_or(0);
+        let (start, end, handle) = (word(3), word(4), word(7));
+        (start > 0 && start == handle && start < end && end - start <= MAX_REGION)
+            .then(|| (HeapEntry { caps: word(0) | word(1) | word(2), start, end, handle }, word(8), skip))
+    })
+}
+
+/// Without an ELF: the first node of the heap list in `mem` (read from
+/// `base`). heap_caps_init() copies its heap_t array into the first
+/// internal heap and links it into registered_heaps; the longest chain of
+/// entries joined by `next`, starting at one no other entry points to, is
+/// the list. Stale copies (the init's stack array) do not chain, and every
+/// entry of a chain has the same layout, which rules out an entry read four
+/// bytes off as the other layout.
+pub fn find_list(mem: &[u8], base: u32) -> Option<u32> {
+    let mut nodes: HashMap<u32, (u32, usize)> = HashMap::new();
+    for at in (0..mem.len().saturating_sub(40)).step_by(4) {
+        let Some((entry, next, skip)) = entry_at(&mem[at..at + 40]) else { continue };
+        // MALLOC_CAP_INVALID (bit 31) never marks a registered heap.
+        let caps_ok = entry.caps != 0 && entry.caps >> 31 == 0 && entry.start % 4 == 0;
+        if caps_ok && next % 4 == 0 {
+            nodes.insert(base + at as u32, (next, skip));
+        }
+    }
+    let pointed: std::collections::HashSet<u32> = nodes.values().map(|&(next, _)| next).collect();
+    let chain = |first: u32| {
+        let layout = nodes[&first].1;
+        let (mut n, mut len) = (first, 0);
+        while let Some(&(next, skip)) = nodes.get(&n) {
+            len += 1;
+            if len > MAX_HEAPS || skip != layout { return 0; }
+            n = next;
+        }
+        if n == 0 { len } else { 0 }
+    };
+    let mut heads: Vec<u32> = nodes.keys().copied().filter(|n| !pointed.contains(n)).collect();
+    heads.sort_unstable();
+    heads.into_iter().map(|n| (chain(n), n)).filter(|&(len, _)| len > 0).max_by_key(|&(len, n)| (len, std::cmp::Reverse(n))).map(|(_, n)| n)
+}
+
+async fn heap_list<G: Guest>(guest: &mut G, first: u32) -> Result<Vec<HeapEntry>, String> {
     let (mut heaps, mut node) = (Vec::new(), first);
     while node != 0 {
         if heaps.len() == MAX_HEAPS {
             return Err("The heap list does not end: is the ELF the running firmware's?".into());
         }
         let raw = guest.read(node, 40).await?;
-        let entry = [0, 4].into_iter().find_map(|skip| {
-            let word = |i: usize| u32_at(&raw, skip + 4 * i).unwrap_or(0);
-            let (start, end, handle) = (word(3), word(4), word(7));
-            (start > 0 && start == handle && start < end && end - start <= MAX_REGION)
-                .then(|| (HeapEntry { caps: word(0) | word(1) | word(2), start, end, handle }, word(8)))
-        });
-        let Some((entry, next)) = entry else {
+        let Some((entry, next, _)) = entry_at(&raw) else {
             return Err(format!("The heap entry at 0x{node:08x} does not look like ESP-IDF 5.x."));
         };
         heaps.push(entry);
@@ -321,14 +384,14 @@ async fn read_heap<G: Guest>(guest: &mut G, h: &HeapEntry, pools: &mut Pools) ->
     let (info_free, info_min_free, heap_data) = (info(1), info(2), info(4));
     // The pool never moves, so once found a failed walk means the guest
     // stopped mid-update; rescanning then could lock onto a later block.
-    let found = match pools.get(&(start, heap_data)) {
+    let found = match pools.starts.get(&(start, heap_data)) {
         Some(&pool) => walk_pool(&mem, start, end, pool).map(|blocks| (pool, blocks)),
         None => find_pool(&mem, start, end, heap_data),
     };
     let Some((pool, walked)) = found.filter(|(_, blocks)| !blocks.is_empty()) else {
         return Ok(None);
     };
-    pools.insert((start, heap_data), pool);
+    pools.starts.insert((start, heap_data), pool);
     let word = |addr: u32| u32_at(&mem, (addr - start) as usize);
     let mut heap = Heap {
         name: heap_label(start, h.caps),
@@ -447,17 +510,39 @@ async fn check_app<G: Guest>(guest: &mut G, elf: &Elf) -> Result<bool, HeapError
     }
 }
 
+/// The heap list without an ELF: where it was found before, else a scan.
+async fn scan_list<G: Guest>(guest: &mut G, range: &std::ops::Range<u32>, pools: &mut Pools) -> Result<Vec<HeapEntry>, String> {
+    if let Some(first) = pools.list {
+        if let Ok(list) = heap_list(guest, first).await {
+            return Ok(list);
+        }
+    }
+    let mem = guest.read(range.start, range.end - range.start).await?;
+    pools.list = find_list(&mem, range.start);
+    match pools.list {
+        Some(first) => heap_list(guest, first).await,
+        None => Ok(Vec::new()), // none registered yet
+    }
+}
+
 /// Stop, read and walk every heap, resume. A heap caught mid-update is
 /// retried after letting the guest run a little, then left out.
-pub async fn snapshot<G: Guest>(guest: &mut G, elf: &Elf, pools: &mut Pools) -> Result<Snapshot, HeapError> {
+pub async fn snapshot<G: Guest>(guest: &mut G, lookup: &Lookup<'_>, pools: &mut Pools) -> Result<Snapshot, HeapError> {
     let mut attempt = 0;
     loop {
         guest.stop().await.map_err(HeapError::Guest)?;
         let read = async {
-            if !check_app(guest, elf).await? {
-                return Ok(Vec::new());
+            let list = match lookup {
+                Lookup::Elf(elf) => {
+                    if !check_app(guest, elf).await? {
+                        return Ok(Vec::new());
+                    }
+                    let first = u32_at(&guest.read(elf.registered_heaps, 4).await.map_err(HeapError::Read)?, 0).unwrap_or(0);
+                    heap_list(guest, first).await
+                }
+                Lookup::Scan(range) => scan_list(guest, range, pools).await,
             }
-            let list = heap_list(guest, elf.registered_heaps).await.map_err(HeapError::Read)?;
+            .map_err(HeapError::Read)?;
             let mut heaps = Vec::with_capacity(list.len());
             for entry in &list {
                 heaps.push(read_heap(guest, entry, pools).await.map_err(HeapError::Read)?);
@@ -541,7 +626,7 @@ mod tests {
             b += size + 4;
         }
         put(&mut region, b + 4, &[prev_free << 1]); // sentinel
-        let mut node: Vec<u8> = [0x1802, 0, 0, START, END, 0xB33F_FFFF, 0, START, 0].iter().flat_map(|v: &u32| v.to_le_bytes()).collect();
+        let mut node: Vec<u8> = [0x1802, 0x10_0000, 0, START, END, 0xB33F_FFFF, 0, START, 0].iter().flat_map(|v: &u32| v.to_le_bytes()).collect();
         if task_tracking {
             node.splice(0..0, 0x3C00_0000u32.to_le_bytes());
         }
@@ -573,7 +658,7 @@ mod tests {
     #[test]
     fn walks_a_heap() {
         let mut guest = build(&[(64, false, Some(40)), (128, true, None), (32, false, Some(16)), (16, false, None)], false);
-        let snap = run(snapshot(&mut guest, &elf(), &mut Pools::new())).unwrap();
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
         let [h] = &snap.heaps[..] else { panic!("{snap:?}") };
         assert_eq!(h.name, "DRAM");
         assert_eq!(h.caps, ["32BIT", "INTERNAL", "DEFAULT"]);
@@ -593,7 +678,7 @@ mod tests {
     fn flags_a_corrupt_tail_canary() {
         let mut guest = build(&[(64, false, Some(40)), (64, false, Some(8))], false);
         guest.mem.get_mut(&START).unwrap()[(20 + CONTROL - 4 + 16 + 40) as usize] ^= 0xFF;
-        let snap = run(snapshot(&mut guest, &elf(), &mut Pools::new())).unwrap();
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
         assert_eq!(snap.heaps[0].corrupt, 1);
         assert_ne!(snap.heaps[0].blocks[2] & BLOCK_CORRUPT, 0);
     }
@@ -601,20 +686,20 @@ mod tests {
     #[test]
     fn reads_the_task_tracking_layout() {
         let mut guest = build(&[(64, false, None)], true);
-        assert_eq!(run(snapshot(&mut guest, &elf(), &mut Pools::new())).unwrap().heaps.len(), 1);
+        assert_eq!(run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap().heaps.len(), 1);
     }
 
     #[test]
     fn retries_a_torn_heap_then_leaves_it_out() {
         let mut guest = build(&[(64, false, None), (64, true, None)], false);
         let mut pools = Pools::new();
-        assert_eq!(run(snapshot(&mut guest, &elf(), &mut pools)).unwrap().heaps.len(), 1); // learns the pool start
+        assert_eq!(run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut pools)).unwrap().heaps.len(), 1); // learns the pool start
         // Clear the prev-free bit of the block after the free one, as a
         // half-finished free would.
         let next = (20 + CONTROL - 4 + 68 + 68 + 4) as usize;
         guest.mem.get_mut(&START).unwrap()[next] &= !2;
         guest.log.clear();
-        let snap = run(snapshot(&mut guest, &elf(), &mut pools)).unwrap();
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut pools)).unwrap();
         assert!(snap.heaps.is_empty());
         assert_eq!(snap.missing, 1);
         assert_eq!(guest.log.len(), 2 * ATTEMPTS as usize);
@@ -629,26 +714,57 @@ mod tests {
         let mut guest = build(&[(64, false, None)], false);
         // Flash not mapped yet: no heaps, no error.
         guest.mem.insert(DESC, vec![0; APP_DESC_SIZE]);
-        assert!(run(snapshot(&mut guest, &elf, &mut Pools::new())).unwrap().heaps.is_empty());
+        assert!(run(snapshot(&mut guest, &Lookup::Elf(&elf), &mut Pools::new())).unwrap().heaps.is_empty());
         // The image's ELF hash decides.
         guest.mem.insert(DESC, desc("1.0", [7; 32]));
-        assert_eq!(run(snapshot(&mut guest, &elf, &mut Pools::new())).unwrap().heaps.len(), 1);
+        assert_eq!(run(snapshot(&mut guest, &Lookup::Elf(&elf), &mut Pools::new())).unwrap().heaps.len(), 1);
         guest.mem.insert(DESC, desc("1.0", [8; 32]));
-        let Err(HeapError::Mismatch(message)) = run(snapshot(&mut guest, &elf, &mut Pools::new())) else { panic!() };
+        let Err(HeapError::Mismatch(message)) = run(snapshot(&mut guest, &Lookup::Elf(&elf), &mut Pools::new())) else { panic!() };
         assert!(message.starts_with("app.elf is not the running firmware's ELF. It is reader 1.0"), "{message}");
         // Without a hash, the descriptor's text.
         guest.mem.insert(DESC, desc("1.0", [0; 32]));
-        assert_eq!(run(snapshot(&mut guest, &elf, &mut Pools::new())).unwrap().heaps.len(), 1);
+        assert_eq!(run(snapshot(&mut guest, &Lookup::Elf(&elf), &mut Pools::new())).unwrap().heaps.len(), 1);
         guest.mem.insert(DESC, desc("1.1", [0; 32]));
-        assert!(matches!(run(snapshot(&mut guest, &elf, &mut Pools::new())), Err(HeapError::Mismatch(_))));
+        assert!(matches!(run(snapshot(&mut guest, &Lookup::Elf(&elf), &mut Pools::new())), Err(HeapError::Mismatch(_))));
         assert_eq!(guest.log.last(), Some(&"cont"));
+    }
+
+    #[test]
+    fn finds_the_heap_list_without_an_elf() {
+        const DRAM: u32 = 0x3FC8_0000;
+        for task_tracking in [false, true] {
+            let mut guest = build(&[(64, false, None), (32, false, None)], task_tracking);
+            let node = guest.mem.remove(&NODE).unwrap();
+            let mut dram = vec![0u8; 0x1000];
+            // A stale copy that does not chain, then two linked entries, the
+            // second a copy of the first ending the list.
+            let at = |off: usize, dram: &mut Vec<u8>, next: u32| {
+                dram[off..off + 40].copy_from_slice(&node);
+                let n = if task_tracking { 36 } else { 32 };
+                dram[off + n..off + n + 4].copy_from_slice(&next.to_le_bytes());
+            };
+            at(0x100, &mut dram, 0x1234_5678);
+            at(0x800, &mut dram, DRAM + 0x900);
+            at(0x900, &mut dram, 0);
+            guest.mem.insert(DRAM, dram);
+            assert_eq!(find_list(&guest.mem[&DRAM], DRAM), Some(DRAM + 0x800));
+            let mut pools = Pools::new();
+            let snap = run(snapshot(&mut guest, &Lookup::Scan(DRAM..DRAM + 0x1000), &mut pools)).unwrap();
+            assert_eq!(snap.heaps.len(), 2, "task tracking {task_tracking}");
+            assert_eq!(snap.heaps[0].used, 64 + 32);
+            assert_eq!(pools.list, Some(DRAM + 0x800));
+        }
+        // Before the heaps are registered: none, and no error.
+        let mut guest = build(&[(64, false, None)], false);
+        guest.mem.insert(0x3FC8_0000, vec![0u8; 0x1000]);
+        assert!(run(snapshot(&mut guest, &Lookup::Scan(0x3FC8_0000..0x3FC8_1000), &mut Pools::new())).unwrap().heaps.is_empty());
     }
 
     #[test]
     fn rejects_a_list_that_is_not_a_heap_list() {
         let mut guest = build(&[(64, false, None)], false);
         guest.mem.get_mut(&NODE).unwrap()[12..16].copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(run(snapshot(&mut guest, &elf(), &mut Pools::new())), Err(HeapError::Read(_))));
+        assert!(matches!(run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())), Err(HeapError::Read(_))));
         assert_eq!(guest.log, ["stop", "cont"]);
     }
 

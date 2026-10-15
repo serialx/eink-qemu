@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request, Response};
 use tauri::{DragDropEvent, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
 
 const FLASH_SIZE: usize = 0x100_0000;
@@ -740,6 +741,14 @@ async fn screenshot_save(handle: tauri::AppHandle, app: State<'_, App>, request:
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
+/// Show the open SD card image in Finder, Explorer or the file manager.
+#[tauri::command]
+fn card_reveal(handle: tauri::AppHandle, app: State<'_, App>) -> Result<(), AppError> {
+    let path = app.session.card_path().ok_or_else(|| AppError::new("ENOENT", "No SD card is open."))?;
+    handle.opener().reveal_item_in_dir(&path)
+        .map_err(|e| AppError::new("EIO", format!("Could not show {}: {e}", path.display())))
+}
+
 /// Make `path` the heap view's ELF once it reads as one.
 async fn use_elf(app: &App, path: PathBuf) -> Result<FileInfo, AppError> {
     let elf = heapview::read_elf(path.clone()).await?;
@@ -787,12 +796,17 @@ async fn heap_forget_elf(app: State<'_, App>) -> Result<(), AppError> {
 }
 
 /// The running firmware's heaps, as heapview.py's /snapshot. The ELF is
-/// read again when it was rebuilt.
+/// read again when it was rebuilt; without one the heaps are still read.
 #[tauri::command]
 async fn heap_snapshot(app: State<'_, App>) -> Result<serde_json::Value, AppError> {
-    let path = app.settings.lock().unwrap().elf.clone()
-        .ok_or_else(|| AppError::new("ENOELF", "Load the firmware's ELF to see its heaps."))?;
-    app.heap.lock().await.snapshot(&app.session, &path).await
+    let path = app.settings.lock().unwrap().elf.clone();
+    app.heap.lock().await.snapshot(&app.session, path.as_deref()).await
+}
+
+/// The kept snapshot nearest `time` (seconds) and the one before it.
+#[tauri::command]
+async fn heap_snapshot_at(app: State<'_, App>, time: f64) -> Result<serde_json::Value, AppError> {
+    Ok(app.heap.lock().await.snapshot_at(&app.session, time))
 }
 
 /// The current run's free-memory history, as heapview.py's /history.
@@ -1001,6 +1015,7 @@ pub fn run() {
             card_pick_open,
             card_pick_new,
             card_pick_copy,
+            card_reveal,
             sd_list,
             sd_pick_sources,
             sd_plan_upload,
@@ -1014,6 +1029,7 @@ pub fn run() {
             heap_use_elf,
             heap_forget_elf,
             heap_snapshot,
+            heap_snapshot_at,
             heap_history,
             heap_events,
             heap_stack,

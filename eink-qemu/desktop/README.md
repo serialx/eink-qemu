@@ -64,7 +64,9 @@ edits the image in Rust with the `fatfs` crate. While the emulator runs, each
 operation pauses the guest; a change resets the device so the firmware mounts
 the card again. Uploads take files from the native dialog, or files and
 folders dropped on the panel; hidden entries and symbolic links in folders
-are skipped. A card is used by one app instance at a time; an instance that
+are skipped. The card's path keeps its file name in view, and the folder
+button beside it shows the image in Finder (File Explorer, the file manager).
+A card is used by one app instance at a time; an instance that
 cannot lock its card opens without one and says so. A saved card that is
 missing or invalid, a saved firmware file that is missing, and a settings
 file that cannot be read are reported when the window opens; firmware
@@ -78,14 +80,18 @@ new allocations and frees highlighted, requested sizes and corrupt canaries
 folds its map to a single bar; empty heaps (the C3's retention and boot-ROM
 heaps, until the main one fills) start folded. Above the maps, a trend shows
 internal RAM's free memory, lowest point since boot and largest free block
-for the run. Clicking a block opens its details under its map: addresses,
+for the run. Clicking or dragging on the trend (or the arrow keys on it)
+looks back: the maps show the heaps at that moment, lit where they changed
+since the second before, until Live, Escape or the trend's last point. Clicking a block opens its details under its map: addresses,
 sizes, age and, with allocation stacks, the whole call stack, which can be
-copied. It needs the ELF the
+copied. The maps work without an ELF: the heap list is then found by
+scanning internal DRAM, and blocks are not coloured by site. The ELF the
 firmware was built from, found beside the firmware, chosen in the firmware
-card or the tab, or dropped on the window, and remembered in `settings.json`; a rebuilt ELF is read again. The ELF must be
+card or the tab, or dropped on the window, is remembered in `settings.json`;
+a rebuilt ELF is read again. The ELF must be
 the running app's: the image records its ELF's SHA-256 (PlatformIO and
-ESP-IDF builds both write it), and a different ELF is refused with both
-builds named. While the tab or the heap window is open, each second Rust
+ESP-IDF builds both write it), and with a different ELF the tab names both
+builds and shows the heaps without it. While the tab or the heap window is open, each second Rust
 stops the guest, copies the heap regions through QMP `pmemsave` and resumes;
 under `-icount` the guest does not see the pause, and the tab shows how long
 the read took. "Largest block" is the TLSF block size, slightly above the

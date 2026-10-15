@@ -520,9 +520,13 @@ async function chooseFirmware() {
 
 function paintCard() {
   const text = card ? card.path : 'No SD card is open: use the card menu.';
-  $('sd-save').textContent = text;
+  // The folder gives way to the file name when the path is too long.
+  const cut = card ? Math.max(card.path.lastIndexOf('/'), card.path.lastIndexOf('\\')) + 1 : 0;
+  $('sd-save').querySelector('.sd-dir')!.textContent = card ? card.path.slice(0, cut) : '';
+  $('sd-save').querySelector('.sd-name')!.textContent = card ? card.path.slice(cut) : text;
   $('sd-save').title = text;
   $('sd-save').classList.toggle('error', !card);
+  $('sd-reveal').hidden = !card;
 }
 
 async function cardMenu() {
@@ -861,7 +865,7 @@ export async function boot() {
   card = state.card;
   if (state.session.seq > session.seq) session = state.session;
   attachHeap({
-    snapshot: api.heapSnapshot, stack: api.heapStack, sites: api.heapSites, history: api.heapHistory,
+    snapshot: api.heapSnapshot, at: api.heapSnapshotAt, stack: api.heapStack, sites: api.heapSites, history: api.heapHistory,
     pickElf: api.heapPickElf, openWindow: api.heapWindow, elfChosen: () => void refreshSetup(),
   }, state.elf);
   heapSession(session.state, session.run);
@@ -945,6 +949,10 @@ export async function boot() {
 
   button('sd').addEventListener('click', () => void cardMenu());
   button('download').addEventListener('click', () => void copyCard());
+  const reveal = platform === 'macos' ? 'Show in Finder' : platform === 'windows' ? 'Show in File Explorer' : 'Show in folder';
+  button('sd-reveal').setAttribute('aria-label', reveal);
+  button('sd-reveal').title = reveal;
+  button('sd-reveal').addEventListener('click', () => void api.revealCard().catch((error) => fail(errorMessage(error))));
   button('sd-refresh').addEventListener('click', () => void sdRun(() => sdRefresh()));
   button('sd-upload').addEventListener('click', () => void sdRun(async () => {
     await sdUpload(await api.sdPickSources());

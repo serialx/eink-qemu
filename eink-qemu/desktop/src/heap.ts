@@ -2,12 +2,16 @@
    while the Heap tab is open. A free-memory trend for internal RAM, then each
    heap as a map wrapped into rows of a chosen size, every block drawn to
    scale and coloured by the function that allocated it; a card folds to a
-   single bar, and a clicked block opens its details and call stack. */
-import type { FileInfo, Heap, HeapFrame, HeapHistoryPoint, HeapSite, HeapSnapshot, HeapStack } from './api';
+   single bar, and a clicked block opens its details and call stack. Without
+   the ELF the maps are drawn alone. Scrubbing the trend shows the heaps at
+   that moment (Rust keeps a snapshot per trend point) until Live. */
+import type { FileInfo, Heap, HeapFrame, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './api';
 
 /** Where snapshots and the ELF come from: Rust, or the demo's mock. */
 export interface HeapSource {
   snapshot(): Promise<HeapSnapshot>;
+  /** The kept snapshot nearest `time` (seconds) and the one before it. */
+  at(time: number): Promise<HeapPast | null>;
   history(): Promise<HeapHistoryPoint[]>;
   stack(id: number): Promise<HeapStack | null>;
   sites(from: number): Promise<HeapSite[]>;
@@ -54,6 +58,8 @@ interface View {
   born: Map<string, number>;
   freed: { off: number; len: number; t: number }[];
   first: boolean;
+  /** Looking back: what changed since the kept snapshot before, drawn steady. */
+  mark: { fresh: Set<string>; freed: { off: number; len: number }[] } | null;
   /** The map as last drawn: bytes per row, its width in css px, folded or not. */
   bpr: number;
   width: number;
@@ -64,6 +70,8 @@ interface View {
 interface Selected {
   start: number; off: number; len: number; fl: number; req: number;
   site: number; stack: number; born: number; freedAt: number;
+  /** Looking back: the block is not there at the moment shown. */
+  absent?: boolean;
 }
 
 let source: HeapSource | null = null;
@@ -72,6 +80,12 @@ let running = false, run = -1;
 let visible = false, paused = false, inflight = false;
 let timer = 0, frame = 0;
 let snap: HeapSnapshot | null = null;
+/** Looking back: the kept snapshot shown instead of the live one. */
+let past: { snap: HeapSnapshot; prev: HeapSnapshot | null } | null = null;
+/** The moment asked for while a kept snapshot is fetched; `pastGen` drops answers after Live. */
+let wanted: number | null = null, fetching = false, pastGen = 0, scrubbing = false;
+/** The snapshot the maps show: a kept one when looking back, else the live one. */
+const shown = () => past?.snap ?? snap;
 let problem: { code: string; message: string } | null = null;
 const views = new Map<number, View>();
 /** Symbolized stacks by id: a value once fetched, else a pending Promise. */
@@ -127,6 +141,9 @@ export function heapSession(state: string, runId: number) {
     sites = [];
     history = [];
     historyStale = true;
+    past = null;
+    wanted = null;
+    pastGen++;
     selected = null;
     problem = null;
     for (const v of views.values()) v.el.remove();
@@ -142,9 +159,11 @@ export function setElf(info: FileInfo | null) {
   elf = info;
   problem = null;
   snap = null;
+  past = null;
+  wanted = null;
+  pastGen++;
   sites = [];
   selected = null;
-  $('heap-pause').hidden = !info;
   refresh();
 }
 
@@ -179,7 +198,14 @@ $('heap-pause').addEventListener('click', () => {
 });
 $('heap-open').addEventListener('click', () => { void source?.openWindow().catch((error) => { problem = errorOf(error); refresh(); }); });
 $('heap-message-action').addEventListener('click', () => { if (source) void useElf(source.pickElf()); });
-pane.addEventListener('keydown', (e) => { if (e.key === 'Escape' && selected) { select(null); e.stopPropagation(); } });
+pane.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (selected) select(null);
+  else if (past) goLive();
+  else return;
+  e.stopPropagation();
+});
+$('heap-note-action').addEventListener('click', () => { if (source) void useElf(source.pickElf()); });
 
 /* The scale: bytes per map row ------------------------------------------- */
 
@@ -219,7 +245,7 @@ function rowBytes(size: number): { bpr: number; capped: boolean } {
 function refresh() {
   clearTimeout(timer);
   paint();
-  if (visible && !paused && elf && running && source && !inflight) timer = window.setTimeout(poll, snap ? INTERVAL : 0);
+  if (visible && !paused && running && source && !inflight) timer = window.setTimeout(poll, snap ? INTERVAL : 0);
 }
 
 async function poll() {
@@ -233,6 +259,9 @@ async function poll() {
       problem = null;
       void fetchSites(next);
       record(next);
+      // Ages and highlights follow the live heaps, also while looking back.
+      const now = Date.now();
+      for (const h of next.heaps) track(view(h), h, now);
     }
   } catch (error) {
     const e = errorOf(error);
@@ -332,19 +361,16 @@ const splitLoc = (loc: string) => {
 
 function paint() {
   $('heap-message').hidden = true;
-  const showMaps = !!(elf && running && snap?.heaps.length && !problem);
-  if (!elf) {
-    message("Watch the firmware's heaps",
-      'Load the ELF your firmware was built from (with symbols), or drop it on the window. ' +
-      'While the firmware runs, the view pauses the emulator for a moment each second to read its heaps.', 'Load ELF…');
-  } else if (problem?.code === 'EMISMATCH') {
+  const showMaps = !!(running && snap?.heaps.length && !problem);
+  if (problem?.code === 'EMISMATCH') {
     message('This ELF is not the running firmware', problem.message, 'Choose another ELF…');
   } else if (problem?.code === 'EINVAL' || problem?.code === 'ENOENT') {
     message('Cannot use the ELF', problem.message, 'Choose another ELF…');
   } else if (problem) {
     message('Cannot read the heaps', problem.message);
   } else if (!running) {
-    message('The emulator is not running', 'Start the firmware to see its heaps.');
+    message('The emulator is not running', 'Start the firmware to see its heaps. While it runs, the view pauses ' +
+      'the emulator for a moment each second to read them.');
   } else if (!snap) {
     message('Reading the heaps…', '');
   } else if (!snap.heaps.length) {
@@ -353,18 +379,34 @@ function paint() {
       : 'No heaps are registered yet; the firmware sets them up early in boot.');
   }
   for (const id of ['heap-live', 'heap-legend', 'heap-note', 'heap-bar', 'heap-trend', 'heap-list']) $(id).hidden = !showMaps;
-  if (!showMaps || !snap) { $('heap-tip').hidden = true; return; }
+  if (!showMaps || !snap) { $('heap-tip').hidden = true; $('heap-note').hidden = true; return; }
+  const s = shown()!;
 
-  $('heap-live').classList.toggle('paused', paused);
-  const when = new Date(snap.time * 1000).toLocaleTimeString();
-  const took = snap.took === undefined ? '' : ` · read in ${Math.round(snap.took)} ms`;
-  const skipped = snap.missing ? ` · ${snap.missing} heap${snap.missing > 1 ? 's' : ''} changing, skipped` : '';
-  $('heap-state').textContent = `${paused ? 'Paused' : 'Live'} · ${when}${took}${skipped}`;
-  $('heap-note').textContent = snap.traced ? '' : snap.traceNote ?? '';
+  $('heap-live').classList.toggle('paused', paused && !past);
+  $('heap-live').classList.toggle('past', !!past);
+  $('heap-golive').hidden = !past;
+  const when = new Date(s.time * 1000).toLocaleTimeString();
+  if (past) {
+    const back = snap.time - s.time;
+    $('heap-state').textContent = `Looking back · ${when} · ${back < 0.5 ? 'now' : `${ago(back * 1000)} before the latest`}`;
+  } else {
+    const took = s.took === undefined ? '' : ` · read in ${Math.round(s.took)} ms`;
+    const skipped = s.missing ? ` · ${s.missing} heap${s.missing > 1 ? 's' : ''} changing, skipped` : '';
+    $('heap-state').textContent = `${paused ? 'Paused' : 'Live'} · ${when}${took}${skipped}`;
+  }
+  // Without the ELF the maps are drawn alone; the note says what it adds.
+  const noElf = !s.elf;
+  $('heap-note-text').textContent = noElf
+    ? `${s.elfNote ? `${s.elfNote} ` : ''}Without the firmware's ELF, blocks are not coloured by allocation site and have no call stack.`
+    : s.traced ? '' : s.traceNote ?? '';
+  const action = $<HTMLButtonElement>('heap-note-action');
+  action.hidden = !noElf;
+  action.textContent = s.elfNote ? 'Choose another ELF…' : 'Load ELF…';
+  $('heap-note').hidden = !$('heap-note-text').textContent;
 
   // Internal memory first, then PSRAM; by address within each.
   const rank = (h: Heap) => ['DRAM', 'IRAM', 'RTC', 'PSRAM'].indexOf(h.name);
-  const heaps = [...snap.heaps].sort((a, b) => rank(a) - rank(b) || a.start - b.start);
+  const heaps = [...s.heaps].sort((a, b) => rank(a) - rank(b) || a.start - b.start);
   const internal = heaps.filter((h) => h.name !== 'PSRAM'), psram = heaps.filter((h) => h.name === 'PSRAM');
   const sum = (list: Heap[], f: (h: Heap) => number) => list.reduce((a, h) => a + f(h), 0);
   const max = (list: Heap[], f: (h: Heap) => number) => list.reduce((a, h) => Math.max(a, f(h)), 0);
@@ -388,7 +430,8 @@ function paint() {
   for (const h of heaps) {
     const v = view(h);
     seen.add(h.start);
-    track(v, h, now);
+    v.heap = h;
+    v.mark = past ? changes(past.prev?.heaps.find((p) => p.start === h.start), h) : null;
     if (at === v.el) at = at.nextElementSibling;
     else list.insertBefore(v.el, at);
     const size = h.end - h.start, folded = folds[hex(h.start)] ?? h.used === 0;
@@ -418,7 +461,22 @@ function paint() {
   }
   if (selected && !seen.has(selected.start)) selected = null;
   legend(heaps);
-  animate();
+  if (!past) animate();
+}
+
+/** Allocations new since `before` and those gone, for a kept snapshot. */
+function changes(before: Heap | undefined, h: Heap): NonNullable<View['mark']> {
+  const used = (heap: Heap) => {
+    const keys = new Set<string>(), b = heap.blocks;
+    for (let i = 0; i < b.length; i += 4) if (!(b[i + 2] & FREE)) keys.add(`${b[i]}:${b[i + 1]}`);
+    return keys;
+  };
+  if (!before) return { fresh: new Set(), freed: [] };
+  const was = used(before), is = used(h);
+  return {
+    fresh: new Set([...is].filter((k) => !was.has(k))),
+    freed: [...was].filter((k) => !is.has(k)).map((k) => { const [off, len] = k.split(':').map(Number); return { off, len }; }),
+  };
 }
 
 function view(h: Heap): View {
@@ -436,7 +494,7 @@ function view(h: Heap): View {
     <div class="heap-map"><div class="heap-gutter num"></div><canvas></canvas></div>
     <div class="heap-detail" role="region" aria-label="Block details" hidden></div>`;
   const canvas = el.querySelector('canvas')!, detail = el.querySelector<HTMLElement>('.heap-detail')!;
-  v = { el, canvas, detail, heap: h, born: new Map(), freed: [], first: true, bpr: 1, width: 1, folded: false };
+  v = { el, canvas, detail, heap: h, born: new Map(), freed: [], mark: null, first: true, bpr: 1, width: 1, folded: false };
   const self = v;
   el.querySelector('.heap-head')!.addEventListener('click', () => {
     folds[hex(self.heap.start)] = !self.folded;
@@ -448,7 +506,7 @@ function view(h: Heap): View {
   canvas.addEventListener('click', (e) => {
     const x = hit(self, e);
     if (!x || x.kind !== 'block') return;
-    const same = selected?.start === self.heap.start && selected.off === x.off && !selected.freedAt;
+    const same = selected?.start === self.heap.start && selected.off === x.off && !(past ? selected.absent : selected.freedAt);
     select(same ? null : { start: self.heap.start, off: x.off, len: x.len, fl: x.fl, req: x.req, site: x.site, stack: x.stack, born: x.born ?? 0, freedAt: 0 });
   });
   detail.addEventListener('click', (e) => {
@@ -468,9 +526,20 @@ function select(next: Selected | null) {
   if (next) views.get(next.start)?.detail.scrollIntoView({ block: 'nearest' });
 }
 
-/** Keep the selected block's facts current, or note when it was freed. */
+/** Keep the selected block's facts current, or note when it was freed; when
+    looking back, whether it is there at the moment shown. */
 function follow(h: Heap, now: number) {
   const s = selected!, b = h.blocks;
+  if (past) {
+    s.absent = true;
+    for (let i = 0, n = 0; i < b.length; i += 4, n++) {
+      if (b[i] !== s.off || b[i + 1] !== s.len || !(b[i + 2] & FREE) !== !(s.fl & FREE)) continue;
+      Object.assign(s, { absent: false, fl: b[i + 2], req: b[i + 3], site: siteOf(h, n), stack: h.stk?.[n] ?? s.stack });
+      break;
+    }
+    return;
+  }
+  s.absent = false;
   if (s.freedAt) return;
   for (let i = 0, n = 0; i < b.length; i += 4, n++) {
     if (b[i] !== s.off) continue;
@@ -502,7 +571,6 @@ function track(v: View, h: Heap, now: number) {
   v.freed = v.freed.filter((f) => now - f.t < FADE);
   v.born = born;
   v.first = false;
-  v.heap = h;
 }
 
 /* Colors come from the stylesheet's tokens, read again when the theme changes. */
@@ -545,7 +613,7 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeChanged);
 
 /** A block's site id, or -1 without an allocation log. */
-const siteOf = (h: Heap, i: number) => snap?.traced ? h.sites?.[i] ?? -1 : -1;
+const siteOf = (h: Heap, i: number) => shown()?.traced ? h.sites?.[i] ?? -1 : -1;
 const siteColor = (site: number) => site >= 0 ? colors!.sites[site % SITE_COLORS] : colors!.used;
 
 function draw(v: View) {
@@ -605,18 +673,18 @@ function draw(v: View) {
     prevColor = base;
     fill(off, len, fl & CORRUPT ? C.corrupt : alt ? (site >= 0 ? C.sitesAlt[site % SITE_COLORS] : C.usedAlt) : base, 1);
     if (len * sx >= 4) fill(off, Math.min(len, 1 / sx), C.bg);
-    const t = v.born.get(`${off}:${len}`);
-    if (t) {
-      const w = 1 - (now - t) / FADE;
-      if (w > 0 && w <= 1) { ctx.globalAlpha = 0.85 * w; fill(off, len, C.fresh, 1); ctx.globalAlpha = 1; }
-    }
+    // Live, highlights fade; looking back, what changed since the kept
+    // snapshot before stays lit.
+    const key = `${off}:${len}`, t = v.mark ? 0 : v.born.get(key);
+    const w = v.mark ? (v.mark.fresh.has(key) ? 0.8 : 0) : t ? 1 - (now - t) / FADE : 0;
+    if (w > 0 && w <= 1) { ctx.globalAlpha = 0.85 * w; fill(off, len, C.fresh, 1); ctx.globalAlpha = 1; }
   }
-  for (const f of v.freed) {
+  for (const f of v.mark ? v.mark.freed.map((m) => ({ ...m, t: now - FADE * 0.2 })) : v.freed) {
     const w = 1 - (now - f.t) / FADE;
     if (w > 0 && w <= 1) { ctx.globalAlpha = 0.85 * w; fill(f.off, f.len, C.freed, 1); ctx.globalAlpha = 1; }
   }
   // The selected block: outlined, in the text colour so it shows on any fill.
-  if (selected?.start === h.start && !selected.freedAt) {
+  if (selected?.start === h.start && !(past ? selected.absent : selected.freedAt)) {
     const lw = Math.max(1, Math.round(1.5 * dpr));
     ctx.strokeStyle = C.text;
     ctx.lineWidth = lw;
@@ -626,7 +694,7 @@ function draw(v: View) {
 
 /** The sites holding the most memory, with their colours. */
 function legend(heaps: Heap[]) {
-  const box = $('heap-sites'), named = !!(snap?.traced && sites.length);
+  const box = $('heap-sites'), named = !!(shown()?.traced && sites.length);
   $('heap-legend-used').hidden = named;
   if (!named) { box.innerHTML = ''; return; }
   const bytes = new Map<number, number>();
@@ -694,6 +762,18 @@ function drawTrend() {
     { pick: (p) => p.free, color: C.used, width: 1.75, dash: [], fill: C.usedFill },
   ]);
   band(points, x, w, split + 4, h - 3, [{ pick: (p) => p.largest, color: C.fresh, width: 1.25, dash: [4, 3] }]);
+  // Looking back: the moment shown, the time after it dimmed.
+  const at = wanted ?? past?.snap.time;
+  if (at !== undefined && at !== null) {
+    const cx = Math.round(x(Math.min(t1, Math.max(t0, at)))) + 0.5;
+    ctx.fillStyle = C.bg;
+    ctx.globalAlpha = 0.55;
+    ctx.fillRect(cx, 0, w - cx, h);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = C.text;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+  }
 }
 
 interface Series { pick: (p: TrendPoint) => number; color: string; width: number; dash: number[]; fill?: string }
@@ -748,9 +828,89 @@ $('heap-trend-canvas').addEventListener('mousemove', (e) => {
   showTip(e, [
     ['time', last.t - best.t < 0.5 ? 'now' : `${ago((last.t - best.t) * 1000)} ago`],
     ['free', kib(best.free)], ['largest block', kib(best.largest)], ['lowest since boot', kib(best.low)],
+    ['', best === last ? (past ? 'Click to go back to live' : 'Click or drag to look back') : 'Click or drag to see the heaps then'],
   ]);
 });
 $('heap-trend-canvas').addEventListener('mouseleave', () => { $('heap-tip').hidden = true; });
+
+/* Looking back --------------------------------------------------------------- */
+
+/** Show the kept snapshot of trend point `i`; the latest point is live. */
+function lookAt(i: number) {
+  const g = trendGeometry;
+  if (!g || !source) return;
+  i = Math.max(0, Math.min(g.points.length - 1, i));
+  if (i === g.points.length - 1) { goLive(); return; }
+  const t = g.points[i].t;
+  if (t === (wanted ?? past?.snap.time)) return;
+  wanted = t;
+  drawTrend();
+  void fetchPast();
+}
+
+async function fetchPast() {
+  if (fetching || !source) return;
+  fetching = true;
+  const gen = pastGen, asked = run;
+  try {
+    while (wanted !== null && gen === pastGen) {
+      const t = wanted;
+      const got = await source.at(t).catch(() => null);
+      if (gen !== pastGen || asked !== run) break;
+      if (wanted === t) wanted = null;
+      if (got) past = { snap: got.snapshot, prev: got.prev };
+      paint();
+    }
+  } finally {
+    fetching = false;
+  }
+}
+
+function goLive() {
+  pastGen++;
+  wanted = null;
+  if (!past) { drawTrend(); return; }
+  past = null;
+  // Highlights start over rather than flash every change made meanwhile.
+  for (const v of views.values()) v.freed = [];
+  paint();
+}
+
+/** The trend point nearest the pointer, or the one shown, by index. */
+function pointAt(px: number) {
+  const g = trendGeometry!;
+  let best = 0;
+  g.points.forEach((p, i) => { if (Math.abs(g.x(p.t) - px) < Math.abs(g.x(g.points[best].t) - px)) best = i; });
+  return best;
+}
+function shownIndex() {
+  const g = trendGeometry!, t = wanted ?? past?.snap.time;
+  if (t === undefined || t === null) return g.points.length - 1;
+  let best = 0;
+  g.points.forEach((p, i) => { if (Math.abs(p.t - t) < Math.abs(g.points[best].t - t)) best = i; });
+  return best;
+}
+
+const trendCanvas = $<HTMLCanvasElement>('heap-trend-canvas');
+const scrubTo = (e: PointerEvent) => lookAt(pointAt(e.clientX - trendCanvas.getBoundingClientRect().left));
+trendCanvas.addEventListener('pointerdown', (e) => {
+  if (!trendGeometry || e.button !== 0) return;
+  scrubbing = true;
+  trendCanvas.setPointerCapture(e.pointerId);
+  scrubTo(e);
+});
+trendCanvas.addEventListener('pointermove', (e) => { if (scrubbing) scrubTo(e); });
+for (const type of ['pointerup', 'pointercancel'] as const) trendCanvas.addEventListener(type, () => { scrubbing = false; });
+trendCanvas.addEventListener('keydown', (e) => {
+  if (!trendGeometry) return;
+  const i = shownIndex(), last = trendGeometry.points.length - 1;
+  const to = ({ ArrowLeft: i - 1, ArrowRight: i + 1, Home: 0, End: last, Escape: past || wanted !== null ? last : -1 } as Record<string, number>)[e.key];
+  if (to === undefined || to < 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  lookAt(to);
+});
+$('heap-golive').addEventListener('click', goLive);
 
 /* Fade the highlights between snapshots, a few frames a second. */
 function animate() {
@@ -836,9 +996,9 @@ function tip(v: View, e: MouseEvent) {
     if (x.used) rows.push(['pointer', hex(pointerOf(start, x.off, x.fl))]);
     rows.push(['block size', `${fmt(x.len - 4)} B`]);
     if (x.fl & POISONED) rows.push(['requested', `${fmt(x.req)} B`]);
-    if (x.used) rows.push(['age', x.born ? ago(Date.now() - x.born) : 'older than the view']);
+    if (x.used && !past) rows.push(['age', x.born ? ago(Date.now() - x.born) : 'older than the view']);
     if (x.nUsed + x.nFree > 1) rows.push(['under the pointer', `${x.nUsed} allocated, ${x.nFree} free`]);
-    if (x.used && snap?.traced) {
+    if (x.used && shown()?.traced) {
       const site = sites[x.site];
       if (site) {
         rows.push(['allocated by', callName(site.fn), true]);
@@ -849,7 +1009,7 @@ function tip(v: View, e: MouseEvent) {
         rows.push(['allocated by', fn ? (fn === 'looking up…' ? fn : callName(fn)) : 'unknown', true]);
       }
     }
-    if (x.used) rows.push(['', 'Click for details and the call stack']);
+    if (x.used) rows.push(['', shown()?.traced ? 'Click for details and the call stack' : 'Click for details']);
   }
   showTip(e, rows);
 }
@@ -874,14 +1034,16 @@ function details(v: View) {
   const used = !(s.fl & FREE), now = Date.now();
   const site = used && s.site >= 0 ? sites[s.site] : undefined;
   const title = used ? (site ? shortName(site.fn) : 'Allocated block') : 'Free block';
-  const state = s.freedAt ? `freed ${ago(now - s.freedAt)} ago` : s.fl & CORRUPT ? 'corrupt' : used ? 'allocated' : 'free';
+  const state = past ? (s.absent ? 'not there at this moment' : s.fl & CORRUPT ? 'corrupt' : used ? 'allocated' : 'free')
+    : s.freedAt ? `freed ${ago(now - s.freedAt)} ago` : s.fl & CORRUPT ? 'corrupt' : used ? 'allocated' : 'free';
   const facts: [string, string][] = [['address', `${hex(blockAddr(s.start, s.off))} – ${hex(blockAddr(s.start, s.off) + s.len)}`]];
   if (used) facts.push(['pointer', hex(pointerOf(s.start, s.off, s.fl))]);
   facts.push(['size', `${fmt(s.len - 4)} B${s.fl & POISONED ? ` · requested ${fmt(s.req)} B` : ''}`]);
-  if (used) facts.push(['age', '']);
+  if (used && !past) facts.push(['age', '']);
 
   let body = '';
-  if (used && snap?.traced) {
+  const traced = shown()?.traced;
+  if (used && traced) {
     const stack = stackOf(s.stack, () => { if (selected === s) details(v); });
     if (stack === 'pending') {
       body = `<p class="hd-note">Looking up the call stack…</p>`;
@@ -897,10 +1059,11 @@ function details(v: View) {
         `<ol start="${stack.caller + 1}">${fr.slice(stack.caller).map((f, k) => frameHtml(f, stack.caller + k === stack.site ? 'site' : f.lib ? 'lib' : '')).join('')}</ol></div>`;
     }
   } else if (used) {
-    body = `<p class="hd-note">${esc(snap?.traceNote || 'Allocations are not being recorded, so there is no call stack.')}</p>`;
+    body = `<p class="hd-note">${esc(!shown()?.elf ? "Load the firmware's ELF to see where blocks were allocated."
+      : shown()?.traceNote || 'Allocations are not being recorded, so there is no call stack.')}</p>`;
   }
   const html = `<div class="hd-head"><i class="sw" style="background:${used ? siteColor(s.site) : colors!.free}"></i>` +
-    `<strong title="${esc(site?.fn ?? title)}">${esc(title)}</strong><span class="hd-state${s.freedAt || s.fl & CORRUPT ? ' bad' : ''}"></span>` +
+    `<strong title="${esc(site?.fn ?? title)}">${esc(title)}</strong><span class="hd-state${(past ? s.absent : s.freedAt) || s.fl & CORRUPT ? ' bad' : ''}"></span>` +
     `<button class="icon-button hd-close" type="button" aria-label="Close details" title="Close (Esc)"><svg class="icon"><use href="#i-x"/></svg></button></div>` +
     `<dl class="hd-facts num">${facts.map(([k, val]) => `<dt>${k}</dt><dd${k === 'age' ? ' class="hd-age"' : ''}>${esc(val)}</dd>`).join('')}</dl>` + body;
   // Rewritten only when something changed, so text selection and the open
