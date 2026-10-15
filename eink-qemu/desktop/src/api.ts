@@ -26,13 +26,23 @@ export interface Attached {
   settings: Settings;
   card: FileInfo | null;
   firmware: FileInfo | null;
+  /** The heap view's ELF. */
+  elf: FileInfo | null;
   platform: string;
   autostart: boolean;
+  pane: string | null;
   problems: string[];
 }
 export interface SdEntry { name: string; size: number; isDir: boolean; mtime: number | null }
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
 export interface UploadPlan { files: number; bytes: number; conflicts: string[] }
+/** One heap (src-tauri/src/heap.rs). `blocks` is flat: offset, length, flags, requested size. */
+export interface Heap {
+  name: string; caps: string[]; start: number; end: number; pool: number; tail: number;
+  free: number; used: number; largest: number; count: number; nfree: number;
+  infoFree: number; infoMinFree: number; corrupt: number; blocks: number[];
+}
+export interface HeapSnapshot { time: number; heaps: Heap[]; missing: number }
 export interface StartOptions { machine: Machine; panel: string; wifi: boolean; turbo: boolean; ghosting: boolean }
 
 /** Errors from Rust carry a code (fat.js codes, EBUSY, EQEMU, …) and a message. */
@@ -80,6 +90,10 @@ export const api = {
   sdMkdir: (path: string) => call<void>('sd_mkdir', { path }),
   sdRename: (path: string, name: string) => call<void>('sd_rename', { path, name }),
   sdRemove: (path: string) => call<void>('sd_remove', { path }),
+  heapPickElf: () => call<FileInfo | null>('heap_pick_elf'),
+  heapUseElf: (path: string) => call<FileInfo>('heap_use_elf', { path }),
+  heapForgetElf: () => call<void>('heap_forget_elf'),
+  heapSnapshot: () => call<HeapSnapshot>('heap_snapshot'),
   saveScreenshot: (png: Uint8Array, name: string) =>
     call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),
 };

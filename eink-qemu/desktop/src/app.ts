@@ -7,6 +7,7 @@ import { api, AppError, type FileInfo, type SdEntry, type SessionInfo, type Sett
 import { appendLines, clearConsole } from './console';
 import { confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
+import { attachHeap, heapSession, showPane, useElf } from './heap';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const button = (id: string) => $<HTMLButtonElement>(id);
@@ -58,6 +59,7 @@ function onSession(info: SessionInfo) {
   if (info.seq <= session.seq) return;
   const previous = session.state;
   session = info;
+  heapSession(info.state, info.run);
   if (info.state !== 'running') releaseAll();
   // A WebView reloaded during startup learns the board here.
   if ((info.state === 'starting' || info.state === 'running') && info.machine && !canvas) {
@@ -812,8 +814,13 @@ function paintDrop(target: 'sd' | 'firmware' | null) {
 }
 
 async function onDrop(paths: string[], x: number, y: number) {
-  const target = dropTarget(x, y);
   paintDrop(null);
+  // An ELF goes to the heap view wherever it lands.
+  if (paths.length === 1 && /\.elf$/i.test(paths[0])) {
+    await useElf(api.heapUseElf(paths[0]));
+    return;
+  }
+  const target = dropTarget(x, y);
   if (target === 'sd') {
     await sdRun(() => sdUpload(paths));
   } else if (target === 'firmware') {
@@ -842,6 +849,9 @@ export async function boot() {
   firmware = state.firmware;
   card = state.card;
   if (state.session.seq > session.seq) session = state.session;
+  attachHeap({ snapshot: api.heapSnapshot, pickElf: api.heapPickElf, forgetElf: api.heapForgetElf }, state.elf);
+  heapSession(session.state, session.run);
+  if (state.pane === 'heap' || state.pane === 'console') showPane(state.pane);
   platform = state.platform;
   $<HTMLSelectElement>('device').value = settings.device;
   $<HTMLSelectElement>('panel').value = settings.panel;

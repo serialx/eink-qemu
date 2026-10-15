@@ -1,8 +1,9 @@
 //! One emulator run at a time: spawns qemu-system-*, listens for its QMP and
 //! eink display connections, streams the console and the panel to the
-//! WebView, and brackets SD card edits with stop / reset / cont.
+//! WebView, and brackets SD card edits and heap snapshots with stop / cont.
 
 use crate::display;
+use crate::heap::{self, HeapError};
 use crate::qmp::Qmp;
 use crate::sd::SdError;
 use serde::{Deserialize, Serialize};
@@ -136,7 +137,9 @@ struct Run {
     kill: StdMutex<Option<oneshot::Sender<()>>>,
     exited: watch::Receiver<Option<String>>,
     stopping: AtomicBool,
-    _dir: tempfile::TempDir,
+    /// Heap pool starts found so far (see heap.rs).
+    pools: Mutex<heap::Pools>,
+    dir: tempfile::TempDir,
 }
 
 enum Input {
@@ -719,7 +722,8 @@ impl Session {
             kill,
             exited,
             stopping: AtomicBool::new(false),
-            _dir: dir,
+            pools: Mutex::new(heap::Pools::new()),
+            dir,
         });
         // Device input in arrival order, so a release never overtakes its
         // press. While an SD operation has the guest stopped, QEMU rejects
@@ -932,9 +936,60 @@ impl Session {
         }
     }
 
+    /// Read the firmware's heaps (heap.rs). The guest is stopped around it,
+    /// as for an SD operation; while another operation runs, EBUSY.
+    pub async fn heap_snapshot(self: &Arc<Self>, elf: &heap::Elf) -> Result<heap::Snapshot, AppError> {
+        let Ok(_ops) = self.ops.try_lock() else { return Err(AppError::busy()) };
+        let run = self.current().ok_or_else(|| AppError::new("EIDLE", "Start the emulator to see its heaps."))?;
+        {
+            let _gate = run.gate.lock().await;
+            let _ = run.paused.send(true);
+        }
+        let mut guest = QmpGuest { qmp: &run.qmp, path: run.dir.path().join("memory.bin") };
+        let result = heap::snapshot(&mut guest, elf, &mut *run.pools.lock().await).await;
+        let _ = run.paused.send(false);
+        match result {
+            Ok(snapshot) => Ok(snapshot),
+            Err(HeapError::Mismatch(message)) => Err(AppError::new("EMISMATCH", message)),
+            Err(HeapError::Read(message)) => Err(AppError::new("EREAD", message)),
+            Err(HeapError::Guest(error)) => {
+                // The guest may be left stopped: end the run.
+                self.log(format!("Reading the heaps stopped the emulator: {error}"));
+                self.finish(&run, Exit { kind: "failed", reason: Some(format!("Heap view failed: {error}")) }).await;
+                Err(AppError::new("EQEMU", error))
+            }
+        }
+    }
+
     /// Stop the emulator before the app exits.
     pub async fn shutdown(self: &Arc<Self>) {
         let _ = self.stop().await;
+    }
+}
+
+/// Guest memory through QMP `pmemsave` into the run directory.
+struct QmpGuest<'a> {
+    qmp: &'a Qmp,
+    path: PathBuf,
+}
+
+impl heap::Guest for QmpGuest<'_> {
+    async fn read(&mut self, addr: u32, size: u32) -> Result<Vec<u8>, String> {
+        let filename = self.path.to_string_lossy();
+        self.qmp.execute("pmemsave", Some(json!({"val": addr, "size": size, "filename": filename}))).await?;
+        let data = tokio::fs::read(&self.path).await.map_err(|e| format!("pmemsave 0x{addr:08x}+{size}: {e}"))?;
+        if data.len() != size as usize {
+            return Err(format!("pmemsave 0x{addr:08x}+{size}: short read"));
+        }
+        Ok(data)
+    }
+
+    async fn stop(&mut self) -> Result<(), String> {
+        self.qmp.execute("stop", None).await.map(|_| ())
+    }
+
+    async fn cont(&mut self) -> Result<(), String> {
+        self.qmp.execute("cont", None).await.map(|_| ())
     }
 }
 

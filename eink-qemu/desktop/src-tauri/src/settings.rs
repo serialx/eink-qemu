@@ -15,6 +15,8 @@ pub struct Settings {
     pub turbo: bool,
     pub firmware: Option<PathBuf>,
     pub card: Option<PathBuf>,
+    /// The firmware's ELF, for the heap view.
+    pub elf: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -27,6 +29,7 @@ impl Default for Settings {
             turbo: true,
             firmware: None,
             card: None,
+            elf: None,
         }
     }
 }

@@ -7,6 +7,7 @@
 //! accept only those recorded paths.
 
 mod display;
+mod heap;
 mod host;
 mod qmp;
 pub mod sd;
@@ -38,6 +39,8 @@ struct App {
     grants: Mutex<HashSet<PathBuf>>,
     /// Startup problems the WebView shows once it attaches.
     problems: Mutex<Vec<String>>,
+    /// The heap view's ELF as last read.
+    elf: Mutex<Option<Arc<heap::Elf>>>,
 }
 
 impl App {
@@ -83,9 +86,13 @@ struct Attached {
     settings: Settings,
     card: Option<FileInfo>,
     firmware: Option<FileInfo>,
+    /// The heap view's ELF.
+    elf: Option<FileInfo>,
     platform: &'static str,
     /// EINK_QEMU_AUTOSTART: start the chosen firmware as soon as the WebView attaches.
     autostart: bool,
+    /// EINK_QEMU_PANE: the output tab to open ("console" or "heap").
+    pane: Option<String>,
     /// Startup problems to show: a saved card or firmware that is unusable.
     problems: Vec<String>,
 }
@@ -269,13 +276,16 @@ fn attach(
     app.session.attach(logs, frames);
     let settings = app.settings.lock().unwrap().clone();
     let firmware = settings.firmware.as_deref().and_then(|path| check_firmware(path).ok());
+    let elf = settings.elf.as_deref().and_then(file_info);
     Attached {
+        elf,
         session: app.session.info(),
         firmware,
         card: app.session.card_path().as_deref().and_then(file_info),
         settings,
         platform: std::env::consts::OS,
         autostart: std::env::var_os("EINK_QEMU_AUTOSTART").is_some_and(|v| v == "1"),
+        pane: std::env::var("EINK_QEMU_PANE").ok(),
         problems: std::mem::take(&mut *app.problems.lock().unwrap()),
     }
 }
@@ -582,6 +592,73 @@ async fn screenshot_save(handle: tauri::AppHandle, app: State<'_, App>, request:
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
+/// Read a firmware ELF for the heap view off the async runtime.
+async fn read_elf(path: PathBuf) -> Result<heap::Elf, AppError> {
+    tokio::task::spawn_blocking(move || heap::Elf::load(&path))
+        .await
+        .unwrap_or_else(|_| Err("Reading the ELF panicked.".into()))
+        .map_err(|message| AppError::new("EINVAL", message))
+}
+
+/// Make `path` the heap view's ELF once it reads as one.
+async fn use_elf(app: &App, path: PathBuf) -> Result<FileInfo, AppError> {
+    let elf = read_elf(path.clone()).await?;
+    let info = file_info(&path).ok_or_else(|| AppError::new("EINVAL", "Unreadable ELF path."))?;
+    app.update(|settings| {
+        settings.elf = Some(path);
+        Ok(())
+    })?;
+    *app.elf.lock().unwrap() = Some(Arc::new(elf));
+    Ok(info)
+}
+
+/// Choose the firmware's ELF in a native dialog. None when cancelled.
+#[tauri::command]
+async fn heap_pick_elf(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
+    let Some(path) = pick(&handle, Pick::Open { title: "Choose the firmware's ELF", filter: Some(("ELF", &["elf"])) })
+        .await
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    use_elf(&app, path).await.map(Some)
+}
+
+/// Use an ELF that was dropped on the window.
+#[tauri::command]
+async fn heap_use_elf(app: State<'_, App>, path: PathBuf) -> Result<FileInfo, AppError> {
+    app.granted(&path)?;
+    use_elf(&app, path).await
+}
+
+#[tauri::command]
+fn heap_forget_elf(app: State<'_, App>) -> Result<(), AppError> {
+    app.update(|settings| {
+        settings.elf = None;
+        Ok(())
+    })?;
+    *app.elf.lock().unwrap() = None;
+    Ok(())
+}
+
+/// The running firmware's heaps. The ELF is read again when it was rebuilt.
+#[tauri::command]
+async fn heap_snapshot(app: State<'_, App>) -> Result<heap::Snapshot, AppError> {
+    let path = app.settings.lock().unwrap().elf.clone()
+        .ok_or_else(|| AppError::new("ENOELF", "Load the firmware's ELF to see its heaps."))?;
+    let cached = app.elf.lock().unwrap().clone().filter(|elf| elf.path == path && !elf.stale());
+    let elf = match cached {
+        Some(elf) => elf,
+        None => {
+            let elf = Arc::new(read_elf(path).await?);
+            *app.elf.lock().unwrap() = Some(elf.clone());
+            elf
+        }
+    };
+    app.session.heap_snapshot(&elf).await
+}
+
 fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
     if let Some(bin) = std::env::var_os("EINK_QEMU_BIN") {
         return QemuPaths { bin: bin.into(), share: std::env::var_os("EINK_QEMU_SHARE").map(Into::into) };
@@ -675,6 +752,7 @@ pub fn run() {
                 locks,
                 grants: Mutex::default(),
                 problems: Mutex::new(problems),
+                elf: Mutex::default(),
             });
             // SIGTERM and SIGINT quit like the menu does, so QEMU stops and
             // the run directory is removed.
@@ -727,6 +805,10 @@ pub fn run() {
             sd_rename,
             sd_remove,
             screenshot_save,
+            heap_pick_elf,
+            heap_use_elf,
+            heap_forget_elf,
+            heap_snapshot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building eink-qemu");

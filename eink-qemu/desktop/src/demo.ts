@@ -1,5 +1,8 @@
 /* Mock content for layout work in a plain browser (pnpm dev, or ?demo): an
-   SD listing, a console log and a running X4 Pro with a drawn page. */
+   SD listing, a console log, a running X4 Pro with a drawn page and heaps
+   that change with every snapshot. */
+import type { Heap, HeapSnapshot } from './api';
+import { attachHeap, heapSession } from './heap';
 const $ = (id: string) => document.getElementById(id)!;
 
 interface Entry { name: string; size: number; isDir: boolean }
@@ -158,6 +161,37 @@ I (101) boot: Loaded app from partition at offset 0x10000
 [    846][I][Display.cpp:188] refresh(): full, 642 ms
 `;
 
+/* Heaps: TLSF-like block lists that allocate and free a little each time. */
+function mockHeap(name: string, caps: string[], start: number, size: number, avg: number, seed: number) {
+  let state = seed;
+  const random = () => (state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const pool = 0x3a0, sizes: [number, boolean][] = [];
+  for (let used = pool; used < size * 0.9;) {
+    const len = 16 + Math.floor(random() ** 3 * avg) * 4;
+    sizes.push([len, random() < 0.25]);
+    used += len + 4;
+  }
+  const snapshot = (): Heap => {
+    for (let i = 0; i < 6; i++) {
+      const k = Math.floor(random() * sizes.length);
+      sizes[k][1] = !sizes[k][1];
+    }
+    const blocks: number[] = [];
+    let off = pool, free = 0, used = 0, largest = 0, nfree = 0;
+    for (const [len, isFree] of sizes) {
+      blocks.push(off, len + 4, isFree ? 1 : 2, isFree ? 0 : len - 12);
+      if (isFree) { free += len; nfree++; largest = Math.max(largest, len); } else used += len;
+      off += len + 4;
+    }
+    const rest = size - off - 16;
+    blocks.push(off, rest + 4, 1, 0);
+    free += rest; nfree++; largest = Math.max(largest, rest);
+    return { name, caps, start, end: start + size, pool: pool - 4, tail: off + rest + 12, free, used, largest,
+      count: sizes.length + 1, nfree, infoFree: free, infoMinFree: Math.round(free * 0.82), corrupt: 0, blocks };
+  };
+  return snapshot;
+}
+
 export function demo({ appendConsole }: { appendConsole: (text: string) => void }) {
   document.querySelector('.app')!.classList.add('live');
   ($('start') as HTMLButtonElement).disabled = true;
@@ -175,4 +209,15 @@ export function demo({ appendConsole }: { appendConsole: (text: string) => void 
   renderKeys('x4pro');
   renderScreen(480, 800);
   appendConsole(log);
+  const heaps = [
+    mockHeap('DRAM', ['32BIT', '8BIT', 'INTERNAL', 'DEFAULT'], 0x3fc9a000, 0x4c000, 220, 7),
+    mockHeap('RTC', ['32BIT', '8BIT', 'INTERNAL', 'DEFAULT', 'RTCRAM'], 0x600fe000, 0x1e00, 24, 3),
+    mockHeap('PSRAM', ['32BIT', '8BIT', 'SPIRAM', 'DEFAULT'], 0x3d000000, 0x800000, 9000, 11),
+  ];
+  attachHeap({
+    snapshot: async (): Promise<HeapSnapshot> => ({ time: Date.now(), heaps: heaps.map((h) => h()), missing: 0 }),
+    pickElf: async () => ({ path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 }),
+    forgetElf: async () => {},
+  }, { path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 });
+  heapSession('running', 1);
 }

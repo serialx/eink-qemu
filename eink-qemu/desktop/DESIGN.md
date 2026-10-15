@@ -1,7 +1,7 @@
 # eink-qemu desktop: design
 
 A Tauri 2 app with the browser page's interface (SD card explorer, device
-stage, firmware console) that runs the native `qemu-system-*` binaries
+stage, firmware console) and a live heap view, that runs the native `qemu-system-*` binaries
 instead of the WebAssembly build. Native QEMU is several times faster than
 the Wasm JIT, has no fixed heap, and reads the SD card image from disk at any
 size.
@@ -36,8 +36,8 @@ the Rust core.
 - `src/app.ts` is the page's `app.js` with the runtime iframe replaced by
   Rust commands: screen zoom (whole physical pixels, Fit, Auto), key rows,
   status milestones and the SD table carry over. The console buffer and
-  filter are in `console.ts`; help tips, the theme toggle and the panel
-  gutters in `main.ts`.
+  filter are in `console.ts`; the Heap tab in `heap.ts`; help tips, the
+  theme toggle and the panel gutters in `main.ts`.
 - Deliberate differences from the page: status milestones also recognise
   the X4's plain `refresh` waits, restart counting when the guest reboots,
   name an SD card the firmware could not mount and the stock X4 Pro
@@ -144,6 +144,23 @@ or a screenshot reserves its destination for the whole write, so it can
 never land on an open card, and the default card is reserved before it is
 created. Device input and the pause for an SD operation take one gate, so
 no key event reaches a stopped guest.
+
+## Heap view
+
+`src-tauri/src/heap.rs` ports heapview.py's snapshot: the ELF's
+`registered_heaps` lists the heaps (`heap_t`, with or without
+CONFIG_HEAP_TASK_TRACKING's name pointer), and each region is walked as a
+TLSF physical block list, whose start is found once past the TLSF control
+structure. A snapshot takes the gate and the stop like an SD operation (and
+is skipped with EBUSY while one runs), reads with QMP `pmemsave` into the
+run directory, and retries up to eight times when the guest was stopped
+mid-update, leaving out a heap that never walks. Before walking, the guest's
+`esp_app_desc` (at the ELF's address, through the flash cache) must carry
+the ELF's SHA-256, or, when the image has none, the ELF's version, name and
+build time. A failed stop or resume ends the run, as for the SD card.
+`heap.ts` polls once a second while the tab is open, and keeps the trend and
+when each allocation was first seen; the map is heapview.html's, without
+zoom, allocation sites or replay.
 
 ## Firmware
 

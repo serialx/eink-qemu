@@ -16,6 +16,8 @@
     <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="currentColor"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
@@ -192,16 +194,38 @@
       <div id="keys" aria-label="Device keys"></div>
     </main>
 
-    <section class="output" aria-label="Firmware console">
+    <section class="output" aria-label="Firmware output" data-pane="console">
       <div class="output-head">
-        <h2>Console <span>USB-CDC</span></h2>
-        <label class="filter">
+        <div class="pane-tabs" role="tablist" aria-label="Firmware output">
+          <button id="tab-console" role="tab" type="button" aria-selected="true" aria-controls="console" data-pane="console" title="The firmware's USB-CDC log">Console</button>
+          <button id="tab-heap" role="tab" type="button" aria-selected="false" aria-controls="heap" data-pane="heap" tabindex="-1" title="The firmware's heaps, live">Heap</button>
+        </div>
+        <label class="filter console-tool">
           <svg class="icon"><use href="#i-search"/></svg>
           <input id="console-filter" type="search" placeholder="Filter output" aria-label="Filter console output">
         </label>
-        <button id="console-clear" class="icon-button" type="button" aria-label="Clear console" title="Clear console"><svg class="icon"><use href="#i-trash"/></svg></button>
+        <button id="console-clear" class="icon-button console-tool" type="button" aria-label="Clear console" title="Clear console"><svg class="icon"><use href="#i-trash"/></svg></button>
+        <button id="heap-elf" class="file-chip heap-tool" type="button" title="Choose the firmware's ELF"><svg class="icon"><use href="#i-file"/></svg><span id="heap-elf-name">Load ELF…</span></button>
+        <button id="heap-forget" class="icon-button heap-tool" type="button" aria-label="Forget the ELF" title="Forget the ELF" hidden><svg class="icon"><use href="#i-x"/></svg></button>
+        <button id="heap-pause" class="icon-button heap-tool" type="button" aria-label="Pause updates" title="Pause updates" aria-pressed="false"><svg class="icon"><use href="#i-pause"/></svg></button>
       </div>
-      <pre id="console" tabindex="0" aria-label="Firmware console"></pre>
+      <pre id="console" role="tabpanel" aria-labelledby="tab-console" tabindex="0" aria-label="Firmware console"></pre>
+      <div id="heap" role="tabpanel" aria-labelledby="tab-heap" tabindex="0" hidden>
+        <div id="heap-message" class="heap-message" hidden>
+          <strong id="heap-message-title"></strong>
+          <p id="heap-message-text"></p>
+          <button id="heap-message-action" class="button tint" type="button" hidden></button>
+        </div>
+        <div id="heap-live" class="heap-live" hidden><span class="heap-dot" aria-hidden="true"></span><span id="heap-state"></span></div>
+        <div id="heap-summary" class="heap-summary"></div>
+        <div id="heap-list"></div>
+        <div id="heap-legend" class="heap-legend" hidden>
+          <span><i class="sw used"></i>allocated</span><span><i class="sw free"></i>free</span>
+          <span><i class="sw fresh"></i>new</span><span><i class="sw freed"></i>just freed</span>
+          <span><i class="sw meta"></i>heap overhead</span><span><i class="sw corrupt"></i>corrupt</span>
+        </div>
+      </div>
+      <div id="heap-tip" class="heap-tip" hidden></div>
     </section>
 
     <footer class="statusbar">

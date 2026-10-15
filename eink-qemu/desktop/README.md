@@ -1,7 +1,7 @@
 # eink-qemu desktop
 
 A Tauri app with the browser page's interface that runs native QEMU: SD card
-explorer, device stage and firmware console. The interface is the page
+explorer, device stage, firmware console and a live heap view. The interface is the page
 itself: `src/desktop.css` imports `wasm/web/style.css`, and the fonts, marks
 and firmware modules come from the same directory. Design notes are in
 [DESIGN.md](DESIGN.md).
@@ -29,7 +29,7 @@ Checks (after `sh scripts/prepare-resources.sh`, which the Rust build needs):
 
 ```sh
 pnpm exec tsc --noEmit                         # front end
-cargo test --manifest-path src-tauri/Cargo.toml  # display reader, locks, SD card
+cargo test --manifest-path src-tauri/Cargo.toml  # display reader, locks, heaps, SD card
 ```
 
 `pnpm dev` alone serves the front end in a browser at
@@ -59,6 +59,21 @@ missing or invalid, a saved firmware file that is missing, and a settings
 file that cannot be read are reported when the window opens; firmware
 contents are checked at Start.
 
+The output panel's Heap tab maps the running firmware's ESP-IDF 5.x heaps
+block by block, like `eink-qemu/heapview.py`: internal DRAM, RTC and PSRAM,
+with new allocations and frees highlighted, requested sizes and corrupt
+canaries (with the default light heap poisoning), fragmentation and a
+free-memory trend. It needs the ELF the firmware was built from, chosen in
+the tab or dropped on the window, and remembered in `settings.json`; a
+rebuilt ELF is read again. The ELF must be the running app's: the image
+records its ELF's SHA-256 (PlatformIO and ESP-IDF builds both write it), and
+a different ELF is refused with both builds named. While the tab is open,
+each second Rust stops the guest, copies the heap regions through QMP
+`pmemsave` and resumes; under `-icount` the guest does not see the pause.
+"Largest block" is the TLSF block size, slightly above the firmware's
+`heap_caps_get_largest_free_block()`. Allocation stacks (the heaptrace
+plugin) are not in the app yet; use heapview.py for those.
+
 Wi-Fi uses QEMU's user network, so the firmware reaches the internet; turning
 it off keeps the radio present without a host connection. Turbo uses the
 overrides from `turbo-args.sh`, like the other launchers, but keeps idle time
@@ -71,6 +86,7 @@ device through its 10-minute auto-sleep in under a minute at a full CPU core.
 |---|---|
 | `EINK_QEMU_DATA_DIR` | Settings and the default card in this directory instead of the app's, so instances are isolated (card locks stay shared) |
 | `EINK_QEMU_AUTOSTART=1` | Start the saved firmware as soon as the window loads |
+| `EINK_QEMU_PANE` | Open the output panel on this tab: `console` or `heap` |
 | `EINK_QEMU_LOG` | Also append console lines, including the window's own errors, to this file |
 | `EINK_QEMU_SCREEN_DUMP` | Write the panel as a binary PGM to this file after every update |
 | `EINK_QEMU_BIN`, `EINK_QEMU_SHARE` | QEMU binaries and `-L` data directory |

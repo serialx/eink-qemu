@@ -1,5 +1,6 @@
 import './desktop.css';
 import { appendLines } from './console';
+import './heap';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const app = document.querySelector<HTMLElement>('.app')!;
