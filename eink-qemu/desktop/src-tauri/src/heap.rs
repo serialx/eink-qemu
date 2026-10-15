@@ -402,16 +402,31 @@ impl Elf {
         if let Some(problem) = &self.untraceable {
             return Some(problem.clone());
         }
-        // The partition table: 32-byte entries, magic 0x50AA, type 0 for apps.
-        let apps = (0x8000..0x8C00).step_by(32).map_while(|at| {
-            (u16_at(flash, at)? == 0x50AA).then(|| (flash[at + 2], u32_at(flash, at + 4)))
-        });
-        let ours = apps.filter_map(|(kind, offset)| (kind == 0).then_some(offset?)).any(|offset| {
-            let at = offset as usize + 32; // image header, first segment header
-            flash.get(at..at + APP_DESC_SIZE).and_then(|desc| self.same_app(desc)) == Some(true)
-        });
+        let ours = app_descs(flash).into_iter().any(|desc| self.same_app(desc) == Some(true));
         (!ours).then(|| "the ELF is not the chosen firmware's".to_string())
     }
+
+    /// Whether this ELF built `image` (an app image, a merged image or a
+    /// flash dump). None when either side has no descriptor to compare.
+    pub fn matches(&self, image: &[u8]) -> Option<bool> {
+        let answers: Vec<bool> = app_descs(image).into_iter().filter_map(|desc| self.same_app(desc)).collect();
+        (!answers.is_empty()).then(|| answers.contains(&true))
+    }
+}
+
+/// The app descriptors in a firmware file: an app image's own, else each app
+/// partition's in a merged image or flash dump.
+pub fn app_descs(image: &[u8]) -> Vec<&[u8]> {
+    // The descriptor follows the image header and the first segment header.
+    let desc = |at: usize| image.get(at + 32..at + 32 + APP_DESC_SIZE).filter(|d| u32_at(d, 0) == Some(APP_DESC_MAGIC));
+    if let Some(own) = desc(0) {
+        return vec![own];
+    }
+    // The partition table: 32-byte entries, magic 0x50AA, type 0 for apps.
+    (0x8000..0x8C00).step_by(32)
+        .map_while(|at| (u16_at(image, at)? == 0x50AA).then(|| (image[at + 2], u32_at(image, at + 4))))
+        .filter_map(|(kind, offset)| desc(offset? as usize).filter(|_| kind == 0))
+        .collect()
 }
 
 /// Compare the running app's descriptor with the ELF. Ok(false) while the

@@ -1,8 +1,9 @@
 /* Mock content for layout work in a plain browser (pnpm dev, or ?demo): an
    SD listing, a console log, a running X4 Pro with a drawn page and heaps
    that change with every snapshot. */
-import type { Heap, HeapSite, HeapSnapshot } from './api';
-import { attachHeap, heapSession } from './heap';
+import type { Heap, HeapSite, HeapSnapshot, Setup } from './api';
+import { attachHeap, heapSession, setElf } from './heap';
+import { attachSetup, paintSetup } from './setup';
 const $ = (id: string) => document.getElementById(id)!;
 
 interface Entry { name: string; size: number; isDir: boolean }
@@ -252,7 +253,46 @@ export function demo({ appendConsole }: { appendConsole: (text: string) => void 
     history: async () => [],
     openWindow: async () => {},
     pickElf: async () => ({ path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 }),
-    forgetElf: async () => {},
   }, { path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 });
   heapSession('running', 1);
+  demoSetup();
+}
+
+/* The firmware card over two PlatformIO builds; choices change the mock. */
+function demoSetup() {
+  const build = (env: string, chip: 'ESP32-C3' | 'ESP32-S3', version: string, size: number, modified: number) => ({
+    path: `/Users/me/crosspoint/.pio/build/${env}/firmware.bin`, name: 'firmware.bin', size,
+    folder: `~/crosspoint/.pio/build/${env}`, parent: env, modified, chip, version, project: 'crosspoint',
+  });
+  const builds = {
+    x4pro: build('x4pro', 'ESP32-S3', '1.6.5-37-g7394e40f-dirty', 5_955_968, Date.parse('2026-10-12T21:22:00')),
+    default: build('default', 'ESP32-C3', '1.6.5-37-g7394e40f-dirty', 5_926_608, Date.parse('2026-10-12T21:33:00')),
+  };
+  const elfOf = (env: string) => ({ path: `/Users/me/crosspoint/.pio/build/${env}/firmware.elf`, name: 'firmware.elf', size: 88_223_200 });
+  let setup: Setup = {
+    settings: { device: 'x4pro', panel: 'uc8279-68', wifi: true, ghosting: true, turbo: true, firmware: builds.x4pro.path,
+      card: null, elf: elfOf('x4pro').path, elfAuto: true },
+    firmware: builds.x4pro, elf: elfOf('x4pro'), elfMatches: true, elfSkipped: null,
+    recent: [
+      { path: builds.x4pro.path, name: 'firmware.bin', parent: 'x4pro', device: 'x4pro', elf: true },
+      { path: builds.default.path, name: 'firmware.bin', parent: 'default', device: 'x3', elf: true },
+    ],
+  };
+  const paint = (next: Setup) => { setup = next; setElf(next.elf); paintSetup(setup, true); };
+  const settings = (patch: Partial<Setup['settings']>) => paint({ ...setup, settings: { ...setup.settings, ...patch } });
+  attachSetup({
+    choose: () => {},
+    recent: (path) => {
+      const env = path.includes('/x4pro/') ? 'x4pro' : 'default';
+      const entry = setup.recent.find((r) => r.path === path)!;
+      paint({ ...setup, firmware: builds[env], elf: elfOf(env), settings: { ...setup.settings, device: entry.device, firmware: path, elfAuto: true },
+        recent: [entry, ...setup.recent.filter((r) => r !== entry)] });
+    },
+    device: (device) => settings({ device }),
+    panel: (panel) => settings({ panel }),
+    option: (option, on) => settings({ [option]: on }),
+    chooseElf: () => paint({ ...setup, elf: elfOf(setup.firmware!.parent), elfMatches: true, settings: { ...setup.settings, elfAuto: false } }),
+    forgetElf: () => paint({ ...setup, elf: null, elfMatches: null, settings: { ...setup.settings, elf: null, elfAuto: false } }),
+  });
+  paint(setup);
 }

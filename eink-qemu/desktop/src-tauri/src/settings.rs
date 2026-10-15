@@ -17,7 +17,22 @@ pub struct Settings {
     pub card: Option<PathBuf>,
     /// The firmware's ELF, for the heap view.
     pub elf: Option<PathBuf>,
+    /// Whether the ELF was found beside the firmware rather than chosen.
+    pub elf_auto: bool,
+    /// Firmware chosen before, newest first, each with its device and ELF.
+    pub recent: Vec<Recent>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Recent {
+    pub firmware: PathBuf,
+    pub device: String,
+    pub elf: Option<PathBuf>,
+    pub elf_auto: bool,
+}
+
+pub const MAX_RECENT: usize = 6;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -30,6 +45,8 @@ impl Default for Settings {
             firmware: None,
             card: None,
             elf: None,
+            elf_auto: false,
+            recent: Vec::new(),
         }
     }
 }
@@ -112,7 +129,17 @@ impl Settings {
         if let Some(turbo) = patch.turbo {
             next.turbo = turbo;
         }
+        next.remember();
         *self = next;
         Ok(())
+    }
+
+    /// Record the chosen firmware's device and ELF in its recent entry.
+    pub fn remember(&mut self) {
+        let Some(firmware) = self.firmware.clone() else { return };
+        let entry = Recent { firmware, device: self.device.clone(), elf: self.elf.clone(), elf_auto: self.elf_auto };
+        self.recent.retain(|r| r.firmware != entry.firmware);
+        self.recent.insert(0, entry);
+        self.recent.truncate(MAX_RECENT);
     }
 }

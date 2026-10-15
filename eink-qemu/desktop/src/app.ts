@@ -3,11 +3,12 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { api, AppError, type FileInfo, type SdEntry, type SessionInfo, type Settings } from './api';
+import { api, AppError, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './api';
 import { appendLines, clearConsole } from './console';
 import { confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
-import { attachHeap, heapSession, showPane, useElf } from './heap';
+import { attachHeap, heapSession, setElf, showPane, useElf } from './heap';
+import { attachSetup, closeSetup, paintSetup } from './setup';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const button = (id: string) => $<HTMLButtonElement>(id);
@@ -24,6 +25,8 @@ const bootNames: Record<Machine, string> = {
 let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null, run: 0, seq: -1 };
 let platform = '';
 let settings: Settings;
+/** The firmware card: firmware, device, ELF, recent firmware. */
+let setup: Setup | null = null;
 let firmware: FileInfo | null = null;
 let card: FileInfo | null = null;
 let pending = false; // Preparing firmware before the session starts.
@@ -37,12 +40,11 @@ const errorMessage = (error: unknown) => (error as Error)?.message ?? String(err
 
 /* Run state ------------------------------------------------------------ */
 
-const optionIds = ['device', 'panel', 'flash', 'turbo', 'ghosting', 'wifi'];
 function paintControls() {
   const idle = session.state === 'idle' && !pending;
   const running = session.state === 'running';
   appEl.classList.toggle('live', session.state !== 'idle' || pending);
-  for (const id of optionIds) ($(id) as HTMLButtonElement | HTMLInputElement | HTMLSelectElement).disabled = !idle;
+  paintSetup(setup, idle);
   button('start').disabled = !idle;
   button('stop').disabled = !(running || session.state === 'starting');
   button('reset').disabled = !running;
@@ -486,18 +488,25 @@ function deviceKeyboard(event: KeyboardEvent) {
 
 /* Firmware and card ------------------------------------------------------- */
 
-function paintFirmware() {
-  $('flash-name').textContent = firmware ? firmware.name : 'Choose a .bin or .xota…';
-  $('flash-name').classList.toggle('empty', !firmware);
-  $('flash').title = firmware ? firmware.path : 'Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump';
+function applySetup(next: Setup) {
+  setup = next;
+  settings = next.settings;
+  firmware = next.firmware;
+  setElf(next.elf);
+  paintControls();
 }
 
-async function useFirmware(choice: Promise<FileInfo | null>) {
+/** The card again after the ELF changed elsewhere, without finding one. */
+async function refreshSetup() {
+  try { applySetup(await api.setup(false)); } catch (error) { fail(errorMessage(error)); }
+}
+
+async function useFirmware(choice: Promise<Setup | null>) {
   try {
     const chosen = await choice;
     if (!chosen) return;
-    firmware = chosen;
-    paintFirmware();
+    applySetup(chosen);
+    if (chosen.elfSkipped) status(`${chosen.elfSkipped} beside the firmware is from another build; the Heap tab needs this build's ELF.`);
     // Choosing a firmware starts it; Start reruns the same file after Stop.
     await start();
   } catch (error) { fail(errorMessage(error)); }
@@ -505,6 +514,7 @@ async function useFirmware(choice: Promise<FileInfo | null>) {
 
 async function chooseFirmware() {
   if (session.state !== 'idle' || pending) return;
+  closeSetup();
   await useFirmware(api.pickFirmware());
 }
 
@@ -818,6 +828,7 @@ async function onDrop(paths: string[], x: number, y: number) {
   // An ELF goes to the heap view wherever it lands.
   if (paths.length === 1 && /\.elf$/i.test(paths[0])) {
     await useElf(api.heapUseElf(paths[0]));
+    await refreshSetup();
     return;
   }
   const target = dropTarget(x, y);
@@ -849,18 +860,21 @@ export async function boot() {
   firmware = state.firmware;
   card = state.card;
   if (state.session.seq > session.seq) session = state.session;
-  attachHeap({ snapshot: api.heapSnapshot, stack: api.heapStack, sites: api.heapSites, history: api.heapHistory, pickElf: api.heapPickElf, forgetElf: api.heapForgetElf, openWindow: api.heapWindow }, state.elf);
+  attachHeap({
+    snapshot: api.heapSnapshot, stack: api.heapStack, sites: api.heapSites, history: api.heapHistory,
+    pickElf: api.heapPickElf, openWindow: api.heapWindow, elfChosen: () => void refreshSetup(),
+  }, state.elf);
   heapSession(session.state, session.run);
   if (state.pane === 'heap' || state.pane === 'console') showPane(state.pane);
   if (state.pane === 'window') { showPane('heap'); void api.heapWindow(); }
   platform = state.platform;
-  $<HTMLSelectElement>('device').value = settings.device;
-  $<HTMLSelectElement>('panel').value = settings.panel;
-  $<HTMLInputElement>('wifi').checked = settings.wifi;
-  $<HTMLInputElement>('ghosting').checked = settings.ghosting;
-  $<HTMLInputElement>('turbo').checked = settings.turbo;
-  $('panel-choice').hidden = !['auto', 'x4pro'].includes(settings.device);
-  paintFirmware();
+  // The card reads the firmware, and takes up an ELF built beside it.
+  try {
+    setup = await api.setup(true);
+    settings = setup.settings;
+    firmware = setup.firmware;
+    setElf(setup.elf);
+  } catch (error) { state.problems.push(errorMessage(error)); }
   paintCard();
   if (session.machine && session.state !== 'idle') {
     // A reloaded WebView: the session kept running; the screen follows.
@@ -881,20 +895,29 @@ export async function boot() {
   if (state.autostart && firmware && session.state === 'idle') void start();
 
   const save = async (patch: Parameters<typeof api.settings>[0]) => {
-    try { settings = await api.settings(patch); } catch (error) { fail(errorMessage(error)); }
+    try {
+      settings = await api.settings(patch);
+      if (setup) setup = { ...setup, settings };
+      paintControls();
+      return true;
+    } catch (error) { fail(errorMessage(error)); return false; }
   };
-  $('device').addEventListener('change', async () => {
-    await save({ device: $<HTMLSelectElement>('device').value as Settings['device'] });
-    if (firmware) void start();
+  // A new device or panel boots the firmware again; run options wait for Start.
+  attachSetup({
+    choose: () => void chooseFirmware(),
+    recent: (path) => { if (session.state === 'idle' && !pending) void useFirmware(api.recentFirmware(path)); },
+    device: async (device) => { if (await save({ device }) && firmware) void start(); },
+    panel: async (panel) => { if (await save({ panel }) && firmware) void start(); },
+    option: (option, on) => void save({ [option]: on }),
+    chooseElf: async () => {
+      const info = await api.heapPickElf().catch((error) => { fail(errorMessage(error)); return null; });
+      if (info) await refreshSetup();
+    },
+    forgetElf: async () => {
+      try { await api.heapForgetElf(); } catch (error) { fail(errorMessage(error)); }
+      await refreshSetup();
+    },
   });
-  $('panel').addEventListener('change', async () => {
-    await save({ panel: $<HTMLSelectElement>('panel').value as Settings['panel'] });
-    if (firmware) void start();
-  });
-  for (const id of ['wifi', 'ghosting', 'turbo'] as const) {
-    $(id).addEventListener('change', () => void save({ [id]: $<HTMLInputElement>(id).checked }));
-  }
-  $('flash').addEventListener('click', () => void chooseFirmware());
   document.querySelector('[data-for="flash"]')?.addEventListener('click', () => void chooseFirmware());
   button('start').addEventListener('click', () => void start());
   button('stop').addEventListener('click', () => {

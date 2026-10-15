@@ -12,8 +12,9 @@ export interface HeapSource {
   stack(id: number): Promise<HeapStack | null>;
   sites(from: number): Promise<HeapSite[]>;
   pickElf(): Promise<FileInfo | null>;
-  forgetElf(): Promise<void>;
   openWindow(): Promise<void>;
+  /** The ELF was chosen here, from the Heap tab's message. */
+  elfChosen?(info: FileInfo): void;
 }
 
 const INTERVAL = 1000;       // ms between snapshots
@@ -135,15 +136,14 @@ export function heapSession(state: string, runId: number) {
   refresh();
 }
 
-function setElf(info: FileInfo | null) {
+/** The ELF changed (the firmware card chose, found or forgot one). */
+export function setElf(info: FileInfo | null) {
+  if (info && elf && info.path === elf.path && info.size === elf.size) return;
   elf = info;
   problem = null;
   snap = null;
   sites = [];
   selected = null;
-  $('heap-elf-name').textContent = info ? info.name : 'Load ELF…';
-  $('heap-elf').title = info ? `${info.path}\nClick to choose another ELF` : "Choose the firmware's ELF";
-  $('heap-forget').hidden = !info;
   $('heap-pause').hidden = !info;
   refresh();
 }
@@ -154,6 +154,7 @@ export async function useElf(choice: Promise<FileInfo | null>) {
     const info = await choice;
     if (!info) return;
     setElf(info);
+    source?.elfChosen?.(info);
     showPane('heap');
   } catch (error) {
     problem = errorOf(error);
@@ -166,10 +167,6 @@ const errorOf = (error: unknown) => {
   return { code, message };
 };
 
-$('heap-elf').addEventListener('click', () => { if (source) void useElf(source.pickElf()); });
-$('heap-forget').addEventListener('click', async () => {
-  try { await source?.forgetElf(); setElf(null); } catch (error) { problem = errorOf(error); refresh(); }
-});
 $('heap-pause').addEventListener('click', () => {
   paused = !paused;
   const button = $('heap-pause');

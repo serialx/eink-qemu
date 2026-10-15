@@ -31,6 +31,11 @@
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5v.01"/></symbol>
     <symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 8.8a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16.1a5 5 0 0 1 7 0M12 19.5h.01"/></symbol>
+    <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5z"/><path d="M10 10h.01M14 10h.01"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17v.01"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
   </svg>
 
@@ -58,47 +63,72 @@
         </button>
       </div>
       <div class="controls" aria-label="Emulator" data-tauri-drag-region>
-        <label class="device-choice">Device
-          <select id="device" aria-label="Device">
-            <option value="auto">Auto</option>
-            <option value="x3">X3</option>
-            <option value="x4">X4</option>
-            <option value="x4pro">X4 Pro</option>
-            <option value="picco">BOOX Picco</option>
-          </select>
-        </label>
-        <label id="panel-choice" class="device-choice" hidden>X4 Pro panel
-          <select id="panel" aria-label="X4 Pro panel">
-            <option value="uc8279-68">UC8279 (0x68, default)</option>
-            <option value="uc8179">UC8179</option>
-          </select>
-        </label>
-        <button id="flash" class="file-chip" type="button" title="Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump">
-          <svg class="icon brand-icon"><use href="#i-chip"/></svg>
-          <span class="file-chip-text"><span class="file-chip-label">Firmware</span><span id="flash-name" class="empty">Choose a .bin or .xota…</span></span>
-          <svg class="icon chevron"><use href="#i-chevron"/></svg>
-        </button>
+        <div class="setup">
+          <button id="flash" class="file-chip setup-chip" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="setup-card">
+            <span class="setup-mark" aria-hidden="true"><svg class="icon"><use href="#i-chip"/></svg></span>
+            <span class="file-chip-text">
+              <span id="flash-name" class="empty">Choose firmware…</span>
+              <span id="flash-meta" class="setup-meta" hidden></span>
+            </span>
+            <svg class="icon chevron"><use href="#i-chevron"/></svg>
+          </button>
+          <div id="setup-card" class="setup-card" role="dialog" aria-label="Firmware" tabindex="-1" hidden>
+            <div class="setup-file">
+              <span class="setup-mark large" aria-hidden="true"><svg class="icon"><use href="#i-chip"/></svg></span>
+              <div class="setup-file-text">
+                <span id="setup-name" class="setup-name"></span>
+                <span id="setup-folder" class="setup-folder"></span>
+                <span id="setup-tags" class="setup-tags"></span>
+              </div>
+              <button id="setup-choose" class="small" type="button">Choose…</button>
+            </div>
+            <section class="setup-section">
+              <h3 id="setup-device-label">Device</h3>
+              <div class="setup-line">
+                <div id="setup-devices" class="segmented" role="radiogroup" aria-labelledby="setup-device-label"></div>
+                <span id="setup-device-note" class="setup-note"></span>
+              </div>
+            </section>
+            <section class="setup-section">
+              <h3>Symbols for the Heap tab</h3>
+              <div id="setup-elf" class="setup-elf">
+                <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
+                <span id="setup-elf-name" class="setup-elf-name"></span>
+                <span id="setup-elf-tag" class="setup-tag"></span>
+                <span class="spacer"></span>
+                <button id="setup-elf-choose" class="small quiet" type="button">Choose…</button>
+                <button id="setup-elf-forget" class="icon-button small" type="button" aria-label="Forget the ELF" title="Forget the ELF"><svg class="icon"><use href="#i-x"/></svg></button>
+              </div>
+              <p id="setup-elf-note" class="setup-note" hidden></p>
+            </section>
+            <details id="setup-panel" class="setup-panel">
+              <summary><svg class="icon chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span id="setup-panel-label">Display panel</span><span id="setup-panel-value" class="setup-note"></span></summary>
+              <div class="segmented" role="radiogroup" aria-labelledby="setup-panel-label">
+                <button type="button" role="radio" data-panel="uc8279-68">UC8279 <span class="setup-note">0x68, default</span></button>
+                <button type="button" role="radio" data-panel="uc8179">UC8179</button>
+              </div>
+            </details>
+            <section id="setup-recent-section" class="setup-section setup-recent">
+              <h3>Recent</h3>
+              <div id="setup-recent"></div>
+            </section>
+          </div>
+        </div>
         <span class="spacer" data-tauri-drag-region></span>
-        <div class="switches" data-tauri-drag-region>
+        <div class="toggles" role="group" aria-label="Run options" data-tauri-drag-region>
           <div class="option">
-            <label class="switch"><input id="wifi" type="checkbox" role="switch" checked> Wi-Fi</label>
-            <button class="info" type="button" aria-label="About Wi-Fi" aria-describedby="wifi-help" aria-expanded="false">
-              <svg class="icon"><use href="#i-info"/></svg>
-            </button>
+            <button id="wifi" class="toggle" type="button" aria-pressed="true" aria-label="Wi-Fi" aria-describedby="wifi-help"><svg class="icon"><use href="#i-wifi"/></svg></button>
             <div id="wifi-help" class="tip" role="tooltip">
-              <strong>Wi-Fi</strong>
+              <strong>Wi-Fi <span class="tip-state"></span></strong>
               <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, on QEMU's user
                 network, so the firmware reaches the internet and its font downloader works.</p>
               <p class="fine">Applies when the emulator starts.</p>
             </div>
           </div>
           <div class="option">
-            <label class="switch"><input id="ghosting" type="checkbox" role="switch" checked> Ghosting</label>
-            <button class="info" type="button" aria-label="About Ghosting" aria-describedby="ghosting-help" aria-expanded="false">
-              <svg class="icon"><use href="#i-info"/></svg>
-            </button>
+            <button id="ghosting" class="toggle" type="button" aria-pressed="true" aria-label="Ghosting" aria-describedby="ghosting-help"><svg class="icon"><use href="#i-ghost"/></svg></button>
             <div id="ghosting-help" class="tip" role="tooltip">
-              <strong>E-ink ghosting</strong>
+              <strong>E-ink ghosting <span class="tip-state"></span></strong>
               <p>Available on X3 and X4 Pro. X4 shows completed frames without ghosting.</p>
               <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
                 Turn it off for clean, stable pixels when comparing screenshots.</p>
@@ -106,12 +136,9 @@
             </div>
           </div>
           <div class="option">
-            <label class="switch"><input id="turbo" type="checkbox" role="switch" checked> Turbo</label>
-            <button class="info" type="button" aria-label="About Turbo" aria-describedby="turbo-help" aria-expanded="false">
-              <svg class="icon"><use href="#i-info"/></svg>
-            </button>
+            <button id="turbo" class="toggle" type="button" aria-pressed="true" aria-label="Turbo" aria-describedby="turbo-help"><svg class="icon"><use href="#i-bolt"/></svg></button>
             <div id="turbo-help" class="tip" role="tooltip">
-              <strong>Turbo (fast, not timing-accurate)</strong>
+              <strong>Turbo: fast, not timing-accurate <span class="tip-state"></span></strong>
               <p>Runs the device as fast as your computer allows: SD card, screen refresh and SPI
                 transfer delays are cut to a minimum. Booting and page turns take a fraction of the
                 time. Idle time still passes in real time, so a resting device keeps its screen and
@@ -184,8 +211,8 @@
               <p>Pick <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> for the X3/X4 or <code>crosspoint-&lt;ver&gt;-x4pro.bin</code>
                 for the X4 Pro from the <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases" target="_blank" rel="noopener">CrossPoint releases</a>,
                 an official X4 Pro <code>.xota</code> update, a merged <code>.bin</code>, or a 16 MiB flash dump.
-                Select your device above; choose X4 for TRMNL firmware. Drop the file here or choose it;
-                loading it starts the emulator.</p>
+                The device follows from the firmware; for the X3, or TRMNL firmware on the X4, pick it in the
+                firmware card. Drop the file here or choose it; loading it starts the emulator.</p>
               <button class="button" type="button" data-for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</button>
               <p class="fine">The SD card is an image file on disk. A blank 64 MiB FAT32 card is created on first run.</p>
             </div>
@@ -206,8 +233,6 @@
           <input id="console-filter" type="search" placeholder="Filter output" aria-label="Filter console output">
         </label>
         <button id="console-clear" class="icon-button console-tool" type="button" aria-label="Clear console" title="Clear console"><svg class="icon"><use href="#i-trash"/></svg></button>
-        <button id="heap-elf" class="file-chip heap-tool" type="button" title="Choose the firmware's ELF"><svg class="icon"><use href="#i-file"/></svg><span id="heap-elf-name">Load ELF…</span></button>
-        <button id="heap-forget" class="icon-button heap-tool" type="button" aria-label="Forget the ELF" title="Forget the ELF" hidden><svg class="icon"><use href="#i-x"/></svg></button>
         <button id="heap-open" class="icon-button heap-tool" type="button" aria-label="Open the heap window" title="Open the heap window: allocation sites, churn, replay"><svg class="icon"><use href="#i-expand"/></svg></button>
         <button id="heap-pause" class="icon-button heap-tool" type="button" aria-label="Pause updates" title="Pause updates" aria-pressed="false"><svg class="icon"><use href="#i-pause"/></svg></button>
       </div>

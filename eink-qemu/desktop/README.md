@@ -38,12 +38,23 @@ http://localhost:1420 with mock content, for layout work without Rust;
 
 ## Behaviour
 
-Device, panel and the three switches persist in `settings.json`, with the
-chosen firmware and SD card, in the app's config directory. Theme and zoom
-stay in the WebView's storage, as on the page, with the desktop's panel
-widths; that storage is shared by every instance. Choosing a
-firmware starts it, as in the browser; changing Device or the X4 Pro panel
-restarts it.
+The top bar's firmware chip names the firmware, its device and whether its
+ELF is loaded; it opens the firmware card. The card shows the file (chip,
+app version, size, date), offers only the devices that take its chip (X3 and
+X4 for ESP32-C3, X4 Pro and Picco for ESP32-S3), holds the ELF for the Heap
+tab, the X4 Pro's display panel, and recent firmware. Each firmware keeps the
+device and ELF it last used, so `.pio/build/default` comes back as an X3 and
+`.pio/build/x4pro` as an X4 Pro. When a firmware is chosen, an ELF beside it
+(the same name with `.elf`, or `firmware.elf`, as PlatformIO and ESP-IDF
+write) is taken up when its app descriptor shows it built that firmware; one
+from another build is left out and the card says so. Wi-Fi, Ghosting and Turbo
+are the icon toggles beside Start; their tips say what each does.
+
+These persist in `settings.json`, with the SD card, in the app's config
+directory. Theme and zoom stay in the WebView's storage, as on the page, with
+the desktop's panel widths; that storage is shared by every instance.
+Choosing a firmware starts it, as in the browser; changing its device or the
+X4 Pro panel restarts it.
 
 The SD card is an image file that QEMU opens directly: `sd.img` in the app's
 data directory unless another card is opened from the card menu, which also
@@ -70,8 +81,8 @@ internal RAM's free memory, lowest point since boot and largest free block
 for the run. Clicking a block opens its details under its map: addresses,
 sizes, age and, with allocation stacks, the whole call stack, which can be
 copied. It needs the ELF the
-firmware was built from, chosen in the tab or dropped on the window, and
-remembered in `settings.json`; a rebuilt ELF is read again. The ELF must be
+firmware was built from, found beside the firmware, chosen in the firmware
+card or the tab, or dropped on the window, and remembered in `settings.json`; a rebuilt ELF is read again. The ELF must be
 the running app's: the image records its ELF's SHA-256 (PlatformIO and
 ESP-IDF builds both write it), and a different ELF is refused with both
 builds named. While the tab or the heap window is open, each second Rust

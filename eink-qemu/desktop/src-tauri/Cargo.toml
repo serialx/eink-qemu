@@ -43,6 +43,10 @@ opt-level = 2
 [profile.dev.package.fatfs]
 opt-level = 3
 
+# Choosing a firmware hashes its ELF (often 80 MB) to match the two.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.release]
 codegen-units = 1
 lto = true

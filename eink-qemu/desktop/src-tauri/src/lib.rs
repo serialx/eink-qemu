@@ -7,6 +7,7 @@
 //! accept only those recorded paths.
 
 mod display;
+mod firmware;
 mod heap;
 mod heapview;
 mod trace;
@@ -303,9 +304,154 @@ fn settings_set(app: State<'_, App>, patch: SettingsPatch) -> Result<Settings, A
     app.update(|settings| settings.apply(patch).map_err(|message| AppError::new("EINVAL", message)))
 }
 
+/// The firmware card: the chosen firmware, its device, the ELF, and what
+/// was chosen before.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Setup {
+    settings: Settings,
+    firmware: Option<firmware::FirmwareInfo>,
+    elf: Option<FileInfo>,
+    /// Whether the ELF built the firmware; None when that cannot be told.
+    elf_matches: Option<bool>,
+    /// An ELF beside the firmware that was left out: another build's.
+    elf_skipped: Option<String>,
+    recent: Vec<RecentInfo>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentInfo {
+    path: String,
+    name: String,
+    parent: String,
+    device: String,
+    elf: bool,
+}
+
+async fn read_image(path: &Path) -> Result<Vec<u8>, AppError> {
+    check_firmware(path)?;
+    tokio::fs::read(path).await.map_err(|e| AppError::new("ENOENT", format!("Cannot read {}: {e}", path.display())))
+}
+
+/// The ELF beside `firmware` that built it, or that cannot be told apart;
+/// and the name of one left out as another build's.
+async fn find_elf(firmware: &Path, image: &[u8]) -> (Option<(PathBuf, Arc<heap::Elf>)>, Option<String>) {
+    let mut skipped = None;
+    for path in firmware::elf_candidates(firmware) {
+        let Ok(elf) = heapview::read_elf(path.clone()).await else { continue };
+        match elf.matches(image) {
+            Some(false) => skipped = skipped.or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned())),
+            _ => return (Some((path, Arc::new(elf))), None),
+        }
+    }
+    (None, skipped)
+}
+
+/// The card's contents. With `detect`, an ELF beside the firmware is taken
+/// up when none is chosen.
+async fn setup(app: &App, detect: bool) -> Result<Setup, AppError> {
+    let mut settings = app.settings.lock().unwrap().clone();
+    let image = match settings.firmware.as_deref() {
+        Some(path) => read_image(path).await.ok(),
+        None => None,
+    };
+    let mut skipped = None;
+    if let (true, None, Some(path), Some(image)) = (detect, &settings.elf, settings.firmware.clone(), image.as_deref()) {
+        let (found, left) = find_elf(&path, image).await;
+        skipped = left;
+        if let Some((elf, read)) = found {
+            settings = app.update(|settings| {
+                settings.elf = Some(elf);
+                settings.elf_auto = true;
+                settings.remember();
+                Ok(())
+            })?;
+            app.heap.lock().await.set_elf(Some(read));
+        }
+    }
+    let elf_matches = match (settings.elf.as_deref(), image.as_deref()) {
+        (Some(path), Some(image)) => app.heap.lock().await.elf(path).await.ok().and_then(|elf| elf.matches(image)),
+        _ => None,
+    };
+    let recent = settings.recent.iter()
+        .filter(|r| r.firmware.is_file())
+        .map(|r| RecentInfo {
+            path: r.firmware.to_string_lossy().into_owned(),
+            name: r.firmware.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            parent: firmware::parent_name(&r.firmware),
+            device: r.device.clone(),
+            elf: r.elf.as_ref().is_some_and(|e| e.is_file()),
+        })
+        .collect();
+    Ok(Setup {
+        firmware: settings.firmware.as_deref().zip(image.as_deref()).map(|(path, image)| firmware::describe(path, image)),
+        elf: settings.elf.as_deref().and_then(file_info),
+        elf_matches,
+        elf_skipped: skipped,
+        recent,
+        settings,
+    })
+}
+
+/// Make `path` the firmware. Its device is the one it ran on before, else
+/// one that takes its chip; its ELF is the one beside it that built it, else
+/// the one chosen for it before.
+async fn choose_firmware(app: &App, path: PathBuf) -> Result<Setup, AppError> {
+    let image = read_image(&path).await?;
+    let chip = firmware::chip(&path, &image);
+    let (found, skipped) = find_elf(&path, &image).await;
+    let found_path = found.as_ref().map(|(p, _)| p.clone());
+    let settings = app.update(|settings| {
+        let before = settings.recent.iter().find(|r| r.firmware == path).cloned();
+        let fits = |device: &str| chip.map_or(device != "auto", |chip| chip.devices().contains(&device));
+        if let Some(device) = before.as_ref().map(|r| r.device.clone()).filter(|d| fits(d)) {
+            settings.device = device;
+        } else if !fits(&settings.device) {
+            if let Some(chip) = chip {
+                // The device last used with this chip, else its default.
+                settings.device = settings.recent.iter().map(|r| r.device.as_str()).find(|d| chip.devices().contains(d))
+                    .unwrap_or(chip.devices()[0]).to_string();
+            }
+        }
+        let same = settings.firmware.as_ref() == Some(&path);
+        if let Some(elf) = found_path {
+            settings.elf = Some(elf);
+            settings.elf_auto = true;
+        } else if let Some(chosen) = before.filter(|r| !r.elf_auto).and_then(|r| r.elf).filter(|e| e.is_file()) {
+            settings.elf = Some(chosen);
+            settings.elf_auto = false;
+        } else if !same || settings.elf_auto {
+            settings.elf = None;
+            settings.elf_auto = false;
+        }
+        settings.firmware = Some(path.clone());
+        settings.remember();
+        Ok(())
+    })?;
+    {
+        let mut heap = app.heap.lock().await;
+        match (found, settings.elf.as_deref()) {
+            (Some((_, read)), _) => heap.set_elf(Some(read)),
+            (None, Some(elf)) => { let _ = heap.elf(elf).await; }
+            (None, None) => heap.set_elf(None),
+        }
+    }
+    let mut setup = setup(app, false).await?;
+    setup.elf_skipped = skipped;
+    Ok(setup)
+}
+
+/// The firmware card's contents. With `detect`, an ELF built beside the
+/// firmware is taken up when none is chosen.
+#[tauri::command]
+async fn firmware_setup(app: State<'_, App>, detect: bool) -> Result<Setup, AppError> {
+    setup(&app, detect).await
+}
+
 /// Choose the firmware in a native dialog. None when cancelled.
 #[tauri::command]
-async fn firmware_pick(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
+async fn firmware_pick(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<Setup>, AppError> {
     let Some(path) = pick(&handle, Pick::Open { title: "Choose firmware", filter: Some(("Firmware", &["bin", "xota"])) })
         .await
         .into_iter()
@@ -313,24 +459,23 @@ async fn firmware_pick(handle: tauri::AppHandle, app: State<'_, App>) -> Result<
     else {
         return Ok(None);
     };
-    let info = check_firmware(&path)?;
-    app.update(|settings| {
-        settings.firmware = Some(path);
-        Ok(())
-    })?;
-    Ok(Some(info))
+    choose_firmware(&app, path).await.map(Some)
 }
 
 /// Use a firmware file that was dropped on the window.
 #[tauri::command]
-fn firmware_use(app: State<'_, App>, path: PathBuf) -> Result<FileInfo, AppError> {
+async fn firmware_use(app: State<'_, App>, path: PathBuf) -> Result<Setup, AppError> {
     app.granted(&path)?;
-    let info = check_firmware(&path)?;
-    app.update(|settings| {
-        settings.firmware = Some(path);
-        Ok(())
-    })?;
-    Ok(info)
+    choose_firmware(&app, path).await
+}
+
+/// Choose a firmware from the recent list again.
+#[tauri::command]
+async fn firmware_recent(app: State<'_, App>, path: PathBuf) -> Result<Setup, AppError> {
+    if !app.settings.lock().unwrap().recent.iter().any(|r| r.firmware == path) {
+        return Err(AppError::new("EPERM", format!("{} is not a recent firmware.", path.display())));
+    }
+    choose_firmware(&app, path).await
 }
 
 #[tauri::command]
@@ -601,6 +746,8 @@ async fn use_elf(app: &App, path: PathBuf) -> Result<FileInfo, AppError> {
     let info = file_info(&path).ok_or_else(|| AppError::new("EINVAL", "Unreadable ELF path."))?;
     app.update(|settings| {
         settings.elf = Some(path);
+        settings.elf_auto = false;
+        settings.remember();
         Ok(())
     })?;
     app.heap.lock().await.set_elf(Some(Arc::new(elf)));
@@ -631,6 +778,8 @@ async fn heap_use_elf(app: State<'_, App>, path: PathBuf) -> Result<FileInfo, Ap
 async fn heap_forget_elf(app: State<'_, App>) -> Result<(), AppError> {
     app.update(|settings| {
         settings.elf = None;
+        settings.elf_auto = false;
+        settings.remember();
         Ok(())
     })?;
     app.heap.lock().await.set_elf(None);
@@ -841,6 +990,8 @@ pub fn run() {
             settings_set,
             firmware_pick,
             firmware_use,
+            firmware_recent,
+            firmware_setup,
             firmware_read,
             start,
             stop,

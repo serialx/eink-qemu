@@ -48,13 +48,6 @@ document.addEventListener('keydown', (event) => {
   if (event.code === 'Escape' && closeTips()) event.preventDefault();
 });
 
-/* The X4 Pro panel choice only applies to that board. */
-function showPanelChoice() {
-  $('panel-choice').hidden = !['auto', 'x4pro'].includes($<HTMLSelectElement>('device').value);
-}
-$('device').addEventListener('change', showPanelChoice);
-showPanelChoice();
-
 /* Panel widths: the gutters at the stage's edges set the grid's variables.
    The stage keeps room for a device; widths shrink with the window. */
 const defaults = { sd: 300, output: 380 };

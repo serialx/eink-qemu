@@ -77,7 +77,9 @@ The WebView never names a host path on its own. Native dialogs (firmware,
 cards, uploads, saving files and screenshots) run in Rust, and files dropped
 on the window are recorded from the window's drop event. Commands that take
 a path from the WebView (`firmware_use`, `sd_plan_upload`, `sd_upload`)
-accept only paths recorded that way. The capability file grants the WebView
+accept only paths recorded that way; `firmware_recent` accepts only a path
+already in the settings' recent list, and the ELF found beside a firmware is
+looked up in Rust. The capability file grants the WebView
 no dialog or file permissions, and the CSP allows no inline script.
 
 ## Display: `-display eink,addr=<socket>`
@@ -187,6 +189,15 @@ served from `public/boot`; merged images and full dumps pass through after
 validating their partition table and application checksums. The composed
 image goes to Rust as a raw request body, and QEMU runs a temporary copy,
 because it writes NVS and OTA data to flash.
+
+Choosing a firmware (`choose_firmware` in `lib.rs`) is decided in Rust, which
+reads the file: its image header names the chip (`firmware.rs`), which limits
+the devices; the recent entry for the path restores its device and a chosen
+ELF; and an ELF beside it is taken up when `Elf::matches` finds its app
+descriptor in the image (the ELF's SHA-256, else version, name and build
+time), across an app image or every app partition of a merged image. The
+WebView's firmware card (`setup.ts`) paints the resulting `Setup` and sends
+choices back; the device seg never offers Auto once the chip is known.
 
 ## Packaging
 

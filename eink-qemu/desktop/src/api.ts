@@ -19,8 +19,31 @@ export interface Settings {
   turbo: boolean;
   firmware: string | null;
   card: string | null;
+  elf: string | null;
+  /** The ELF was found beside the firmware rather than chosen. */
+  elfAuto: boolean;
 }
 export interface FileInfo { path: string; name: string; size: number }
+export interface FirmwareInfo extends FileInfo {
+  /** The folder holding it (home as ~), and that folder's own name. */
+  folder: string; parent: string;
+  /** Milliseconds since the epoch. */
+  modified: number | null;
+  chip: 'ESP32-C3' | 'ESP32-S3' | null;
+  version: string | null; project: string | null;
+}
+export interface RecentFirmware { path: string; name: string; parent: string; device: Settings['device']; elf: boolean }
+/** The firmware card (src-tauri/src/lib.rs `Setup`). */
+export interface Setup {
+  settings: Settings;
+  firmware: FirmwareInfo | null;
+  elf: FileInfo | null;
+  /** Whether the ELF built the firmware; null when that cannot be told. */
+  elfMatches: boolean | null;
+  /** An ELF beside the firmware that was left out as another build's. */
+  elfSkipped: string | null;
+  recent: RecentFirmware[];
+}
 export interface Attached {
   session: SessionInfo;
   settings: Settings;
@@ -89,8 +112,10 @@ export const api = {
   note: (line: string) => call<void>('note', { line }).catch(() => {}),
   settings: (patch: Partial<Pick<Settings, 'device' | 'panel' | 'wifi' | 'ghosting' | 'turbo'>>) => call<Settings>('settings_set', { patch }),
   // Native dialogs run in Rust; host paths come back only as results.
-  pickFirmware: () => call<FileInfo | null>('firmware_pick'),
-  useFirmware: (path: string) => call<FileInfo>('firmware_use', { path }),
+  pickFirmware: () => call<Setup | null>('firmware_pick'),
+  useFirmware: (path: string) => call<Setup>('firmware_use', { path }),
+  recentFirmware: (path: string) => call<Setup>('firmware_recent', { path }),
+  setup: (detect: boolean) => call<Setup>('firmware_setup', { detect }),
   readFirmware: async () => new Uint8Array(await call<ArrayBuffer>('firmware_read')),
   start: (flash: Uint8Array, options: StartOptions) =>
     call<SessionInfo>('start', flash, { headers: { 'x-options': JSON.stringify(options) } }),
