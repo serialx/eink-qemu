@@ -52,6 +52,10 @@ tests = {
   'test-envlist': [],
 }
 
+if host_os == 'windows' and host_arch == 'x86_64'
+  tests += {'test-win32-sigjump': []}
+endif
+
 if have_system or have_tools
   tests += {
     'test-qmp-event': [testqapi],

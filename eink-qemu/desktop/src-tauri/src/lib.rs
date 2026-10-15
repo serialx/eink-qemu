@@ -974,6 +974,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // At Windows' larger display scales the default logical size can
+            // extend below the taskbar, hiding the device controls. Let the
+            // window manager fit it to the work area in that case.
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                if let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.outer_size()) {
+                    let area = monitor.work_area();
+                    if size.width > area.size.width || size.height > area.size.height {
+                        window.maximize()?;
+                    }
+                }
+            }
             // EINK_QEMU_DATA_DIR isolates an instance (settings, default card),
             // e.g. for tests running beside a normal window. Card locks stay
             // shared so two instances never edit one card.

@@ -153,6 +153,12 @@ jobs:
         run: |
           ninja -C build install
 
+      - name: Test Windows generated-code jumps
+        if: matrix.platform == 'x86_64-w64-mingw32'
+        run: |
+          ninja -C build tests/unit/test-win32-sigjump.exe
+          ./build/pyvenv/bin/meson test -C build --print-errorlogs test-win32-sigjump
+
       - name: Install the heaptrace plugin (${{ matrix.target }} @ ${{ matrix.platform }})
         run: |
           # eink-qemu: the heap view's allocation tracer (contrib/plugins/heaptrace.c),

@@ -85,9 +85,36 @@ void __attribute__((noreturn)) __mingw_longjmp(jmp_buf, int);
  * savemask parameter will always be zero we can safely define these
  * in terms of setjmp/longjmp on Win32.
  */
+#if defined(__x86_64__)
+/*
+ * The x64 CRT's NULL-frame longjmp is not reliable under Windows on ARM's
+ * x64 emulation. TCG needs a non-unwinding jump across generated frames.
+ * Use the compiler's paired builtins, keeping the return value separately
+ * because __builtin_longjmp only accepts 1. Translation recovery uses -2
+ * and -3, so treating every jump as 1 would silently break it.
+ * This buffer must never be passed to the CRT setjmp/longjmp functions.
+ */
+typedef struct {
+    void *context[5];
+    volatile int value;
+} QemuWin32JmpBuf[1];
+
+static inline __attribute__((noreturn))
+void qemu_win32_siglongjmp(QemuWin32JmpBuf env, int value)
+{
+    env->value = value ? value : 1;
+    __builtin_longjmp(env->context, 1);
+}
+
+#define sigjmp_buf QemuWin32JmpBuf
+#define sigsetjmp(env, savemask) \
+    (__builtin_setjmp((env)->context) ? (env)->value : 0)
+#define siglongjmp(env, val) qemu_win32_siglongjmp(env, val)
+#else
 #define sigjmp_buf jmp_buf
 #define sigsetjmp(env, savemask) setjmp(env)
 #define siglongjmp(env, val) longjmp(env, val)
+#endif
 
 /* Missing POSIX functions. Don't use MinGW-w64 macros. */
 #ifndef _POSIX_THREAD_SAFE_FUNCTIONS

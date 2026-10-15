@@ -95,6 +95,19 @@ pub struct QemuPaths {
 }
 
 impl QemuPaths {
+    /// QEMU's MinGW file APIs do not consistently accept Windows verbatim
+    /// paths (notably qemu_find_file appends a forward slash to -L).
+    /// Tauri returns those paths for packaged resources. Keep the ordinary
+    /// DOS spelling whenever it names the same file; dunce preserves
+    /// verbatim paths whose semantics cannot safely be represented otherwise.
+    pub fn normalized(self) -> Self {
+        Self {
+            bin: dunce::simplified(&self.bin).to_owned(),
+            share: self.share.map(|p| dunce::simplified(&p).to_owned()),
+            plugins: dunce::simplified(&self.plugins).to_owned(),
+        }
+    }
+
     /// The heaptrace plugin (contrib/plugins/heaptrace.c), if this QEMU has it.
     pub fn heaptrace(&self) -> Option<PathBuf> {
         let name = if cfg!(windows) { "libheaptrace.dll" } else if cfg!(target_os = "macos") { "libheaptrace.dylib" } else { "libheaptrace.so" };
@@ -334,7 +347,7 @@ impl Session {
         }
         Arc::new(Session {
             app,
-            qemu,
+            qemu: qemu.normalized(),
             ops: Mutex::new(()),
             shared: StdMutex::new(Shared {
                 info: SessionInfo { state: "idle", machine: None, turbo: false, exit: None, run: 0, seq: 0 },
@@ -1008,6 +1021,35 @@ impl Session {
     /// Stop the emulator before the app exits.
     pub async fn shutdown(self: &Arc<Self>) {
         let _ = self.stop().await;
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_qemu_paths_are_preserved() {
+        let paths = QemuPaths {
+            bin: "qemu/bin".into(), share: Some("qemu/share".into()),
+            plugins: "qemu/plugins".into(),
+        }.normalized();
+        assert_eq!(paths.bin, Path::new("qemu/bin"));
+        assert_eq!(paths.share.as_deref(), Some(Path::new("qemu/share")));
+        assert_eq!(paths.plugins, Path::new("qemu/plugins"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn packaged_qemu_paths_do_not_use_verbatim_dos_paths() {
+        let paths = QemuPaths {
+            bin: r"\\?\C:\Users\QA User\eink-qemu\qemu\bin".into(),
+            share: Some(r"\\?\C:\Users\QA User\eink-qemu\qemu\share".into()),
+            plugins: r"\\?\C:\Users\QA User\eink-qemu\qemu\plugins".into(),
+        }.normalized();
+        assert_eq!(paths.binary("x3"), Path::new(r"C:\Users\QA User\eink-qemu\qemu\bin\qemu-system-riscv32.exe"));
+        assert_eq!(paths.share.as_deref(), Some(Path::new(r"C:\Users\QA User\eink-qemu\qemu\share")));
+        assert_eq!(paths.plugins, Path::new(r"C:\Users\QA User\eink-qemu\qemu\plugins"));
     }
 }
 
