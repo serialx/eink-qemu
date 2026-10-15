@@ -129,11 +129,13 @@ fragmentation and a free-memory trend. Each refresh stops the VM, copies the hea
 regions with `pmemsave` and resumes; under `-icount` the guest does not see the
 pause. It takes the monitor socket (`--monitor` for another one, e.g. drive.py's);
 `--once` prints a text summary. The ELF must match the running app.
-The desktop app's Heap tab (`eink-qemu/desktop`) shows the same map, with the trend,
-without a monitor socket.
+The desktop app (`eink-qemu/desktop`) shows the same page in its heap window,
+without a monitor socket, and loads the plugin below by itself.
 
 To see which code allocated each block, also load the heaptrace plugin:
-`run.sh flash.bin sd.img -plugin build/contrib/plugins/libheaptrace.so,elf=firmware.elf`.
+`run.sh flash.bin sd.img -plugin build/contrib/plugins/libheaptrace.so,elf=firmware.elf`
+(`.dylib` on macOS, `.dll` on Windows; release archives carry it in `qemu/plugins/`,
+and QEMU needs `--enable-plugins`, which the release builds have).
 It hooks `poison_allocated_region()` (present with the default light heap
 poisoning), `multi_heap_free()` and `multi_heap_realloc()`, and logs every
 allocation, free and realloc with its time and call stack to

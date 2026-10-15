@@ -1,86 +1,40 @@
 #!/usr/bin/env bash
 #
-# Bundle required DLLs for Windows builds (if any are needed)
+# Bundle the DLLs the Windows build needs beside its executables.
 #
-# This script detects missing DLLs for the QEMU binaries and copies them
-# from the MinGW64 bin directory. With proper static linking, no DLLs
-# should be needed, but this provides a safety net.
+# eink-qemu: QEMU is built dynamically (plugins need it), so the executables
+# and the plugins in ../plugins load glib, pixman, SDL and the rest from the
+# MSYS2 UCRT64 tree. ldd lists every DLL a binary loads, transitively; those
+# that resolve into /ucrt64/bin are copied next to the executables, where
+# Windows looks first (for the plugins too, as QEMU's process loads them).
 #
 
 set -euo pipefail
 
 INSTALL_BIN_DIR="${1:-install/qemu/bin}"
+PLUGIN_DIR="${INSTALL_BIN_DIR}/../plugins"
 MINGW_BIN_DIR="/ucrt64/bin"
 
-echo "Checking for missing DLLs in ${INSTALL_BIN_DIR}..."
+binaries=("${INSTALL_BIN_DIR}"/*.exe)
+if compgen -G "${PLUGIN_DIR}/*.dll" > /dev/null; then
+    binaries+=("${PLUGIN_DIR}"/*.dll)
+fi
 
-# Collect all missing DLLs from all executables
-missing_dlls=()
-
-for exe in "${INSTALL_BIN_DIR}"/*.exe; do
-    if [[ -f "${exe}" ]]; then
-        echo "Analyzing: $(basename "${exe}")"
-        # Use ldd to find dependencies marked as "not found"
-        # Also filter for DLLs that exist in ucrt64/bin (our responsibility)
-        while IFS= read -r line; do
-            # Extract the DLL name from lines like "libfoo.dll => not found"
-            if [[ "${line}" =~ ^[[:space:]]*([^[:space:]]+\.dll)[[:space:]]*'=>'[[:space:]]*'not found' ]]; then
-                dll="${BASH_REMATCH[1]}"
-                # Check if this DLL exists in our MinGW bin dir
-                if [[ -f "${MINGW_BIN_DIR}/${dll}" ]]; then
-                    missing_dlls+=("${dll}")
-                fi
-            fi
-        done <<EOF
-$(ldd "${exe}" 2>/dev/null || true)
-EOF
-    fi
+declare -A dlls=()
+for binary in "${binaries[@]}"; do
+    echo "Analyzing: ${binary}"
+    while IFS= read -r line; do
+        # "libfoo.dll => /ucrt64/bin/libfoo.dll (0x...)"
+        if [[ "${line}" =~ ^[[:space:]]*([^[:space:]]+\.dll)[[:space:]]*'=>'[[:space:]]*(/ucrt64/bin/[^[:space:]]+) ]]; then
+            dlls["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+        elif [[ "${line}" == *"not found"* ]]; then
+            echo "ERROR: ${binary}: ${line}"
+            exit 1
+        fi
+    done < <(ldd "${binary}")
 done
 
-# Remove duplicates
-if [[ ${#missing_dlls[@]} -gt 0 ]]; then
-    readarray -t missing_dlls <<EOF
-$(printf '%s\n' "${missing_dlls[@]}" | sort -u)
-EOF
-fi
-
-# Copy missing DLLs
-if [[ ${#missing_dlls[@]} -eq 0 ]]; then
-    echo ""
-    echo "No missing DLLs found - static linking appears to be working correctly."
-    echo ""
-else
-    echo ""
-    echo "Found ${#missing_dlls[@]} missing DLLs. Copying from ${MINGW_BIN_DIR}..."
-
-    for dll in "${missing_dlls[@]}"; do
-        src="${MINGW_BIN_DIR}/${dll}"
-        if [[ -f "${src}" ]]; then
-            cp -v "${src}" "${INSTALL_BIN_DIR}/"
-        else
-            echo "WARNING: ${dll} not found in ${MINGW_BIN_DIR}"
-        fi
-    done
-
-    echo ""
-    echo "DLL bundling complete."
-
-    # Re-check for any still-missing dependencies (recursive deps)
-    echo ""
-    echo "Re-checking dependencies after bundling..."
-    still_missing=0
-    for exe in "${INSTALL_BIN_DIR}"/*.exe; do
-        if [[ -f "${exe}" ]]; then
-            missing=$(ldd "${exe}" 2>/dev/null | grep -i "not found" || true)
-            if [[ -n "${missing}" ]]; then
-                echo "WARNING: Still missing deps for $(basename "${exe}"):"
-                echo "${missing}"
-                still_missing=1
-            fi
-        fi
-    done
-
-    if [[ ${still_missing} -eq 0 ]]; then
-        echo "All dependencies resolved."
-    fi
-fi
+for dll in $(printf '%s\n' "${!dlls[@]}" | sort); do
+    cp -v "${MINGW_BIN_DIR}/${dll}" "${INSTALL_BIN_DIR}/"
+done
+echo "Bundled ${#dlls[@]} DLLs."

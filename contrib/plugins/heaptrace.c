@@ -32,6 +32,11 @@
 
 #include <qemu-plugin.h>
 
+/* Windows opens files in text mode unless told otherwise. */
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 #define MAX_DEPTH 64
@@ -727,7 +732,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         fprintf(stderr, "heaptrace: %s has no .debug_frame or .eh_frame\n", elf_path);
         return -1;
     }
-    out_fd = open(out, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+    out_fd = open(out, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_BINARY, 0644);
     if (out_fd < 0) {
         perror(out);
         return -1;

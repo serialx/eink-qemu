@@ -23,7 +23,11 @@ from array import array
 import argparse, bisect, glob, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "heapview.html")
+HERE = os.path.dirname(os.path.abspath(__file__))
+# The page, and the module and stylesheet it shares with the desktop app's heap window.
+FILES = {"/": ("heapview.html", "text/html; charset=utf-8"),
+         "/heapview.js": ("heapview.js", "text/javascript; charset=utf-8"),
+         "/heapview.css": ("heapview.css", "text/css; charset=utf-8")}
 
 # MALLOC_CAP_* bits (esp_heap_caps.h)
 CAPS = {0: "EXEC", 1: "32BIT", 2: "8BIT", 3: "DMA", 10: "SPIRAM", 11: "INTERNAL",
@@ -485,7 +489,7 @@ class Viewer:
                 try:
                     self.last = self.snapshot()
                 except (OSError, ConnectionError) as e:
-                    self.last = dict(time=time.time(), elf=self.elf, error=str(e), heaps=[],
+                    self.last = dict(time=time.time(), elf=self.elf, error=f"Cannot read the guest: {e}", heaps=[],
                                      interval=self.interval)
                 self.last_time = time.time()
             return self.last
@@ -519,9 +523,10 @@ def serve(viewer, port):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == "/":
-                with open(PAGE, "rb") as f:
-                    self.send(f.read(), "text/html; charset=utf-8")
+            if self.path in FILES:
+                name, ctype = FILES[self.path]
+                with open(os.path.join(HERE, name), "rb") as f:
+                    self.send(f.read(), ctype)
             elif self.path == "/snapshot":
                 self.send(json.dumps(viewer.get(), separators=(",", ":")).encode(), "application/json")
             elif self.path == "/history":

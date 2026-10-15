@@ -153,6 +153,16 @@ jobs:
         run: |
           ninja -C build install
 
+      - name: Install the heaptrace plugin (${{ matrix.target }} @ ${{ matrix.platform }})
+        run: |
+          # eink-qemu: the heap view's allocation tracer (contrib/plugins/heaptrace.c),
+          # for heapview.py and the desktop app; QEMU does not install contrib plugins.
+          mkdir -p install/qemu/plugins
+          for f in build/contrib/plugins/libheaptrace.so build/contrib/plugins/libheaptrace.dylib build/contrib/plugins/libheaptrace.dll; do
+            if [ -f "$f" ]; then cp -v "$f" install/qemu/plugins/; fi
+          done
+          ls install/qemu/plugins/libheaptrace.*
+
       - name: Smoke test (${{ matrix.target }} @ ${{ matrix.platform }})
         if : ${{ matrix.platform == 'x86_64-linux-gnu' }}
         run: |

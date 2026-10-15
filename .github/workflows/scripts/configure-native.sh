@@ -20,6 +20,7 @@ echo DBG
     --enable-gcrypt \
     --enable-sdl \
     --enable-pixman \
+    --enable-plugins \
     --enable-png \
     --enable-slirp \
     --enable-stack-protector \
