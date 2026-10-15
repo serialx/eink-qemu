@@ -207,10 +207,136 @@ jobs:
           path: |
             dist/
 
+  # eink-qemu: the desktop app's generated inputs (boot assets, turbo
+  # overrides, blank card), made once on Linux where dosfstools and mtools
+  # are at hand, for every desktop build.
+  desktop-resources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dosfstools and mtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dosfstools mtools
+      - name: Prepare resources
+        run: sh eink-qemu/desktop/scripts/prepare-resources.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-resources
+          path: |
+            eink-qemu/desktop/public/boot
+            eink-qemu/desktop/src-tauri/resources
+          if-no-files-found: error
+
+  # eink-qemu: the Tauri desktop app, bundling the QEMU the Build job made for
+  # the same platform. Linux is not packaged yet.
+  desktop:
+    needs: [ Vars, Build, desktop-resources ]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: aarch64-apple-darwin
+            runs_on: macos-14
+            qemu_platform: aarch64-apple-darwin
+          - platform: x86_64-apple-darwin
+            runs_on: macos-15-intel
+            qemu_platform: x86_64-apple-darwin
+          - platform: x86_64-pc-windows-msvc
+            runs_on: windows-2022
+            qemu_platform: x86_64-w64-mingw32
+    runs-on: ${{ matrix.runs_on }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: eink-qemu/desktop
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-resources
+          path: eink-qemu/desktop
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-qemu-*-${{ matrix.qemu_platform }}
+          path: qemu-dist
+          merge-multiple: true
+
+      - name: Unpack QEMU
+        run: |
+          mkdir -p ../../qemu-install
+          for archive in ../../qemu-dist/*.tar.xz; do tar -xJf "$archive" -C ../../qemu-install; done
+          ls -l ../../qemu-install/qemu/bin
+
+      # The macOS QEMU links Homebrew's libraries, which the bundle copies.
+      - name: Install Homebrew libraries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ../../.github/workflows/scripts/prerequisites-macos.sh
+          brew install dosfstools   # fsck.fat for the SD tests
+
+      - name: Stage QEMU (macOS)
+        if: runner.os == 'macOS'
+        run: EINK_QEMU_BUILD="$PWD/../../qemu-install/qemu/bin" sh scripts/bundle-qemu.sh
+
+      - name: Stage QEMU (Windows)
+        if: runner.os == 'Windows'
+        run: sh scripts/bundle-qemu-windows.sh ../../qemu-install/qemu
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.5.1
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install front-end dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: |
+          pnpm exec tsc --noEmit
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      # The resources are prepared already, so only the front end is built.
+      - name: Build
+        run: |
+          case "$RUNNER_OS" in Windows) bundles=nsis ;; *) bundles=dmg ;; esac
+          pnpm tauri build --bundles "$bundles" \
+            --config src-tauri/tauri.bundle.conf.json \
+            --config '{"build":{"beforeBuildCommand":"pnpm build:web"}}'
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.Vars.outputs.VERSION }}
+          PROJECT_NAME: ${{ needs.Vars.outputs.PROJECT_NAME }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            source=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe)
+            name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}-setup.exe
+          else
+            source=$(ls src-tauri/target/release/bundle/dmg/*.dmg)
+            name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}.dmg
+          fi
+          mkdir -p ../../dist
+          cp "$source" "../../dist/$name"
+          echo "dist/dist-desktop-${PLATFORM}/${name}" > "../../dist/file_desktop_${PLATFORM}"
+          ls -l ../../dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-desktop-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
   Upload:
     if: startsWith(github.ref, 'refs/tags/')
-    # eink-qemu: the browser build and its smoke test must pass too
-    needs: [ Vars, Build, wasm ]
+    # eink-qemu: the browser build and its smoke test, and the desktop app, must pass too
+    needs: [ Vars, Build, wasm, desktop ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -268,6 +394,11 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           pattern: dist-qemu-*
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-desktop-*
           path: dist
 
       - name: Create a checksum file
