@@ -1599,10 +1599,21 @@ fn partition_cluster(image: &Path) -> u64 {
     u16::from_le_bytes([boot[11], boot[12]]) as u64 * boot[13] as u64
 }
 
+/// The space a file takes on disk: less than its length when sparse.
 #[cfg(unix)]
 fn on_disk(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     fs::metadata(path).unwrap().blocks() * 512
+}
+
+#[cfg(windows)]
+fn on_disk(path: &Path) -> u64 {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut high = 0u32;
+    // SAFETY: a NUL-terminated path and a valid out pointer.
+    let low = unsafe { windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
+    (high as u64) << 32 | low as u64
 }
 
 #[test]
@@ -1612,7 +1623,6 @@ fn new_cards_are_sparse_with_stock_clusters() {
     let made = sd::create_card(&image, sd::DEFAULT_CARD).unwrap();
     assert_eq!(made, sd::MadeCard { size: 16 * GIB, cluster: 32 * 1024, sparse: true });
     assert_eq!(fs::metadata(&image).unwrap().len(), 16 * GIB);
-    #[cfg(unix)]
     assert!(on_disk(&image) < 16 * 1024 * 1024, "{} bytes on disk", on_disk(&image));
     let listing = sd::list(&image, "/").unwrap();
     assert_eq!(listing.fs_type, "FAT32");
@@ -1678,7 +1688,6 @@ fn copies_stay_sparse() {
     let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&copy).unwrap();
     sd::sparse_copy(&image, &file).unwrap();
     assert_eq!(fs::metadata(&copy).unwrap().len(), 16 * GIB);
-    #[cfg(unix)]
     assert!(on_disk(&copy) < 24 * 1024 * 1024, "{} bytes on disk", on_disk(&copy));
     let dest = dir.path().join("a.out");
     sd::export(&copy, "/a.bin", &dest).unwrap();
