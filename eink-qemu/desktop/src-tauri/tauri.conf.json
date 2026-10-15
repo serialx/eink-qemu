@@ -32,7 +32,8 @@
     "targets": "all",
     "category": "DeveloperTool",
     "macOS": {
-      "minimumSystemVersion": "12.3"
+      "minimumSystemVersion": "12.3",
+      "signingIdentity": "-"
     },
     "copyright": "GPL-2.0-or-later",
     "icon": [
