@@ -60,9 +60,16 @@ file that cannot be read are reported when the window opens; firmware
 contents are checked at Start.
 
 The output panel's Heap tab maps the running firmware's ESP-IDF 5.x heaps
-block by block: internal DRAM, RTC and PSRAM, with new allocations and frees
-highlighted, requested sizes and corrupt canaries (with the default light heap
-poisoning), fragmentation and a free-memory trend. It needs the ELF the
+block by block: internal DRAM, RTC and PSRAM, each wrapped into rows at a
+scale the tab's − and + choose (every heap at the same scale, or Fit), with
+new allocations and frees highlighted, requested sizes and corrupt canaries
+(with the default light heap poisoning) and fragmentation. A heap's header
+folds its map to a single bar; empty heaps (the C3's retention and boot-ROM
+heaps, until the main one fills) start folded. Above the maps, a trend shows
+internal RAM's free memory, lowest point since boot and largest free block
+for the run. Clicking a block opens its details under its map: addresses,
+sizes, age and, with allocation stacks, the whole call stack, which can be
+copied. It needs the ELF the
 firmware was built from, chosen in the tab or dropped on the window, and
 remembered in `settings.json`; a rebuilt ELF is read again. The ELF must be
 the running app's: the image records its ELF's SHA-256 (PlatformIO and
@@ -75,8 +82,8 @@ firmware's `heap_caps_get_largest_free_block()`.
 
 When the ELF is chosen before Start and matches the firmware, QEMU also loads
 the heaptrace plugin (`contrib/plugins/heaptrace.c`), which logs every
-allocation and free with its call stack. The tab then names the function that
-allocated a block, and the heap window (the tab's expand button) is
+allocation and free with its call stack. The tab then colours each block by
+the function that allocated it, naming it on hover, and the heap window (the tab's expand button) is
 heapview.py's full page: blocks colored by allocation site, live bytes and
 churn by site, the newest events, a stack for any block, and a timeline that
 replays the heaps to any moment since boot. Stacks are symbolized in Rust from

@@ -100,16 +100,23 @@ button.danger:hover:enabled { background: var(--danger); opacity: .9; }
 :root {
   --heap-used: #4a7a62; --heap-free: #e7e5e4; --heap-meta: #a8a29e;
   --heap-fresh: #d97706; --heap-freed: #0284c7; --heap-corrupt: #b42318;
+  /* Allocation sites: kept clear of the highlight, freed and corrupt colours. */
+  --heap-site-0: #4a7a62; --heap-site-1: #3f5fbf; --heap-site-2: #7c4dcc; --heap-site-3: #0e8a8a; --heap-site-4: #6f7d1c;
+  --heap-site-5: #b03c8c; --heap-site-6: #8a5a2b; --heap-site-7: #4f6b80; --heap-site-8: #93702a;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --heap-used: #69917d; --heap-free: #292524; --heap-meta: #57534e;
     --heap-fresh: #f59e0b; --heap-freed: #38bdf8; --heap-corrupt: #f97066;
+    --heap-site-0: #69917d; --heap-site-1: #7b93e6; --heap-site-2: #a78bfa; --heap-site-3: #3fb8b8; --heap-site-4: #a9b84a;
+    --heap-site-5: #e07ac0; --heap-site-6: #c4935f; --heap-site-7: #8aa6bd; --heap-site-8: #d1a64b;
   }
 }
 :root[data-theme="dark"] {
   --heap-used: #69917d; --heap-free: #292524; --heap-meta: #57534e;
   --heap-fresh: #f59e0b; --heap-freed: #38bdf8; --heap-corrupt: #f97066;
+  --heap-site-0: #69917d; --heap-site-1: #7b93e6; --heap-site-2: #a78bfa; --heap-site-3: #3fb8b8; --heap-site-4: #a9b84a;
+  --heap-site-5: #e07ac0; --heap-site-6: #c4935f; --heap-site-7: #8aa6bd; --heap-site-8: #d1a64b;
 }
 #heap { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; margin: 0 12px 12px; overflow: auto; }
 #heap:focus-visible { outline-offset: -2px; }
@@ -126,40 +133,101 @@ button.danger:hover:enabled { background: var(--danger); opacity: .9; }
 .heap-note { margin-top: -4px; color: var(--faint); font-size: 12px; }
 .heap-note:empty { display: none; }
 .num { font-variant-numeric: tabular-nums; }
-.heap-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; }
-.tile { display: flex; flex-direction: column; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
-.tile span, .tile small { color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tile b { font-size: 16px; font-weight: 600; line-height: 1.4; }
-.tile.bad { border-color: var(--danger); }
-.tile.bad b { color: var(--danger); }
-#heap-list { display: flex; flex-direction: column; gap: 10px; }
-.heap-card { padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
-.heap-head { display: flex; align-items: baseline; gap: 8px; }
-.heap-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
-.heap-size { color: var(--faint); font-size: 12px; }
-.heap-addr { margin-left: auto; color: var(--faint); font: 11px var(--mono); }
-.heap-usage { height: 5px; margin: 7px 0 6px; border-radius: 3px; background: var(--heap-free); overflow: hidden; }
-.heap-usage div { height: 100%; background: var(--heap-used); }
-.heap-stats { display: flex; flex-wrap: wrap; gap: 0 12px; margin-bottom: 8px; color: var(--text-2); font-size: 12px; }
+.heap-bar { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; }
+.heap-summary { flex: 1 1 220px; min-width: 0; display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--faint); font-size: 12px; }
+.heap-summary b { color: var(--text); font-weight: 600; }
+.heap-summary .bad, .heap-summary .bad b { color: var(--danger); }
+.heap-bar .zoom select { width: 92px; }
+#heap-list { display: flex; flex-direction: column; gap: 8px; }
+.heap-card { padding: 4px 10px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.heap-head {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; padding: 4px 0 6px; justify-content: flex-start;
+  border: 0; border-radius: 0; background: none; font-size: 12px; font-weight: 400; color: var(--faint); text-align: left;
+}
+.heap-head:hover:enabled { background: none; color: var(--text-2); }
+.heap-chevron { width: 12px; height: 12px; align-self: center; transition: transform .15s; }
+.heap-card.folded .heap-chevron { transform: rotate(-90deg); }
+.heap-name { color: var(--text); font-size: 13px; font-weight: 600; }
+.heap-role { overflow: hidden; text-overflow: ellipsis; }
+.heap-addr { margin-left: auto; font: 11px var(--mono); }
+.heap-used { color: var(--text-2); }
+.heap-used b { font-weight: 600; }
+.heap-stats { display: flex; flex-wrap: wrap; gap: 0 12px; margin: -2px 0 8px 20px; color: var(--text-2); font-size: 11.5px; }
 .heap-stats span span { color: var(--faint); }
 .heap-stats b { font-weight: 600; }
 .heap-stats .bad { color: var(--danger); }
-.heap-map { display: block; border-radius: 3px; image-rendering: pixelated; cursor: crosshair; }
-.heap-trend { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-.heap-trend canvas { flex: 1; min-width: 0; height: 34px; }
-.heap-trend span { color: var(--faint); font-size: 11px; line-height: 1.5; white-space: nowrap; }
-.heap-trend .line { display: inline-block; width: 10px; margin-right: 4px; border-top: 2px solid var(--heap-used); vertical-align: middle; }
-.heap-trend .line.fresh { margin-left: 6px; border-top-style: dashed; border-color: var(--heap-fresh); }
+.heap-map { display: flex; gap: 0; }
+.heap-gutter { position: relative; width: 44px; flex: none; color: var(--faint); font: 10px/8px var(--mono); }
+.heap-gutter span { position: absolute; right: 6px; }
+.heap-map canvas { display: block; border-radius: 2px; cursor: pointer; }
+.heap-card.folded .heap-stats, .heap-card.folded .heap-gutter { display: none; }
+.heap-card.folded .heap-map canvas { border-radius: 3px; }
 .heap-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--faint); font-size: 11.5px; }
+.heap-sites { display: contents; }
+.heap-sites span { color: var(--text-2); }
+.heap-sites b { color: var(--faint); font-weight: 500; }
 .sw { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; }
 .sw.used { background: var(--heap-used); } .sw.free { background: var(--heap-free); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .sw.fresh { background: var(--heap-fresh); } .sw.freed { background: var(--heap-freed); }
 .sw.meta { background: var(--heap-meta); } .sw.corrupt { background: var(--heap-corrupt); }
 .heap-tip {
-  position: fixed; z-index: 40; min-width: 190px; padding: 8px 10px; pointer-events: none;
+  position: fixed; z-index: 40; min-width: 190px; max-width: min(380px, calc(100vw - 16px)); padding: 8px 10px; pointer-events: none;
   border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface);
   box-shadow: 0 12px 32px -8px rgba(12,10,9,.25); font-size: 12px;
 }
 .heap-tip div { display: flex; justify-content: space-between; gap: 14px; }
-.heap-tip span { color: var(--faint); }
-.heap-tip b { font-weight: 500; }
+.heap-tip span { flex: none; color: var(--faint); }
+.heap-tip b { min-width: 0; font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+/* A long value (a C++ name, a path) on its own line, cut after three. */
+.heap-tip div.wide { flex-direction: column; gap: 0; margin-top: 3px; }
+.heap-tip .wide b {
+  text-align: left; font: 500 11.5px/1.4 var(--mono);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+}
+.heap-tip .hint { margin-top: 5px; color: var(--faint); font-size: 11px; }
+
+/* Internal RAM over time, above the maps. */
+.heap-trend { padding: 8px 10px 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.heap-trend-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-bottom: 4px; color: var(--faint); font-size: 11.5px; }
+.heap-trend-head strong { color: var(--text); font-size: 12.5px; font-weight: 600; }
+.heap-trend-span { margin-left: auto; }
+.heap-trend .line { display: inline-block; width: 12px; margin-right: 5px; border-top: 2px solid var(--heap-used); vertical-align: middle; }
+.heap-trend .line.largest { border-top: 1.5px dashed var(--heap-fresh); }
+.heap-trend .line.low { border-top: 1.5px dotted var(--faint); }
+#heap-trend-canvas { display: block; width: 100%; height: 84px; cursor: crosshair; }
+
+/* A clicked block: its facts and call stack, under its heap's map. Names and
+   paths wrap anywhere; nothing is cut here. */
+.heap-detail {
+  margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--surface); font-size: 12px; user-select: text; -webkit-user-select: text;
+}
+.hd-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hd-head .sw { flex: none; margin: 0; }
+.hd-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.hd-state { flex: none; color: var(--faint); }
+.hd-state.bad { color: var(--danger); }
+.hd-close { width: 26px; height: 26px; margin-left: auto; }
+.hd-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 8px 0 0; }
+.hd-facts dt { color: var(--faint); }
+.hd-facts dd { margin: 0; font: 11.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+.hd-label { display: block; margin-bottom: 2px; color: var(--faint); font-size: 11px; }
+.heap-detail code { font: 11.5px/1.45 var(--mono); overflow-wrap: anywhere; }
+.hd-by { margin-top: 10px; }
+.hd-by code { display: block; color: var(--text); font-weight: 600; }
+.hd-loc { display: block; color: var(--faint); font: 11px/1.45 var(--mono); overflow-wrap: anywhere; }
+.hd-loc b { color: var(--text-2); font-weight: 500; }
+.hd-stack { margin-top: 10px; }
+.hd-stack-head { display: flex; align-items: center; justify-content: space-between; }
+.hd-copy { padding: 2px 9px; border-radius: 6px; font-size: 11px; }
+.hd-stack ol { display: flex; flex-direction: column; gap: 5px; margin: 4px 0 0; padding-left: 24px; }
+.hd-stack li::marker { color: var(--faint); font: 10.5px var(--mono); }
+.hd-stack li code { display: block; color: var(--text-2); }
+.hd-stack li.site code { color: var(--text); font-weight: 600; }
+.hd-stack li.lib code, .hd-stack li.alloc code { color: var(--faint); }
+.hd-inl { margin-top: 2px; padding-left: 10px; }
+.hd-inl > span { color: var(--faint); font-size: 11px; }
+.hd-inl code { display: inline !important; }
+.hd-stack summary { margin-top: 4px; color: var(--faint); font-size: 11.5px; cursor: pointer; }
+.hd-note { margin-top: 8px; color: var(--faint); }
+.heap-site-name { display: inline-block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }

@@ -1,7 +1,7 @@
 /* Mock content for layout work in a plain browser (pnpm dev, or ?demo): an
    SD listing, a console log, a running X4 Pro with a drawn page and heaps
    that change with every snapshot. */
-import type { Heap, HeapSnapshot } from './api';
+import type { Heap, HeapSite, HeapSnapshot } from './api';
 import { attachHeap, heapSession } from './heap';
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -161,33 +161,62 @@ I (101) boot: Loaded app from partition at offset 0x10000
 [    846][I][Display.cpp:188] refresh(): full, 642 ms
 `;
 
-/* Heaps: TLSF-like block lists that allocate and free a little each time. */
-function mockHeap(name: string, caps: string[], start: number, size: number, avg: number, seed: number) {
+/* Heaps: TLSF-like block lists that allocate and free a little each time,
+   each block from one of a few made-up allocation sites. */
+const sites: HeapSite[] = [
+  'Display::begin()', 'xTaskCreatePinnedToCore', 'ActivityManager::begin()', 'FontRegistry::discover()',
+  'xQueueGenericCreate', 'Reader::open(char const*)',
+  'std::_Function_handler<void (std::shared_ptr<epub::Chapter>), Reader::open(char const*)::{lambda(std::shared_ptr<epub::Chapter>)#1}>::_M_invoke(std::_Any_data const&, std::shared_ptr<epub::Chapter>&&)', 'GfxRenderer::insertFont(int)',
+  'nvs::PageManager::load()', 'setup()', 'pthread_mutex_init', 'HalGPIO::begin()',
+].map((fn, i) => ({ fn, loc: `/Users/me/crosspoint/src/activities/reader/very/deep/path/file${i}.cpp:${40 + i * 7}` }));
+/** A made-up stack for a block from `site`: the allocator, the site, its callers. */
+function mockStack(site: number) {
+  const frame = (fn: string, loc: string, alloc = false, lib = false) => ({ addr: 0x42000000 + fn.length * 16, fn, loc, inl: [], alloc, lib });
+  const idf = '/Users/me/.platformio/packages/framework-espidf/components';
+  return {
+    frames: [
+      frame('multi_heap_malloc', `${idf}/heap/multi_heap_poisoning.c:243`, true, true),
+      frame('heap_caps_malloc', `${idf}/heap/heap_caps.c:84`, true, true),
+      frame('operator new(unsigned int)', '/builds/idf/crosstool-NG/libstdc++-v3/libsupc++/new_op.cc:50', true, true),
+      { ...frame(sites[site].fn, sites[site].loc), inl: [{ fn: 'std::make_shared<epub::Chapter>()', loc: '/toolchain/include/c++/bits/shared_ptr.h:1010' }] },
+      frame('ActivityManager::loop()', '/Users/me/crosspoint/src/ActivityManager.cpp:120'),
+      frame('loop()', '/Users/me/crosspoint/src/main.cpp:512'),
+      frame('loopTask(void*)', `${idf}/../framework-arduinoespressif32/cores/esp32/main.cpp:74`, false, true),
+    ],
+    caller: 3, site: 3,
+  };
+}
+function mockHeap(name: string, caps: string[], start: number, size: number, avg: number, seed: number, fill = 0.9) {
   let state = seed;
   const random = () => (state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  const pool = 0x3a0, sizes: [number, boolean][] = [];
-  for (let used = pool; used < size * 0.9;) {
+  const pool = 0x3a0, sizes: [number, boolean, number][] = [];
+  let site = 0;
+  for (let used = pool; used < size * fill;) {
     const len = 16 + Math.floor(random() ** 3 * avg) * 4;
-    sizes.push([len, random() < 0.25]);
+    if (random() < 0.4) site = Math.floor(random() ** 2 * sites.length);
+    sizes.push([len, random() < 0.25, site]);
     used += len + 4;
   }
   const snapshot = (): Heap => {
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 6 && sizes.length; i++) {
       const k = Math.floor(random() * sizes.length);
       sizes[k][1] = !sizes[k][1];
     }
-    const blocks: number[] = [];
+    const blocks: number[] = [], blockSites: number[] = [];
     let off = pool, free = 0, used = 0, largest = 0, nfree = 0;
-    for (const [len, isFree] of sizes) {
+    for (const [len, isFree, site] of sizes) {
       blocks.push(off, len + 4, isFree ? 1 : 2, isFree ? 0 : len - 12);
+      blockSites.push(isFree ? -1 : site);
       if (isFree) { free += len; nfree++; largest = Math.max(largest, len); } else used += len;
       off += len + 4;
     }
     const rest = size - off - 16;
     blocks.push(off, rest + 4, 1, 0);
+    blockSites.push(-1);
     free += rest; nfree++; largest = Math.max(largest, rest);
     return { name, caps, start, end: start + size, pool: pool - 4, tail: off + rest + 12, free, used, largest,
-      count: sizes.length + 1, nfree, infoFree: free, infoMinFree: Math.round(free * 0.82), corrupt: 0, blocks };
+      count: sizes.length + 1, nfree, infoFree: free, infoMinFree: Math.round(free * 0.82), corrupt: 0, blocks,
+      sites: blockSites, stk: blockSites };
   };
   return snapshot;
 }
@@ -211,13 +240,16 @@ export function demo({ appendConsole }: { appendConsole: (text: string) => void 
   appendConsole(log);
   const heaps = [
     mockHeap('DRAM', ['32BIT', '8BIT', 'INTERNAL', 'DEFAULT'], 0x3fc9a000, 0x4c000, 220, 7),
+    mockHeap('DRAM', ['32BIT', '8BIT', 'DMA', 'INTERNAL', 'DEFAULT'], 0x3fcf0000, 0x8000, 0, 5, 0),
     mockHeap('RTC', ['32BIT', '8BIT', 'INTERNAL', 'DEFAULT', 'RTCRAM'], 0x600fe000, 0x1e00, 24, 3),
     mockHeap('PSRAM', ['32BIT', '8BIT', 'SPIRAM', 'DEFAULT'], 0x3d000000, 0x800000, 9000, 11),
   ];
   attachHeap({
     snapshot: async (): Promise<HeapSnapshot> => ({ time: Date.now() / 1000, heaps: heaps.map((h) => h()), missing: 0, took: 4,
-      traced: false, traceNote: 'Restart the emulator to record where blocks were allocated.' }),
-    stack: async () => null,
+      traced: true, traceNote: null }),
+    stack: async (id: number) => id >= 0 && id < sites.length ? mockStack(id) : null,
+    sites: async (from: number) => sites.slice(from),
+    history: async () => [],
     openWindow: async () => {},
     pickElf: async () => ({ path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 }),
     forgetElf: async () => {},

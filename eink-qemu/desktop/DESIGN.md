@@ -169,7 +169,10 @@ the symbol table for functions DWARF names without their scope, so names
 match binutils) and its allocation sites. `heapview.rs` keeps that state with
 the free-memory history and the last snapshot, which the tab and the window
 share for 0.8 s so two viewers do not pause the guest twice. Its commands
-answer in the shape of heapview.py's endpoints.
+answer in the shape of heapview.py's endpoints, plus `heap_sites` for the
+tab, which colours blocks by site id and fetches the names it has not seen.
+The tab updates its cards in place and moves one only when the order
+changes: re-appending them each second re-anchored the pane's scroll.
 
 The heap window (`heap.html`) mounts `eink-qemu/heapview.js`, the module
 heapview.py's page is built from, with the Rust commands in place of HTTP and

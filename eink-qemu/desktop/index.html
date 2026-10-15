@@ -220,10 +220,26 @@
         </div>
         <div id="heap-live" class="heap-live" hidden><span class="heap-dot" aria-hidden="true"></span><span id="heap-state"></span></div>
         <p id="heap-note" class="heap-note"></p>
-        <div id="heap-summary" class="heap-summary"></div>
+        <div id="heap-bar" class="heap-bar" hidden>
+          <p id="heap-summary" class="heap-summary num"></p>
+          <div class="zoom" role="group" aria-label="Map scale">
+            <button id="heap-scale-out" type="button" aria-label="Smaller maps: more bytes per row" title="Smaller maps: more bytes per row">−</button>
+            <select id="heap-scale" aria-label="Bytes per map row" title="Bytes per map row"></select>
+            <button id="heap-scale-in" type="button" aria-label="Larger maps: fewer bytes per row" title="Larger maps: fewer bytes per row">+</button>
+          </div>
+        </div>
+        <div id="heap-trend" class="heap-trend" hidden>
+          <div class="heap-trend-head">
+            <strong>Internal RAM</strong>
+            <span><i class="line free"></i>free</span><span><i class="line largest"></i>largest block</span><span><i class="line low"></i>lowest since boot</span>
+            <span id="heap-trend-span" class="heap-trend-span"></span>
+          </div>
+          <canvas id="heap-trend-canvas" aria-label="Internal RAM free over time"></canvas>
+        </div>
         <div id="heap-list"></div>
         <div id="heap-legend" class="heap-legend" hidden>
-          <span><i class="sw used"></i>allocated</span><span><i class="sw free"></i>free</span>
+          <span id="heap-sites" class="heap-sites"></span>
+          <span id="heap-legend-used"><i class="sw used"></i>allocated</span><span><i class="sw free"></i>free</span>
           <span><i class="sw fresh"></i>new</span><span><i class="sw freed"></i>just freed</span>
           <span><i class="sw meta"></i>heap overhead</span><span><i class="sw corrupt"></i>corrupt</span>
         </div>

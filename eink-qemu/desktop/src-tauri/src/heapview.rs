@@ -157,6 +157,11 @@ impl HeapView {
         }
     }
 
+    /// Allocation sites from `from` on, as {fn, loc}; a block's site indexes them.
+    pub fn sites(&self, from: usize) -> Value {
+        json!(self.sites.names.get(from..).unwrap_or_default())
+    }
+
     /// A recorded stack, symbolized, as heapview.py's /stack; null if unknown.
     pub fn stack(&mut self, id: usize) -> Value {
         let (Some((_, trace)), Some(elf)) = (self.trace.as_ref(), self.elf.as_ref()) else { return Value::Null };

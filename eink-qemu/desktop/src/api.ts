@@ -52,8 +52,16 @@ export interface HeapSnapshot {
   /** Milliseconds the read took, the emulator paused for most of it. */
   took?: number;
 }
-/** A recorded allocation stack, symbolized (heapview.py's /stack). */
-export interface HeapStack { frames: { fn: string; loc: string }[]; caller: number; site: number }
+/** One free-memory history point: time in seconds, and per heap (start in
+    hex, no prefix) its free bytes, largest free block and lowest free. */
+export interface HeapHistoryPoint { t: number; h: Record<string, [number, number, number]> }
+/** An allocation site: the function that called the allocator, and where. */
+export interface HeapSite { fn: string; loc: string }
+/** A recorded allocation stack, symbolized (heapview.py's /stack): frames
+    innermost first, with the calls inlined into each; `caller` is the first
+    frame outside the allocator, `site` the one the block is attributed to. */
+export interface HeapFrame { addr: number; fn: string; loc: string; inl: { fn: string; loc: string }[]; alloc: boolean; lib: boolean }
+export interface HeapStack { frames: HeapFrame[]; caller: number; site: number }
 export interface StartOptions { machine: Machine; panel: string; wifi: boolean; turbo: boolean; ghosting: boolean }
 
 /** Errors from Rust carry a code (fat.js codes, EBUSY, EQEMU, …) and a message. */
@@ -106,6 +114,8 @@ export const api = {
   heapForgetElf: () => call<void>('heap_forget_elf'),
   heapSnapshot: () => call<HeapSnapshot>('heap_snapshot'),
   heapStack: (id: number) => call<HeapStack | null>('heap_stack', { id }),
+  heapSites: (from: number) => call<HeapSite[]>('heap_sites', { from }),
+  heapHistory: () => call<HeapHistoryPoint[]>('heap_history'),
   heapWindow: () => call<void>('heap_window'),
   saveScreenshot: (png: Uint8Array, name: string) =>
     call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),

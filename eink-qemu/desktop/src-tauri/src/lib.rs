@@ -658,6 +658,12 @@ async fn heap_events(app: State<'_, App>, gen: u64, start: usize, stacks: usize,
     Ok(app.heap.lock().await.events(gen, start, stacks, sites))
 }
 
+/// Allocation site names from `from` on, for the Heap tab's map.
+#[tauri::command]
+async fn heap_sites(app: State<'_, App>, from: usize) -> Result<serde_json::Value, AppError> {
+    Ok(app.heap.lock().await.sites(from))
+}
+
 /// A recorded allocation stack, symbolized, as heapview.py's /stack.
 #[tauri::command]
 async fn heap_stack(app: State<'_, App>, id: usize) -> Result<serde_json::Value, AppError> {
@@ -860,6 +866,7 @@ pub fn run() {
             heap_history,
             heap_events,
             heap_stack,
+            heap_sites,
             heap_window,
         ])
         .build(tauri::generate_context!())
