@@ -56,6 +56,8 @@ export interface Attached {
   pane: string | null;
   problems: string[];
 }
+/** A card just made or resized (src-tauri/src/lib.rs `MadeCard`). */
+export interface MadeCard { card: FileInfo | null; made: { size: number; cluster: number; sparse: boolean } }
 export interface SdEntry { name: string; size: number; isDir: boolean; mtime: number | null }
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
 export interface UploadPlan { files: number; bytes: number; conflicts: string[] }
@@ -130,7 +132,8 @@ export const api = {
   key: (key: string, down: boolean) => call<void>('key', { key, down }),
   touch: (x: number, y: number, down: boolean) => call<void>('touch', { x, y, down }),
   pickOpenCard: () => call<FileInfo | null>('card_pick_open'),
-  pickNewCard: () => call<FileInfo | null>('card_pick_new'),
+  pickNewCard: (size: number) => call<MadeCard | null>('card_pick_new', { size }),
+  resizeCard: (size: number) => call<MadeCard>('card_resize', { size }),
   pickCopyCard: () => call<string | null>('card_pick_copy'),
   revealCard: () => call<void>('card_reveal'),
   sdList: (path: string) => call<SdListing>('sd_list', { path }),

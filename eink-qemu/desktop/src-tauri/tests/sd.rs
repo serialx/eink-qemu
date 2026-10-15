@@ -1583,3 +1583,104 @@ fn a_full_fixed_root_says_so() {
     assert!(!error.changed);
     sound(&card);
 }
+
+/* Cards of a chosen size: sparse, with the stock card's 32 KiB clusters. The
+   64 MiB cards above come from the same formatter, so fat.js parity covers
+   its layout; these cards are too big to hand to fat.js whole. */
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// The partition's bytes per cluster, from its boot sector.
+fn partition_cluster(image: &Path) -> u64 {
+    let mut file = fs::File::open(image).unwrap();
+    let mut boot = [0u8; 512];
+    file.seek(SeekFrom::Start(1024 * 1024)).unwrap();
+    std::io::Read::read_exact(&mut file, &mut boot).unwrap();
+    u16::from_le_bytes([boot[11], boot[12]]) as u64 * boot[13] as u64
+}
+
+#[cfg(unix)]
+fn on_disk(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).unwrap().blocks() * 512
+}
+
+#[test]
+fn new_cards_are_sparse_with_stock_clusters() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("sd.img");
+    let made = sd::create_card(&image, sd::DEFAULT_CARD).unwrap();
+    assert_eq!(made, sd::MadeCard { size: 16 * GIB, cluster: 32 * 1024, sparse: true });
+    assert_eq!(fs::metadata(&image).unwrap().len(), 16 * GIB);
+    #[cfg(unix)]
+    assert!(on_disk(&image) < 16 * 1024 * 1024, "{} bytes on disk", on_disk(&image));
+    let listing = sd::list(&image, "/").unwrap();
+    assert_eq!(listing.fs_type, "FAT32");
+    assert!(listing.total > 15 * GIB && listing.free + 64 * 1024 >= listing.total, "{listing:?}");
+    assert_eq!(partition_cluster(&image), 32 * 1024);
+    assert_eq!(sd::lost_clusters(&image).unwrap(), 0);
+    // The stock card's size is the smallest; QEMU wants 512 KiB steps.
+    sd::create_card(&image, sd::STOCK_CARD).unwrap();
+    assert_eq!(partition_cluster(&image), 32 * 1024);
+    for size in [sd::STOCK_CARD - 512 * 1024, sd::MAX_CARD + 512 * 1024, sd::STOCK_CARD + 1024] {
+        assert_eq!(code(sd::create_card(&image, size)), "EINVAL");
+    }
+}
+
+#[test]
+fn resizing_keeps_folders_files_and_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("sd.img");
+    sd::create_card(&image, sd::STOCK_CARD).unwrap();
+    let host = dir.path().join("host");
+    write(&host.join("books/Moby Dick.epub"), &data(1, 300_000));
+    write(&host.join("books/deep/notes.txt"), &data(2, 5_000));
+    write(&host.join("한국어.txt"), &data(3, 10));
+    upload_all(&image, "/", &[host.join("books"), host.join("한국어.txt")]).unwrap();
+    sd::mkdir(&image, "/empty").unwrap();
+    let before = sd::list(&image, "/books").unwrap().entries;
+
+    for size in [4 * GIB, sd::STOCK_CARD] {
+        let made = sd::resize(&image, size).unwrap();
+        assert_eq!(made, sd::MadeCard { size, cluster: 32 * 1024, sparse: true });
+        assert_eq!(fs::metadata(&image).unwrap().len(), size);
+        let names: Vec<String> = sd::list(&image, "/").unwrap().entries.into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["books", "empty", "한국어.txt"]);
+        let after = sd::list(&image, "/books").unwrap().entries;
+        assert_eq!(after.len(), before.len());
+        for (a, b) in before.iter().zip(&after) {
+            assert_eq!((&a.name, a.size, a.is_dir), (&b.name, b.size, b.is_dir));
+            if !a.is_dir {
+                assert_eq!(a.mtime, b.mtime, "{}", a.name);
+            }
+        }
+        let dest = dir.path().join("out.bin");
+        sd::export(&image, "/books/deep/notes.txt", &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), data(2, 5_000));
+        assert_eq!(sd::lost_clusters(&image).unwrap(), 0);
+    }
+    // A size QEMU would refuse changes nothing.
+    assert_eq!(code(sd::resize(&image, sd::STOCK_CARD + 1)), "EINVAL");
+    assert_eq!(fs::metadata(&image).unwrap().len(), sd::STOCK_CARD);
+    let leftovers: Vec<_> = fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(".eink-qemu-")).collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn copies_stay_sparse() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("sd.img");
+    sd::create_card(&image, sd::DEFAULT_CARD).unwrap();
+    let host = dir.path().join("host");
+    write(&host.join("a.bin"), &data(4, 2_000_000));
+    upload_all(&image, "/", &[host.join("a.bin")]).unwrap();
+    let copy = dir.path().join("copy.img");
+    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&copy).unwrap();
+    sd::sparse_copy(&image, &file).unwrap();
+    assert_eq!(fs::metadata(&copy).unwrap().len(), 16 * GIB);
+    #[cfg(unix)]
+    assert!(on_disk(&copy) < 24 * 1024 * 1024, "{} bytes on disk", on_disk(&copy));
+    let dest = dir.path().join("a.out");
+    sd::export(&copy, "/a.bin", &dest).unwrap();
+    assert_eq!(fs::read(&dest).unwrap(), data(4, 2_000_000));
+}

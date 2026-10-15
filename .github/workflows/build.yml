@@ -218,16 +218,11 @@ jobs:
             dist/
 
   # eink-qemu: the desktop app's generated inputs (boot assets, turbo
-  # overrides, blank card), made once on Linux where dosfstools and mtools
-  # are at hand, for every desktop build.
+  # overrides), made once on Linux for every desktop build.
   desktop-resources:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install dosfstools and mtools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y dosfstools mtools
       - name: Prepare resources
         run: sh eink-qemu/desktop/scripts/prepare-resources.sh
       - uses: actions/upload-artifact@v7

@@ -124,6 +124,21 @@ of nested dotfiles and empty folders) are listed in `sd.rs`'s header. The
 crate is vendored with fixes (`src-tauri/vendor/fatfs/EINK-QEMU.md`) so the
 folders it writes pass `fsck_msdos` and `fsck.fat`, which every SD test runs.
 
+Cards are made in Rust (`create_card`), as `mksd.py` lays them out: an MBR
+with one FAT32 partition (0x0C) from 1 MiB, formatted by fatfs with 32 KiB
+clusters, then both FSInfo copies written with the real free count (fatfs
+writes no backup FSInfo, which fat.js checks, and leaves the count unknown,
+which would make a reader walk the FAT). Files are sparse: Windows needs
+FSCTL_SET_SPARSE; elsewhere a probe grows the file to 64 MiB and checks it
+took no space. When that fails, a new card is the 128 MiB, 1 KiB-cluster
+fallback and the WebView says so; a resize is refused instead. Sizes run
+from 2050 MiB (65,525 clusters, FAT32's minimum) to 32 GiB in 512 KiB steps,
+which QEMU requires above 2 GiB. `resize` reads the old card through the
+explorer's read-only path, copies the tree into a new card beside it with
+file times kept (fatfs cannot set folder times or attributes), and renames it
+into place, so a failure leaves the card as it was. `sparse_copy` writes only
+what SEEK_DATA finds and blocks that are not all zero, for "Save a copy".
+
 While the emulator runs, every operation is bracketed: QMP `stop`, the
 operation, then `system_reset` if it may have changed the card (the firmware
 caches FAT and directory sectors), then `cont`. Edits are transactional: fatfs

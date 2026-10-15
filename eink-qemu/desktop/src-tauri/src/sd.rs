@@ -2083,17 +2083,278 @@ pub fn remove(image: &Path, path: &str) -> Result<(), SdError> {
     )
 }
 
-/// The embedded blank 64 MiB FAT32 card (mksd.py, 512-byte clusters).
-pub const BLANK_CARD_GZ: &[u8] = include_bytes!("../resources/blank-sd.img.gz");
+/* Making and resizing cards ------------------------------------------------
 
-/// Write a blank card to `dest` (via a temporary file and rename). A new
-/// file gets the process umask; a replaced one keeps its permissions.
-pub fn create_blank(dest: &Path) -> std::io::Result<()> {
+   A card is an MBR with one FAT32 partition from 1 MiB, like mksd.py makes.
+   Cards are sparse files: only the boot sectors, the FATs and what is
+   written take disk space, so a 16 GiB card starts at a few MiB. Every card
+   gets the stock X3 card's 32 KiB clusters, which FAT32 allows from 2050 MiB
+   (65,525 clusters at least); where the disk cannot hold sparse files, a
+   128 MiB card with 1 KiB clusters is made instead. */
+
+const MIB: u64 = 1024 * 1024;
+/// The card made on first run, and offered first for new cards.
+pub const DEFAULT_CARD: u64 = 16 * 1024 * MIB;
+/// The stock X3 card's size, the smallest with 32 KiB clusters.
+pub const STOCK_CARD: u64 = 2050 * MIB;
+/// SDHC's largest; beyond it real cards are exFAT.
+pub const MAX_CARD: u64 = 32 * 1024 * MIB;
+/// Where sparse files are not possible.
+pub const FALLBACK_CARD: u64 = 128 * MIB;
+const CLUSTER: u32 = 32 * 1024;
+const FALLBACK_CLUSTER: u32 = 1024;
+/// The partition's first byte, as mksd.py and SD card formatters place it.
+const PARTITION: u64 = MIB;
+/// mksd.py's volume id ("EINK").
+const VOLUME_ID: u32 = 0x4549_4e4b;
+
+/// A card that was made: its size and cluster size, and whether it is sparse.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MadeCard {
+    pub size: u64,
+    pub cluster: u32,
+    pub sparse: bool,
+}
+
+/// QEMU takes a card over 2 GiB in multiples of 512 KiB (SDHC).
+pub fn check_size(size: u64) -> Result<(), SdError> {
+    if !(STOCK_CARD..=MAX_CARD).contains(&size) || !size.is_multiple_of(512 * 1024) {
+        return Err(SdError::new("EINVAL", format!(
+            "A card is {} MiB to {} GiB, in steps of 512 KiB.", STOCK_CARD / MIB, MAX_CARD / (1024 * MIB))));
+    }
+    Ok(())
+}
+
+/// Make `file` sparse where the platform needs asking, then check that it
+/// is: grown to 64 MiB, it must take (almost) no space.
+fn make_sparse(file: &File) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+        let mut returned = 0u32;
+        // SAFETY: a valid handle, no input or output buffers.
+        let ok = unsafe {
+            DeviceIoControl(file.as_raw_handle() as _, FSCTL_SET_SPARSE, std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut returned, std::ptr::null_mut())
+        };
+        if ok == 0 {
+            return false;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if file.set_len(64 * MIB).is_err() {
+            return false;
+        }
+        let sparse = file.metadata().is_ok_and(|m| m.blocks() * 512 < 8 * MIB);
+        let _ = file.set_len(0);
+        return sparse;
+    }
+    #[allow(unreachable_code)]
+    true
+}
+
+/// Write an MBR and a FAT32 partition of `cluster`-byte clusters on `file`,
+/// already `size` bytes long.
+fn format_card(file: &File, size: u64, cluster: u32, volume_id: u32, label: [u8; 11]) -> io::Result<()> {
+    let sectors = size / 512;
+    let start = PARTITION / 512;
+    let mut mbr = [0u8; 512];
+    // One partition: not bootable, CHS unused, FAT32 with LBA (0x0C).
+    mbr[446..462].copy_from_slice(&[0, 0xFE, 0xFF, 0xFF, 0x0C, 0xFE, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0]);
+    mbr[454..458].copy_from_slice(&(start as u32).to_le_bytes());
+    mbr[458..462].copy_from_slice(&((sectors - start) as u32).to_le_bytes());
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
+    write_all_at(file, &mbr, 0)?;
+    let slice = fscommon::StreamSlice::new(file.try_clone()?, PARTITION, size)?;
+    let options = fatfs::FormatVolumeOptions::new()
+        .fat_type(fatfs::FatType::Fat32)
+        .bytes_per_cluster(cluster)
+        .total_sectors((sectors - start) as u32)
+        .volume_id(volume_id)
+        .volume_label(label);
+    fatfs::format_volume(slice, options)?;
+    // FSInfo with the real free count (fatfs leaves it unknown, which makes
+    // a reader count free clusters through the whole FAT), and its backup
+    // after the backup boot sector, as mkfs.fat writes both.
+    let mut boot = [0u8; 512];
+    read_exact_at(file, &mut boot, PARTITION)?;
+    let word = |at: usize| u16::from_le_bytes([boot[at], boot[at + 1]]) as u64;
+    let long = |at: usize| u32::from_le_bytes([boot[at], boot[at + 1], boot[at + 2], boot[at + 3]]) as u64;
+    let (spc, reserved, fats) = (boot[13] as u64, word(14), boot[16] as u64);
+    let clusters = (long(32) - reserved - fats * long(36)) / spc;
+    let mut info = [0u8; 512];
+    info[0..4].copy_from_slice(&0x4161_5252u32.to_le_bytes());
+    info[484..488].copy_from_slice(&0x6141_7272u32.to_le_bytes());
+    info[488..492].copy_from_slice(&((clusters - 1) as u32).to_le_bytes()); // the root folder holds one
+    info[492..496].copy_from_slice(&3u32.to_le_bytes());
+    info[508..512].copy_from_slice(&0xAA55_0000u32.to_le_bytes());
+    for sector in [word(48), word(50) + word(48)] {
+        write_all_at(file, &info, PARTITION + sector * 512)?;
+    }
+    Ok(())
+}
+
+/// A temporary sparse card beside `dest`, formatted: `size` with 32 KiB
+/// clusters, or the 128 MiB fallback when `fallback` allows it.
+fn new_card(dest: &Path, size: u64, fallback: bool, volume_id: u32, label: [u8; 11]) -> Result<(tempfile::NamedTempFile, MadeCard), SdError> {
+    check_size(size)?;
     let folder = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    std::fs::create_dir_all(folder)?;
-    let mut output = temporary_beside(dest).map_err(|e| io::Error::other(e.message))?;
-    let mut input = flate2::read::GzDecoder::new(BLANK_CARD_GZ);
-    io::copy(&mut input, &mut output)?;
+    std::fs::create_dir_all(folder).map_err(|e| host(folder, e))?;
+    let output = temporary_beside(dest)?;
+    let sparse = make_sparse(output.as_file());
+    let made = match (sparse, fallback) {
+        (true, _) => MadeCard { size, cluster: CLUSTER, sparse },
+        (false, true) => MadeCard { size: FALLBACK_CARD, cluster: FALLBACK_CLUSTER, sparse },
+        (false, false) => return Err(SdError::new("ENOTSUP", format!(
+            "{} cannot hold sparse files, so a {} card would take all of that space.", folder.display(), size_text(size)))),
+    };
+    let file = output.as_file();
+    file.set_len(made.size).map_err(|e| host(dest, e))?;
+    format_card(file, made.size, made.cluster, volume_id, label).map_err(|e| host(dest, e))?;
+    file.sync_all().map_err(|e| host(dest, e))?;
+    Ok((output, made))
+}
+
+fn size_text(size: u64) -> String {
+    if size.is_multiple_of(1024 * MIB) { format!("{} GiB", size / (1024 * MIB)) } else { format!("{} MiB", size / MIB) }
+}
+
+const NO_NAME: [u8; 11] = *b"NO NAME    ";
+
+/// Write a blank card of `size` to `dest` (via a temporary file and rename;
+/// a replaced file keeps its permissions). Where the disk cannot hold sparse
+/// files, the card is the 128 MiB fallback.
+pub fn create_card(dest: &Path, size: u64) -> Result<MadeCard, SdError> {
+    let (output, made) = new_card(dest, size, true, VOLUME_ID, NO_NAME)?;
+    finish(output, dest)?;
+    Ok(made)
+}
+
+/// A small blank card for tests: 64 MiB with 512-byte clusters, not sparse.
+#[doc(hidden)]
+pub fn create_blank(dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;
+    let output = temporary_beside(dest).map_err(|e| io::Error::other(e.message))?;
+    output.as_file().set_len(64 * MIB)?;
+    format_card(output.as_file(), 64 * MIB, 512, VOLUME_ID, NO_NAME)?;
     output.as_file().sync_all()?;
     finish(output, dest).map_err(|e| io::Error::other(e.message))
+}
+
+/// Make the card at `image` `size` bytes: a new card with 32 KiB clusters
+/// and the same volume id and label, every folder and file copied in with
+/// its timestamps, then put in its place. The card is unchanged on failure.
+pub fn resize(image: &Path, size: u64) -> Result<MadeCard, SdError> {
+    let (output, made) = with_fs(image, false, no_check, |fs, _, ()| {
+        let mut label = NO_NAME;
+        let name = fs.volume_label_as_bytes();
+        label[..name.len().min(11)].copy_from_slice(&name[..name.len().min(11)]);
+        let (output, made) = new_card(image, size, false, fs.volume_id(), label)?;
+        {
+            let slice = fscommon::StreamSlice::new(output.as_file().try_clone().map_err(eio)?, PARTITION, made.size).map_err(eio)?;
+            let mut disk = fscommon::BufStream::new(slice);
+            let target = FileSystem::new(&mut disk, options()).map_err(eio)?;
+            copy_tree(&fs.root_dir(), &target.root_dir()).map_err(|e| match e.code {
+                "ENOSPC" => SdError::new("ENOSPC", format!("The card's files do not fit in {}.", size_text(size))),
+                _ => e,
+            })?;
+            target.unmount().map_err(eio)?;
+            disk.flush().map_err(eio)?;
+        }
+        output.as_file().sync_all().map_err(eio)?;
+        Ok((output, made))
+    })?;
+    finish(output, image)?;
+    Ok(made)
+}
+
+fn copy_tree<A: fatfs::ReadWriteSeek, B: fatfs::ReadWriteSeek>(from: &Dir<'_, A>, to: &Dir<'_, B>) -> Result<(), SdError> {
+    for entry in from.iter() {
+        let entry = entry.map_err(eio)?;
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let full = |e: io::Error| if e.to_string().contains("space") { SdError::new("ENOSPC", e.to_string()) } else { eio(e) };
+        if entry.is_dir() {
+            let dir = to.create_dir(&name).map_err(full)?;
+            copy_tree(&entry.to_dir(), &dir)?;
+        } else {
+            let mut file = to.create_file(&name).map_err(full)?;
+            io::copy(&mut entry.to_file(), &mut file).map_err(full)?;
+            // After the last write, so the copy keeps the card's times rather
+            // than the clock's (fatfs would rather have a TimeProvider).
+            #[allow(deprecated)]
+            file.set_created(entry.created());
+            #[allow(deprecated)]
+            file.set_modified(entry.modified());
+            #[allow(deprecated)]
+            file.set_accessed(entry.accessed());
+            file.flush().map_err(full)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy a card to `dest`, keeping it sparse: only the parts that hold data
+/// are written (found with SEEK_DATA where there is one, and all-zero
+/// blocks are skipped too), then the file is set to the card's length.
+pub fn sparse_copy(card: &Path, dest: &File) -> io::Result<()> {
+    let source = File::open(card)?;
+    let len = source.metadata()?.len();
+    make_sparse(dest);
+    dest.set_len(0)?;
+    let mut buf = vec![0u8; COPY_BUFFER];
+    let mut copy = |from: u64, to: u64| -> io::Result<()> {
+        let mut at = from;
+        while at < to {
+            let n = (to - at).min(buf.len() as u64) as usize;
+            read_exact_at(&source, &mut buf[..n], at)?;
+            for (i, block) in buf[..n].chunks(64 * 1024).enumerate() {
+                if block.iter().any(|&b| b != 0) {
+                    write_all_at(dest, block, at + (i * 64 * 1024) as u64)?;
+                }
+            }
+            at += n as u64;
+        }
+        Ok(())
+    };
+    let mut pos = 0;
+    while pos < len {
+        let (data, hole) = data_range(&source, pos, len);
+        if data >= len {
+            break;
+        }
+        copy(data, hole)?;
+        pos = hole;
+    }
+    dest.set_len(len)?;
+    dest.sync_all()
+}
+
+/// The next stretch of data from `pos`: where it starts and where the hole
+/// after it starts; without SEEK_DATA, all of the rest.
+fn data_range(file: &File, pos: u64, len: u64) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: lseek on an open descriptor; positional reads ignore the offset.
+        let data = unsafe { libc::lseek(file.as_raw_fd(), pos as libc::off_t, libc::SEEK_DATA) };
+        if data < 0 {
+            // ENXIO: no data after `pos`; any other error: copy everything.
+            return if io::Error::last_os_error().raw_os_error() == Some(libc::ENXIO) { (len, len) } else { (pos, len) };
+        }
+        let hole = unsafe { libc::lseek(file.as_raw_fd(), data, libc::SEEK_HOLE) };
+        return (data as u64, if hole < 0 { len } else { (hole as u64).min(len) });
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = file;
+        (pos, len)
+    }
 }

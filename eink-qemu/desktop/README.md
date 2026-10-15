@@ -21,9 +21,9 @@ pnpm tauri dev
 ```
 
 `pnpm dev` and `pnpm build` first run `scripts/prepare-resources.sh`, which
-needs Python 3, and dosfstools and mtools for the blank card. It writes the boot assets for composing release apps to
-`public/boot/`, and the turbo overrides and a compressed blank 64 MiB card to
-`src-tauri/resources/`, which the Rust binary embeds.
+needs Python 3. It writes the boot assets for composing release apps to
+`public/boot/`, and the turbo overrides to `src-tauri/resources/`, which the
+Rust binary embeds. SD cards are formatted in Rust, so no FAT tools are needed.
 
 Checks (after `sh scripts/prepare-resources.sh`, which the Rust build needs):
 
@@ -58,8 +58,17 @@ X4 Pro panel restarts it.
 
 The SD card is an image file that QEMU opens directly: `sd.img` in the app's
 data directory unless another card is opened from the card menu, which also
-makes new blank cards (64 MiB FAT32, 512-byte clusters; see the repository
-README's SD image geometry section before timing comparisons). The explorer
+makes new blank cards and resizes the open one. Cards are sparse files, so the
+16 GiB card made on first run starts at about 5 MiB on disk and grows as
+files are written; "Save a copy" keeps the copy sparse, but copying the file
+elsewhere by hand may write it out in full. Every card is MBR + FAT32 with the
+stock X3 card's 32 KiB clusters, from 2 GiB (the stock card's 2050 MiB, the
+one for timing comparisons: see the repository README's SD image geometry
+section) to 32 GiB; X3 and X4 Pro firmware reaches Home at the same moment on
+16 GiB as on 2050 MiB. Where the disk cannot hold sparse files, a new card is
+128 MiB with 1 KiB clusters instead, and the app says so. Resizing copies
+every folder and file, with file times, into a new card of the chosen size,
+which takes the old one's place; folder times become the time of the copy. The explorer
 edits the image in Rust with the `fatfs` crate. While the emulator runs, each
 operation pauses the guest; a change resets the device so the firmware mounts
 the card again. Uploads take files from the native dialog, or files and

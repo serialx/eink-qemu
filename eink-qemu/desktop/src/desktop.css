@@ -68,6 +68,15 @@ dialog.ask input {
   border: 1px solid var(--border-strong); border-radius: 8px; outline: 0; user-select: text; -webkit-user-select: text;
 }
 dialog.ask input:focus { border-color: var(--meter); }
+.ask-choices { display: flex; flex-direction: column; gap: 2px; }
+.ask-choices label { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.ask-choices label:hover:not(:has(:disabled)) { background: var(--surface-2); }
+.ask-choices label:has(:checked) { background: var(--brand-tint); }
+.ask-choices label:has(:disabled) { opacity: .5; cursor: default; }
+dialog.ask .ask-choices input { margin: 3px 0 0; padding: 0; accent-color: var(--brand); }
+.ask-choices span { display: flex; flex-direction: column; }
+.ask-choices b { font-weight: 500; }
+.ask-choices small { color: var(--faint); font-size: 12px; }
 .ask-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
 button.danger { background: var(--danger); border-color: transparent; color: #fff; font-weight: 600; }
 button.danger:hover:enabled { background: var(--danger); opacity: .9; }

@@ -5,7 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, AppError, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './api';
 import { appendLines, clearConsole } from './console';
-import { confirm, dialogOpen, prompt } from './dialog';
+import { choose, confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
 import { attachHeap, heapSession, setElf, showPane, useElf } from './heap';
 import { attachSetup, closeSetup, paintSetup } from './setup';
@@ -529,13 +529,38 @@ function paintCard() {
   $('sd-reveal').hidden = !card;
 }
 
+const MiB = 1024 ** 2, GiB = 1024 ** 3;
+/** Card sizes offered, all with the stock card's 32 KiB clusters (sd.rs). */
+const cardSizes = [
+  { size: 2050 * MiB, label: '2 GiB', note: 'The stock X3 card (2050 MiB): use it to compare timing with a real device' },
+  { size: 4 * GiB, label: '4 GiB' },
+  { size: 8 * GiB, label: '8 GiB' },
+  { size: 16 * GiB, label: '16 GiB', note: 'The default' },
+  { size: 32 * GiB, label: '32 GiB', note: 'The largest SDHC card' },
+];
+const sizeText = (bytes: number) => bytes % GiB === 0 ? `${bytes / GiB} GiB` : `${Math.round(bytes / MiB)} MiB`;
+const SPARSE = 'Cards are sparse files: an empty one takes a few MiB on disk and grows as files are written. ' +
+  "All have the stock card's 32 KiB clusters.";
+const NOT_SPARSE = "This disk can't hold sparse files, so the card is 128 MiB with 1 KiB clusters. Make it on another disk for a full-size card.";
+
 async function cardMenu() {
   if (session.state !== 'idle' || pending) return;
   // A press on the button closed the open menu; its click must not reopen it.
   if (menuJustClosed) { menuJustClosed = false; return; }
   const choice = await chooseCardAction();
   try {
-    const chosen = choice === 'open' ? await api.pickOpenCard() : choice === 'new' ? await api.pickNewCard() : null;
+    if (choice === 'resize') { await resizeCard(); return; }
+    let chosen: FileInfo | null = null;
+    if (choice === 'open') chosen = await api.pickOpenCard();
+    else if (choice === 'new') {
+      const size = await choose('New blank card', SPARSE,
+        cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(16 * GiB), 'Choose where…');
+      if (!size) return;
+      const made = await api.pickNewCard(Number(size));
+      if (!made) return;
+      chosen = made.card;
+      if (!made.made.sparse) status(NOT_SPARSE);
+    }
     if (!chosen) return;
     card = chosen;
     paintCard();
@@ -544,14 +569,41 @@ async function cardMenu() {
   } catch (error) { sdError(error); }
 }
 
+/** Copy the card's files into a new card of a chosen size, in its place. */
+async function resizeCard() {
+  if (!card) return;
+  const now = card.size, used = sd.ready ? sd.total - sd.free : 0;
+  const choices = cardSizes.map((c) => {
+    const small = c.size < used * 1.02 + 8 * MiB;
+    return {
+      value: String(c.size), label: c.label, disabled: c.size === now || small,
+      note: c.size === now ? 'The current size' : small ? `Too small for the ${formatSize(used)} on the card` : c.note,
+    };
+  });
+  const start = choices.find((c) => !c.disabled && Number(c.value) > now) ?? choices.find((c) => !c.disabled);
+  if (!start) return;
+  const size = await choose('Resize the SD card',
+    `${card.name} is ${sizeText(now)}. Its folders and files are copied into a new card of the chosen size, which takes its place. ${SPARSE}`,
+    choices, start.value, 'Resize');
+  if (!size) return;
+  await sdRun(async () => {
+    sdStatus(`Copying the card into ${sizeText(Number(size))}…`);
+    const made = await api.resizeCard(Number(size));
+    if (made.card) { card = made.card; paintCard(); }
+    await sdRefresh();
+    sdStatusFlash(`The SD card is now ${sizeText(made.made.size)}`);
+  });
+}
+
 let menuJustClosed = false;
-function chooseCardAction(): Promise<'open' | 'new' | null> {
+function chooseCardAction(): Promise<'open' | 'new' | 'resize' | null> {
   return new Promise((resolve) => {
     const menu = $('card-menu');
     const anchor = button('sd');
     menu.hidden = false;
-    const items = [...menu.querySelectorAll<HTMLButtonElement>('button')];
-    const close = (value: 'open' | 'new' | null) => {
+    menu.querySelector<HTMLButtonElement>('[data-card="resize"]')!.disabled = !card;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    const close = (value: 'open' | 'new' | 'resize' | null) => {
       menu.hidden = true;
       document.removeEventListener('pointerdown', outside, true);
       document.removeEventListener('keydown', keys, true);
@@ -580,6 +632,7 @@ function chooseCardAction(): Promise<'open' | 'new' | null> {
     };
     menu.querySelector<HTMLButtonElement>('[data-card="open"]')!.onclick = () => close('open');
     menu.querySelector<HTMLButtonElement>('[data-card="new"]')!.onclick = () => close('new');
+    menu.querySelector<HTMLButtonElement>('[data-card="resize"]')!.onclick = () => close('resize');
     anchor.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keys, true);
@@ -600,7 +653,7 @@ async function copyCard() {
    after a change so the firmware mounts the card afresh. */
 // ready: the last listing worked. An unreadable card can still be used by
 // the emulator, but the explorer only allows retrying and switching cards.
-const sd = { cwd: '/', entries: [] as SdEntry[], free: 0, busy: false, info: '', ready: false };
+const sd = { cwd: '/', entries: [] as SdEntry[], free: 0, total: 0, busy: false, info: '', ready: false };
 const sdPanel = document.querySelector<HTMLElement>('.sd')!;
 const sdUsable = () => !sd.busy && !pending && (session.state === 'idle' || session.state === 'running');
 const joinPath = (dir: string, name: string) => dir === '/' ? `/${name}` : `${dir}/${name}`;
@@ -679,6 +732,7 @@ async function sdRefresh(path = sd.cwd): Promise<void> {
   sd.cwd = path;
   sd.entries = listing.entries;
   sd.free = listing.free;
+  sd.total = listing.total;
   $('sd-meter').style.width = `${listing.total ? 100 * (1 - listing.free / listing.total) : 0}%`;
   sd.info = `${listing.fsType} · ${formatSize(listing.free)} free of ${formatSize(listing.total)}` +
     (session.state === 'running' ? ' · changes reset the device' : '');

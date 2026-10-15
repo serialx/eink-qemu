@@ -5,7 +5,13 @@ let count = 0;
 
 export const dialogOpen = () => !!open;
 
-function show(options: { title: string; message?: string; value?: string; ok: string; danger?: boolean; input: boolean }): Promise<string | null> {
+/** One option of a choice dialog; `note` is a second line under its label. */
+export interface Choice { value: string; label: string; note?: string; disabled?: boolean }
+
+function show(options: {
+  title: string; message?: string; value?: string; ok: string; danger?: boolean; input: boolean;
+  choices?: Choice[];
+}): Promise<string | null> {
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
     dialog.className = 'ask';
@@ -33,6 +39,35 @@ function show(options: { title: string; message?: string; value?: string; ok: st
       input.setAttribute('aria-labelledby', `${id}-title`);
       form.append(input);
     }
+    const radios: HTMLInputElement[] = [];
+    if (options.choices) {
+      const list = document.createElement('div');
+      list.className = 'ask-choices';
+      list.setAttribute('role', 'radiogroup');
+      list.setAttribute('aria-labelledby', `${id}-title`);
+      for (const choice of options.choices) {
+        const label = document.createElement('label');
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = id;
+        radio.value = choice.value;
+        radio.disabled = !!choice.disabled;
+        radio.checked = choice.value === options.value;
+        const text = document.createElement('span');
+        const name = document.createElement('b');
+        name.textContent = choice.label;
+        text.append(name);
+        if (choice.note) {
+          const note = document.createElement('small');
+          note.textContent = choice.note;
+          text.append(note);
+        }
+        label.append(radio, text);
+        list.append(label);
+        radios.push(radio);
+      }
+      form.append(list);
+    }
     const buttons = document.createElement('div');
     buttons.className = 'ask-buttons';
     const cancel = document.createElement('button');
@@ -48,7 +83,9 @@ function show(options: { title: string; message?: string; value?: string; ok: st
     document.body.append(dialog);
     let result: string | null = null;
     cancel.addEventListener('click', () => dialog.close());
-    form.addEventListener('submit', () => { result = options.input ? input.value : 'ok'; });
+    form.addEventListener('submit', () => {
+      result = options.input ? input.value : options.choices ? radios.find((r) => r.checked)?.value ?? null : 'ok';
+    });
     dialog.addEventListener('close', () => {
       dialog.remove();
       open = null;
@@ -61,10 +98,14 @@ function show(options: { title: string; message?: string; value?: string; ok: st
       // Select the name without its extension, like a file manager.
       const dot = input.value.lastIndexOf('.');
       input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
-    } else ok.focus();
+    } else if (options.choices) (radios.find((r) => r.checked) ?? ok).focus();
+    else ok.focus();
   });
 }
 
 export const prompt = (title: string, value = '', ok = 'OK') => show({ title, value, ok, input: true });
+/** A choice among `choices`, starting at `value`; null when cancelled. */
+export const choose = (title: string, message: string, choices: Choice[], value: string, ok = 'OK') =>
+  show({ title, message, value, ok, input: false, choices });
 export const confirm = async (title: string, message?: string, ok = 'OK', danger = false) =>
   (await show({ title, message, ok, danger, input: false })) === 'ok';

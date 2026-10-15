@@ -30,15 +30,3 @@ target = res / 'turbo-args.json'
 if not target.exists() or target.read_text() != text:
     target.write_text(text)
 PY
-if [ ! -f "$res/blank-sd.img.gz" ]; then
-    # The browser's compact card; stock X3 timing comparisons need 32 KiB clusters.
-    # mksd.py needs mkfs.vfat and mcopy (dosfstools, mtools).
-    for tool in mkfs.vfat mcopy; do
-        command -v "$tool" >/dev/null || { echo "prepare-resources.sh: $tool is missing; install dosfstools and mtools" >&2; exit 1; }
-    done
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
-    python3 "$root/eink-qemu/mksd.py" "$tmp/sd.img" 64 --cluster-size 512 >/dev/null
-    gzip -9 -n -c "$tmp/sd.img" > "$tmp/blank-sd.img.gz"
-    mv "$tmp/blank-sd.img.gz" "$res/blank-sd.img.gz"
-fi

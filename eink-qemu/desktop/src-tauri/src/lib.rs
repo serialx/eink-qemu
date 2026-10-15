@@ -570,10 +570,20 @@ async fn card_pick_open(handle: tauri::AppHandle, app: State<'_, App>) -> Result
     use_card(&app, card).await.map(Some)
 }
 
-/// Make a new blank 64 MiB FAT32 card (native save dialog), which becomes
-/// the card in use. The destination is locked before it is replaced.
+/// A card just made or resized: the file, and its size, cluster size and
+/// whether it is sparse (else it is the 128 MiB fallback).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MadeCard {
+    card: Option<FileInfo>,
+    made: sd::MadeCard,
+}
+
+/// Make a new blank FAT32 card of `size` bytes (native save dialog), which
+/// becomes the card in use. The destination is locked before it is replaced.
 #[tauri::command]
-async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
+async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>, size: u64) -> Result<Option<MadeCard>, AppError> {
+    sd::check_size(size)?;
     if app.session.info().state != "idle" {
         return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
     }
@@ -595,23 +605,43 @@ async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>) -> Result<
             let ours = current.is_some_and(|card| card_key(&card.path) == card_key(&path));
             if let Some(card) = current.filter(|_| ours) {
                 // Replace the card itself, not a symbolic link that names it.
-                sd::create_blank(&card.path).map_err(AppError::from)?;
+                let made = sd::create_card(&card.path, size)?;
                 // The blank card is a new file: its identity replaces the old one.
                 card.lock.lock().unwrap().refresh(&locks, &card.path)?;
-                Ok(None)
+                Ok((None, made))
             } else {
                 let alias = current.is_some_and(|card| identity_key(&card.path).is_some() && identity_key(&card.path) == identity_key(&path));
                 let mut reservation = if alias { reserve_path(&locks, &path)? } else { reserve(&locks, &path)? };
-                sd::create_blank(&path).map_err(AppError::from)?;
+                let made = sd::create_card(&path, size)?;
                 reservation.refresh(&locks, &path)?;
-                Ok(Some(reservation))
+                Ok((Some(reservation), made))
             }
         })
         .await?;
-    match made {
-        Some(lock) => use_card(&app, Card { path: validate_card(&path)?, lock: lock.into() }).await.map(Some),
-        None => Ok(file_info(&path)),
-    }
+    let card = match made.0 {
+        Some(lock) => Some(use_card(&app, Card { path: validate_card(&path)?, lock: lock.into() }).await?),
+        None => file_info(&path),
+    };
+    Ok(Some(MadeCard { card, made: made.1 }))
+}
+
+/// Make the card in use `size` bytes: its files are copied into a new card
+/// with 32 KiB clusters, which takes its place (sd::resize).
+#[tauri::command]
+async fn card_resize(app: State<'_, App>, size: u64) -> Result<MadeCard, AppError> {
+    sd::check_size(size)?;
+    let locks = app.locks.clone();
+    let made = app
+        .session
+        .while_idle(|current| {
+            let card = current.ok_or_else(|| AppError::new("ENOENT", "No SD card is open."))?;
+            // Copying a full card takes a while: let other tasks run meanwhile.
+            let made = tokio::task::block_in_place(|| sd::resize(&card.path, size))?;
+            card.lock.lock().unwrap().refresh(&locks, &card.path)?;
+            Ok(made)
+        })
+        .await?;
+    Ok(MadeCard { card: app.session.card_path().as_deref().and_then(file_info), made })
 }
 
 /// Save a copy of the card (native save dialog; the guest is paused while
@@ -640,7 +670,8 @@ async fn card_pick_copy(handle: tauri::AppHandle, app: State<'_, App>) -> Result
             // so a failure never leaves half a card there.
             let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
             let temp = tempfile::Builder::new().prefix(".eink-qemu-copy-").tempfile_in(dir).map_err(|e| sd::SdError::new("EIO", e.to_string()))?;
-            std::fs::copy(card, temp.path()).map_err(|e| sd::SdError::new("EIO", e.to_string()))?;
+            // Sparse like the card, so a 16 GiB card copies as what it holds.
+            sd::sparse_copy(card, temp.as_file()).map_err(|e| sd::SdError::new("EIO", e.to_string()))?;
             temp.persist(&target).map(|_| ()).map_err(|e| sd::SdError::new("EIO", e.error.to_string()))
         })
         .await?;
@@ -907,9 +938,16 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
     // cannot both create it.
     let opened = reserve(locks, &default).and_then(|mut reservation| {
         if !default.exists() {
-            sd::create_blank(&default).map_err(|error| {
-                AppError::new("EIO", format!("Could not create the default SD card {}: {error}", default.display()))
+            let made = sd::create_card(&default, sd::DEFAULT_CARD).map_err(|error| {
+                AppError::new("EIO", format!("Could not create the default SD card {}: {}", default.display(), error.message))
             })?;
+            if !made.sparse {
+                problems.push(format!(
+                    "{} cannot hold sparse files, so the new SD card is 128 MiB with 1 KiB clusters, not a 16 GiB card \
+                     with the stock card's 32 KiB clusters. Make another from the card menu on a disk that can.",
+                    data.display()
+                ));
+            }
             reservation.refresh(locks, &default)?;
         }
         Ok(Card { path: validate_card(&default)?, lock: reservation.into() })
@@ -1015,6 +1053,7 @@ pub fn run() {
             card_pick_open,
             card_pick_new,
             card_pick_copy,
+            card_resize,
             card_reveal,
             sd_list,
             sd_pick_sources,
