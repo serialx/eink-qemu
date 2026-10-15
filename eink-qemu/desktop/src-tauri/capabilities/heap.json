@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "heap",
+  "description": "The heap window: the heap view's commands only reach Rust; it has no plugin permissions beyond the core defaults.",
+  "windows": ["heap"],
+  "permissions": ["core:default"]
+}

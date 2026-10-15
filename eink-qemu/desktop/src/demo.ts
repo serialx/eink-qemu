@@ -215,7 +215,10 @@ export function demo({ appendConsole }: { appendConsole: (text: string) => void 
     mockHeap('PSRAM', ['32BIT', '8BIT', 'SPIRAM', 'DEFAULT'], 0x3d000000, 0x800000, 9000, 11),
   ];
   attachHeap({
-    snapshot: async (): Promise<HeapSnapshot> => ({ time: Date.now(), heaps: heaps.map((h) => h()), missing: 0 }),
+    snapshot: async (): Promise<HeapSnapshot> => ({ time: Date.now() / 1000, heaps: heaps.map((h) => h()), missing: 0, took: 4,
+      traced: false, traceNote: 'Restart the emulator to record where blocks were allocated.' }),
+    stack: async () => null,
+    openWindow: async () => {},
     pickElf: async () => ({ path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 }),
     forgetElf: async () => {},
   }, { path: '/Users/me/crosspoint/.pio/build/x4pro/firmware.elf', name: 'firmware.elf', size: 31_457_280 });

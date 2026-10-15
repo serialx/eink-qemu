@@ -849,9 +849,10 @@ export async function boot() {
   firmware = state.firmware;
   card = state.card;
   if (state.session.seq > session.seq) session = state.session;
-  attachHeap({ snapshot: api.heapSnapshot, pickElf: api.heapPickElf, forgetElf: api.heapForgetElf }, state.elf);
+  attachHeap({ snapshot: api.heapSnapshot, stack: api.heapStack, pickElf: api.heapPickElf, forgetElf: api.heapForgetElf, openWindow: api.heapWindow }, state.elf);
   heapSession(session.state, session.run);
   if (state.pane === 'heap' || state.pane === 'console') showPane(state.pane);
+  if (state.pane === 'window') { showPane('heap'); void api.heapWindow(); }
   platform = state.platform;
   $<HTMLSelectElement>('device').value = settings.device;
   $<HTMLSelectElement>('panel').value = settings.panel;

@@ -60,19 +60,29 @@ file that cannot be read are reported when the window opens; firmware
 contents are checked at Start.
 
 The output panel's Heap tab maps the running firmware's ESP-IDF 5.x heaps
-block by block, like `eink-qemu/heapview.py`: internal DRAM, RTC and PSRAM,
-with new allocations and frees highlighted, requested sizes and corrupt
-canaries (with the default light heap poisoning), fragmentation and a
-free-memory trend. It needs the ELF the firmware was built from, chosen in
-the tab or dropped on the window, and remembered in `settings.json`; a
-rebuilt ELF is read again. The ELF must be the running app's: the image
-records its ELF's SHA-256 (PlatformIO and ESP-IDF builds both write it), and
-a different ELF is refused with both builds named. While the tab is open,
-each second Rust stops the guest, copies the heap regions through QMP
-`pmemsave` and resumes; under `-icount` the guest does not see the pause.
-"Largest block" is the TLSF block size, slightly above the firmware's
-`heap_caps_get_largest_free_block()`. Allocation stacks (the heaptrace
-plugin) are not in the app yet; use heapview.py for those.
+block by block: internal DRAM, RTC and PSRAM, with new allocations and frees
+highlighted, requested sizes and corrupt canaries (with the default light heap
+poisoning), fragmentation and a free-memory trend. It needs the ELF the
+firmware was built from, chosen in the tab or dropped on the window, and
+remembered in `settings.json`; a rebuilt ELF is read again. The ELF must be
+the running app's: the image records its ELF's SHA-256 (PlatformIO and
+ESP-IDF builds both write it), and a different ELF is refused with both
+builds named. While the tab or the heap window is open, each second Rust
+stops the guest, copies the heap regions through QMP `pmemsave` and resumes;
+under `-icount` the guest does not see the pause, and the tab shows how long
+the read took. "Largest block" is the TLSF block size, slightly above the
+firmware's `heap_caps_get_largest_free_block()`.
+
+When the ELF is chosen before Start and matches the firmware, QEMU also loads
+the heaptrace plugin (`contrib/plugins/heaptrace.c`), which logs every
+allocation and free with its call stack. The tab then names the function that
+allocated a block, and the heap window (the tab's expand button) is
+heapview.py's full page: blocks colored by allocation site, live bytes and
+churn by site, the newest events, a stack for any block, and a timeline that
+replays the heaps to any moment since boot. Stacks are symbolized in Rust from
+the ELF's DWARF, so no toolchain is needed. Without the plugin (an ELF chosen
+after Start, a firmware without heap poisoning, or a QEMU built without
+`--enable-plugins`) the tab says why, and the window shows the heaps alone.
 
 Wi-Fi uses QEMU's user network, so the firmware reaches the internet; turning
 it off keeps the radio present without a host connection. Turbo uses the
@@ -86,10 +96,12 @@ device through its 10-minute auto-sleep in under a minute at a full CPU core.
 |---|---|
 | `EINK_QEMU_DATA_DIR` | Settings and the default card in this directory instead of the app's, so instances are isolated (card locks stay shared) |
 | `EINK_QEMU_AUTOSTART=1` | Start the saved firmware as soon as the window loads |
-| `EINK_QEMU_PANE` | Open the output panel on this tab: `console` or `heap` |
+| `EINK_QEMU_PANE` | Open the output panel on this tab: `console` or `heap`; `window` also opens the heap window |
 | `EINK_QEMU_LOG` | Also append console lines, including the window's own errors, to this file |
 | `EINK_QEMU_SCREEN_DUMP` | Write the panel as a binary PGM to this file after every update |
+| `EINK_QEMU_HEAP_DUMP` | Write every heap snapshot, with the allocation log's events, as JSON to this file |
 | `EINK_QEMU_BIN`, `EINK_QEMU_SHARE` | QEMU binaries and `-L` data directory |
+| `EINK_QEMU_PLUGINS` | Directory with the heaptrace plugin (default: `contrib/plugins` beside the binaries, or the package's `qemu/plugins`) |
 
 `scripts/capture-window.sh out.png [pid]` saves a PNG of the window on macOS
 without raising it.

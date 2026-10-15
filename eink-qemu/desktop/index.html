@@ -18,6 +18,7 @@
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
@@ -207,6 +208,7 @@
         <button id="console-clear" class="icon-button console-tool" type="button" aria-label="Clear console" title="Clear console"><svg class="icon"><use href="#i-trash"/></svg></button>
         <button id="heap-elf" class="file-chip heap-tool" type="button" title="Choose the firmware's ELF"><svg class="icon"><use href="#i-file"/></svg><span id="heap-elf-name">Load ELF…</span></button>
         <button id="heap-forget" class="icon-button heap-tool" type="button" aria-label="Forget the ELF" title="Forget the ELF" hidden><svg class="icon"><use href="#i-x"/></svg></button>
+        <button id="heap-open" class="icon-button heap-tool" type="button" aria-label="Open the heap window" title="Open the heap window: allocation sites, churn, replay"><svg class="icon"><use href="#i-expand"/></svg></button>
         <button id="heap-pause" class="icon-button heap-tool" type="button" aria-label="Pause updates" title="Pause updates" aria-pressed="false"><svg class="icon"><use href="#i-pause"/></svg></button>
       </div>
       <pre id="console" role="tabpanel" aria-labelledby="tab-console" tabindex="0" aria-label="Firmware console"></pre>
@@ -217,6 +219,7 @@
           <button id="heap-message-action" class="button tint" type="button" hidden></button>
         </div>
         <div id="heap-live" class="heap-live" hidden><span class="heap-dot" aria-hidden="true"></span><span id="heap-state"></span></div>
+        <p id="heap-note" class="heap-note"></p>
         <div id="heap-summary" class="heap-summary"></div>
         <div id="heap-list"></div>
         <div id="heap-legend" class="heap-legend" hidden>

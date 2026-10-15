@@ -51,6 +51,8 @@ pub struct Elf {
     /// `esp_app_desc`'s address and its bytes in the ELF.
     app_desc: Option<(u32, Vec<u8>)>,
     sha256: [u8; 32],
+    /// Why the heaptrace plugin cannot record this firmware's allocations.
+    untraceable: Option<String>,
     /// Length and modification time when read: a rebuilt ELF is read again.
     stamp: (u64, Option<SystemTime>),
 }
@@ -94,6 +96,7 @@ impl Elf {
         let shoff = u32_at(data, 0x20).ok_or_else(malformed)? as usize;
         let shentsize = u16_at(data, 0x2E).ok_or_else(malformed)? as usize;
         let shnum = u16_at(data, 0x30).ok_or_else(malformed)? as usize;
+        let shstrndx = u16_at(data, 0x32).ok_or_else(malformed)? as usize;
         if shentsize < 40 {
             return Err(malformed());
         }
@@ -105,7 +108,13 @@ impl Elf {
             })
             .collect::<Option<Vec<_>>>()
             .ok_or_else(malformed)?;
+        let c_str = |at: usize| data.get(at..).map(|s| &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]);
+        let section_names: Vec<&[u8]> = match sections.get(shstrndx) {
+            Some(&(_, _, strtab, _, _)) => (0..shnum).filter_map(|i| c_str(strtab + u32_at(data, shoff + i * shentsize)? as usize)).collect(),
+            None => Vec::new(),
+        };
         let (mut heaps, mut desc) = (None, None);
+        let mut hooks = [("poison_allocated_region", false), ("multi_heap_free", false), ("multi_heap_realloc", false)];
         for &(kind, _, offset, size, link) in &sections {
             if kind != 2 {
                 continue; // SHT_SYMTAB
@@ -118,7 +127,11 @@ impl Elf {
                 match name {
                     b"registered_heaps" => heaps = Some(value),
                     b"esp_app_desc" => desc = Some(value),
-                    _ => {}
+                    _ => {
+                        for hook in hooks.iter_mut().filter(|hook| hook.0.as_bytes() == name) {
+                            hook.1 = true;
+                        }
+                    }
                 }
             }
         }
@@ -131,11 +144,23 @@ impl Elf {
             let at = offset + (addr - base) as usize;
             Some((addr, data.get(at..at + APP_DESC_SIZE)?.to_vec()))
         });
+        // What contrib/plugins/heaptrace.c needs: its hooks, and on RISC-V
+        // unwind tables (Xtensa unwinds through its register windows).
+        let untraceable = if !hooks[0].1 {
+            Some("the firmware has no poison_allocated_region(); build it with CONFIG_HEAP_POISONING_LIGHT (the default)".to_string())
+        } else if let Some((name, _)) = hooks.iter().find(|hook| !hook.1) {
+            Some(format!("the ELF has no {name}()"))
+        } else if u16_at(data, 0x12) == Some(EM_RISCV) && !section_names.iter().any(|n| *n == b".debug_frame" || *n == b".eh_frame") {
+            Some("the ELF has no .debug_frame or .eh_frame to unwind RISC-V stacks".to_string())
+        } else {
+            None
+        };
         Ok(Elf {
             path: PathBuf::new(),
             registered_heaps,
             app_desc,
             sha256: Sha256::digest(data).into(),
+            untraceable,
             stamp: (0, None),
         })
     }
@@ -358,16 +383,43 @@ fn describe(desc: &[u8]) -> String {
     format!("{} {}, built {} {}", text(&desc[48..80]), text(&desc[16..48]), text(&desc[96..112]), text(&desc[80..96]))
 }
 
+impl Elf {
+    /// Whether an app descriptor is this ELF's: by the ELF hash the image
+    /// carries, or without one by version, name and build time. None when
+    /// `desc` is not a descriptor, or the ELF has none to compare.
+    fn same_app(&self, desc: &[u8]) -> Option<bool> {
+        let (_, ours) = self.app_desc.as_ref()?;
+        if desc.len() < APP_DESC_SIZE || u32_at(desc, 0) != Some(APP_DESC_MAGIC) {
+            return None;
+        }
+        let sha = &desc[APP_DESC_SHA];
+        Some(if sha.iter().any(|&b| b != 0) { sha == self.sha256 } else { desc[APP_DESC_TEXT] == ours[APP_DESC_TEXT] })
+    }
+
+    /// Why allocations cannot be recorded for `flash` (a 16 MiB image) with
+    /// this ELF, or None: one of its app partitions must be this ELF's.
+    pub fn trace_problem(&self, flash: &[u8]) -> Option<String> {
+        if let Some(problem) = &self.untraceable {
+            return Some(problem.clone());
+        }
+        // The partition table: 32-byte entries, magic 0x50AA, type 0 for apps.
+        let apps = (0x8000..0x8C00).step_by(32).map_while(|at| {
+            (u16_at(flash, at)? == 0x50AA).then(|| (flash[at + 2], u32_at(flash, at + 4)))
+        });
+        let ours = apps.filter_map(|(kind, offset)| (kind == 0).then_some(offset?)).any(|offset| {
+            let at = offset as usize + 32; // image header, first segment header
+            flash.get(at..at + APP_DESC_SIZE).and_then(|desc| self.same_app(desc)) == Some(true)
+        });
+        (!ours).then(|| "the ELF is not the chosen firmware's".to_string())
+    }
+}
+
 /// Compare the running app's descriptor with the ELF. Ok(false) while the
 /// descriptor is not readable yet (flash not mapped early in boot).
 async fn check_app<G: Guest>(guest: &mut G, elf: &Elf) -> Result<bool, HeapError> {
     let Some((addr, ours)) = &elf.app_desc else { return Ok(true) };
     let theirs = guest.read(*addr, APP_DESC_SIZE as u32).await.map_err(HeapError::Read)?;
-    if u32_at(&theirs, 0) != Some(APP_DESC_MAGIC) {
-        return Ok(false);
-    }
-    let sha = &theirs[APP_DESC_SHA];
-    let same = if sha.iter().any(|&b| b != 0) { sha == elf.sha256 } else { theirs[APP_DESC_TEXT] == ours[APP_DESC_TEXT] };
+    let Some(same) = elf.same_app(&theirs) else { return Ok(false) };
     if same {
         Ok(true)
     } else {
@@ -487,7 +539,7 @@ mod tests {
     }
 
     fn elf() -> Elf {
-        Elf { path: "app.elf".into(), registered_heaps: HEAD, app_desc: None, sha256: [0; 32], stamp: (0, None) }
+        Elf { path: "app.elf".into(), registered_heaps: HEAD, app_desc: None, sha256: [0; 32], untraceable: None, stamp: (0, None) }
     }
 
     fn desc(version: &str, sha: [u8; 32]) -> Vec<u8> {

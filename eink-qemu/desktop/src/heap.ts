@@ -1,13 +1,15 @@
 /* Heap view: the running firmware's heaps (src-tauri/src/heap.rs), polled
    while the Heap tab is open. The map and trend are eink-qemu/heapview.html's,
    fitted to the output panel. */
-import type { FileInfo, Heap, HeapSnapshot } from './api';
+import type { FileInfo, Heap, HeapSnapshot, HeapStack } from './api';
 
 /** Where snapshots and the ELF come from: Rust, or the demo's mock. */
 export interface HeapSource {
   snapshot(): Promise<HeapSnapshot>;
+  stack(id: number): Promise<HeapStack | null>;
   pickElf(): Promise<FileInfo | null>;
   forgetElf(): Promise<void>;
+  openWindow(): Promise<void>;
 }
 
 const INTERVAL = 1000;       // ms between snapshots
@@ -44,6 +46,8 @@ let timer = 0, frame = 0;
 let snap: HeapSnapshot | null = null;
 let problem: { code: string; message: string } | null = null;
 const views = new Map<number, View>();
+/** Symbolized stacks by id: a value once fetched, else a pending Promise. */
+const stacks = new Map<number, HeapStack | null | Promise<HeapStack | null>>();
 const history = new Map<number, [number, number, number][]>(); // start -> [time, free, largest]
 
 /* Tabs ---------------------------------------------------------------- */
@@ -78,6 +82,7 @@ export function heapSession(state: string, runId: number) {
   if (runId !== run) {
     run = runId;
     snap = null;
+    stacks.clear();
     problem = null;
     history.clear();
     for (const v of views.values()) v.el.remove();
@@ -130,6 +135,7 @@ $('heap-pause').addEventListener('click', () => {
   button.querySelector('use')!.setAttribute('href', paused ? '#i-play' : '#i-pause');
   refresh();
 });
+$('heap-open').addEventListener('click', () => { void source?.openWindow().catch((error) => { problem = errorOf(error); refresh(); }); });
 $('heap-message-action').addEventListener('click', () => { if (source) void useElf(source.pickElf()); });
 
 /* Polling ------------------------------------------------------------------- */
@@ -165,7 +171,7 @@ function record(s: HeapSnapshot) {
   for (const h of s.heaps) {
     let points = history.get(h.start);
     if (!points) history.set(h.start, points = []);
-    points.push([s.time, h.infoFree, h.largest]);
+    points.push([s.time * 1000, h.infoFree, h.largest]);
     if (points.length > HISTORY) points.splice(0, points.length - HISTORY);
   }
 }
@@ -205,14 +211,17 @@ function paint() {
   }
   $('heap-live').hidden = !showMaps;
   $('heap-legend').hidden = !showMaps;
+  $('heap-note').hidden = !showMaps;
   $('heap-summary').hidden = !showMaps;
   $('heap-list').hidden = !showMaps;
   if (!showMaps || !snap) { $('heap-tip').hidden = true; return; }
 
   $('heap-live').classList.toggle('paused', paused);
-  const when = new Date(snap.time).toLocaleTimeString();
+  const when = new Date(snap.time * 1000).toLocaleTimeString();
+  const took = snap.took === undefined ? '' : ` · read in ${Math.round(snap.took)} ms`;
   const skipped = snap.missing ? ` · ${snap.missing} heap${snap.missing > 1 ? 's' : ''} changing, skipped` : '';
-  $('heap-state').textContent = `${paused ? 'Paused' : 'Live'} · ${when}${skipped}`;
+  $('heap-state').textContent = `${paused ? 'Paused' : 'Live'} · ${when}${took}${skipped}`;
+  $('heap-note').textContent = snap.traced ? '' : snap.traceNote ?? '';
 
   // Internal memory first, then PSRAM; by address within each.
   const rank = (h: Heap) => ['DRAM', 'IRAM', 'RTC', 'PSRAM'].indexOf(h.name);
@@ -461,7 +470,24 @@ function hit(v: View, e: MouseEvent) {
   for (let j = a; j < i; j++) if (b[j * 4 + 1] > b[best * 4 + 1]) best = j;
   const off = b[best * 4], len = b[best * 4 + 1], fl = b[best * 4 + 2], req = b[best * 4 + 3];
   const block = h.start + off - 4; // the TLSF header (prev_phys_block)
-  return { kind: 'block' as const, off, len, fl, req, block, used: !(fl & FREE), nUsed, nFree, born: v.born.get(`${off}:${len}`), ptr: block + (fl & POISONED ? 16 : 8) };
+  return { kind: 'block' as const, off, len, fl, req, block, used: !(fl & FREE), nUsed, nFree, born: v.born.get(`${off}:${len}`),
+    ptr: block + (fl & POISONED ? 16 : 8), stack: h.stk?.[best] ?? -1 };
+}
+
+/** The function a stack names as "allocated by", fetched once per stack. */
+function allocatedBy(id: number, ready: () => void): string {
+  if (id < 0 || !source) return 'no stack recorded';
+  let stack = stacks.get(id);
+  if (stack === undefined) {
+    const pending = source.stack(id).catch(() => null).then((found) => { stacks.set(id, found); return found; });
+    stacks.set(id, stack = pending);
+    void pending.then(() => { if (!$('heap-tip').hidden) ready(); });
+  }
+  if (stack instanceof Promise) return 'looking up…';
+  const frame = stack?.frames[stack.site];
+  if (!frame) return 'unknown';
+  // "ns::Class::method(args)" -> "ns::Class::method()"
+  return frame.fn.replace(/\((?!\)).*\)( const)?$/, '()');
 }
 
 function tip(v: View, e: MouseEvent) {
@@ -477,6 +503,7 @@ function tip(v: View, e: MouseEvent) {
     if (x.fl & POISONED) rows.push(['requested', `${fmt(x.req)} B`]);
     if (x.used) rows.push(['age', x.born ? `${Math.max(0, Math.round((Date.now() - x.born) / 1000))} s` : 'older than the view']);
     if (x.nUsed + x.nFree > 1) rows.push(['in this cell', `${x.nUsed} allocated, ${x.nFree} free`]);
+    if (x.used && snap?.traced) rows.push(['allocated by', allocatedBy(x.stack, () => tip(v, e))]);
   }
   t.innerHTML = rows.map(([k, val]) => `<div><span>${esc(k)}</span><b class="num">${esc(val)}</b></div>`).join('');
   t.hidden = false;

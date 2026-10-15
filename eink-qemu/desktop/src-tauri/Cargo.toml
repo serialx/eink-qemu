@@ -33,6 +33,8 @@ unicode-normalization = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dunce = "1"
 sha2 = "0.10"
+addr2line = "0.25"
+regex = "1"
 
 # SD card edits run in this crate and fatfs; keep debug builds responsive.
 [profile.dev.package.eink-qemu-desktop]

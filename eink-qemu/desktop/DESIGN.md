@@ -158,9 +158,23 @@ mid-update, leaving out a heap that never walks. Before walking, the guest's
 `esp_app_desc` (at the ELF's address, through the flash cache) must carry
 the ELF's SHA-256, or, when the image has none, the ELF's version, name and
 build time. A failed stop or resume ends the run, as for the SD card.
-`heap.ts` polls once a second while the tab is open, and keeps the trend and
-when each allocation was first seen; the map is heapview.html's, without
-zoom, allocation sites or replay.
+
+At Start, when the chosen ELF is one of the flash image's apps, has the
+plugin's hooks (heap poisoning) and, on RISC-V, unwind tables, QEMU gets
+`-plugin libheaptrace,elf=…,out=<run dir>/heaptrace.bin`; otherwise the run
+keeps the reason, which snapshots carry as `traceNote`. `trace.rs` ports
+heapview.py's log reader (columns, each distinct stack once, the live
+allocations), its symbolizer (the `addr2line` crate on the ELF's DWARF, with
+the symbol table for functions DWARF names without their scope, so names
+match binutils) and its allocation sites. `heapview.rs` keeps that state with
+the free-memory history and the last snapshot, which the tab and the window
+share for 0.8 s so two viewers do not pause the guest twice. Its commands
+answer in the shape of heapview.py's endpoints.
+
+The heap window (`heap.html`) mounts `eink-qemu/heapview.js`, the module
+heapview.py's page is built from, with the Rust commands in place of HTTP and
+the page's palette in place of heapview.css's (`heap-window.css`). The Heap
+tab (`heap.ts`) stays a compact view of the same snapshots.
 
 ## Firmware
 

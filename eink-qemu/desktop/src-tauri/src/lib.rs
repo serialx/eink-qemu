@@ -8,6 +8,8 @@
 
 mod display;
 mod heap;
+mod heapview;
+mod trace;
 mod host;
 mod qmp;
 pub mod sd;
@@ -39,8 +41,8 @@ struct App {
     grants: Mutex<HashSet<PathBuf>>,
     /// Startup problems the WebView shows once it attaches.
     problems: Mutex<Vec<String>>,
-    /// The heap view's ELF as last read.
-    elf: Mutex<Option<Arc<heap::Elf>>>,
+    /// The heap view: ELF, symbols, allocation log, history.
+    heap: tokio::sync::Mutex<heapview::HeapView>,
 }
 
 impl App {
@@ -366,7 +368,8 @@ async fn start(app: State<'_, App>, request: Request<'_>) -> Result<SessionInfo,
         return Err(AppError::new("EINVAL", format!("Unknown X4 Pro panel: {}.", options.panel)));
     }
     let flash = flash.clone();
-    app.session.start(options, flash).await
+    let trace = trace_plan(&app, &flash).await;
+    app.session.start(options, flash, trace).await
 }
 
 #[tauri::command]
@@ -592,23 +595,15 @@ async fn screenshot_save(handle: tauri::AppHandle, app: State<'_, App>, request:
     Ok(Some(dest.to_string_lossy().into_owned()))
 }
 
-/// Read a firmware ELF for the heap view off the async runtime.
-async fn read_elf(path: PathBuf) -> Result<heap::Elf, AppError> {
-    tokio::task::spawn_blocking(move || heap::Elf::load(&path))
-        .await
-        .unwrap_or_else(|_| Err("Reading the ELF panicked.".into()))
-        .map_err(|message| AppError::new("EINVAL", message))
-}
-
 /// Make `path` the heap view's ELF once it reads as one.
 async fn use_elf(app: &App, path: PathBuf) -> Result<FileInfo, AppError> {
-    let elf = read_elf(path.clone()).await?;
+    let elf = heapview::read_elf(path.clone()).await?;
     let info = file_info(&path).ok_or_else(|| AppError::new("EINVAL", "Unreadable ELF path."))?;
     app.update(|settings| {
         settings.elf = Some(path);
         Ok(())
     })?;
-    *app.elf.lock().unwrap() = Some(Arc::new(elf));
+    app.heap.lock().await.set_elf(Some(Arc::new(elf)));
     Ok(info)
 }
 
@@ -633,44 +628,91 @@ async fn heap_use_elf(app: State<'_, App>, path: PathBuf) -> Result<FileInfo, Ap
 }
 
 #[tauri::command]
-fn heap_forget_elf(app: State<'_, App>) -> Result<(), AppError> {
+async fn heap_forget_elf(app: State<'_, App>) -> Result<(), AppError> {
     app.update(|settings| {
         settings.elf = None;
         Ok(())
     })?;
-    *app.elf.lock().unwrap() = None;
+    app.heap.lock().await.set_elf(None);
     Ok(())
 }
 
-/// The running firmware's heaps. The ELF is read again when it was rebuilt.
+/// The running firmware's heaps, as heapview.py's /snapshot. The ELF is
+/// read again when it was rebuilt.
 #[tauri::command]
-async fn heap_snapshot(app: State<'_, App>) -> Result<heap::Snapshot, AppError> {
+async fn heap_snapshot(app: State<'_, App>) -> Result<serde_json::Value, AppError> {
     let path = app.settings.lock().unwrap().elf.clone()
         .ok_or_else(|| AppError::new("ENOELF", "Load the firmware's ELF to see its heaps."))?;
-    let cached = app.elf.lock().unwrap().clone().filter(|elf| elf.path == path && !elf.stale());
-    let elf = match cached {
-        Some(elf) => elf,
-        None => {
-            let elf = Arc::new(read_elf(path).await?);
-            *app.elf.lock().unwrap() = Some(elf.clone());
-            elf
-        }
+    app.heap.lock().await.snapshot(&app.session, &path).await
+}
+
+/// The current run's free-memory history, as heapview.py's /history.
+#[tauri::command]
+async fn heap_history(app: State<'_, App>) -> Result<serde_json::Value, AppError> {
+    Ok(app.heap.lock().await.history(&app.session))
+}
+
+/// Allocation events, as heapview.py's /events.
+#[tauri::command]
+async fn heap_events(app: State<'_, App>, gen: u64, start: usize, stacks: usize, sites: usize) -> Result<serde_json::Value, AppError> {
+    Ok(app.heap.lock().await.events(gen, start, stacks, sites))
+}
+
+/// A recorded allocation stack, symbolized, as heapview.py's /stack.
+#[tauri::command]
+async fn heap_stack(app: State<'_, App>, id: usize) -> Result<serde_json::Value, AppError> {
+    Ok(app.heap.lock().await.stack(id))
+}
+
+/// Open the heap window (heap.html), or bring it forward.
+#[tauri::command]
+async fn heap_window(handle: tauri::AppHandle) -> Result<(), AppError> {
+    if let Some(window) = handle.get_webview_window("heap") {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(&handle, "heap", tauri::WebviewUrl::App("heap.html".into()))
+        .title("Heap view")
+        .inner_size(1180.0, 860.0)
+        .min_inner_size(640.0, 480.0)
+        .build()
+        .map_err(|e| AppError::new("EIO", format!("Could not open the heap window: {e}")))?;
+    Ok(())
+}
+
+/// Whether the run about to start records allocations: it needs the ELF,
+/// the plugin, and the ELF to be the chosen firmware's.
+async fn trace_plan(app: &App, flash: &[u8]) -> session::TracePlan {
+    let Some(path) = app.settings.lock().unwrap().elf.clone() else {
+        return Err("Restart the emulator to record where blocks were allocated.".into());
     };
-    app.session.heap_snapshot(&elf).await
+    let Some(plugin) = app.session.qemu().heaptrace() else {
+        return Err("This QEMU has no heaptrace plugin, so allocation stacks are not recorded.".into());
+    };
+    let elf = app.heap.lock().await.elf(&path).await.map_err(|e| format!("Allocation stacks are off: {}", e.message))?;
+    match elf.trace_problem(flash) {
+        Some(problem) => Err(format!("Allocation stacks are off: {problem}.")),
+        None => Ok((plugin, path)),
+    }
 }
 
 fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
-    if let Some(bin) = std::env::var_os("EINK_QEMU_BIN") {
-        return QemuPaths { bin: bin.into(), share: std::env::var_os("EINK_QEMU_SHARE").map(Into::into) };
+    // A build directory keeps its plugins in contrib/plugins; a package in qemu/plugins.
+    let env_plugins = || std::env::var_os("EINK_QEMU_PLUGINS").map(PathBuf::from);
+    if let Some(bin) = std::env::var_os("EINK_QEMU_BIN").map(PathBuf::from) {
+        let plugins = env_plugins().unwrap_or_else(|| bin.join("contrib").join("plugins"));
+        return QemuPaths { bin, share: std::env::var_os("EINK_QEMU_SHARE").map(Into::into), plugins };
     }
     if let Ok(resources) = app.path().resource_dir() {
-        let bin = resources.join("qemu").join("bin");
-        if bin.is_dir() {
-            return QemuPaths { bin, share: Some(resources.join("qemu").join("share")) };
+        let qemu = resources.join("qemu");
+        if qemu.join("bin").is_dir() {
+            return QemuPaths { bin: qemu.join("bin"), share: Some(qemu.join("share")), plugins: env_plugins().unwrap_or(qemu.join("plugins")) };
         }
     }
     // Development: the repository's build directory.
-    QemuPaths { bin: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build"), share: None }
+    let build = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build");
+    QemuPaths { plugins: env_plugins().unwrap_or_else(|| build.join("contrib").join("plugins")), bin: build, share: None }
 }
 
 /// Open the saved card, or the default card when none was chosen. Problems
@@ -752,7 +794,7 @@ pub fn run() {
                 locks,
                 grants: Mutex::default(),
                 problems: Mutex::new(problems),
-                elf: Mutex::default(),
+                heap: Default::default(),
             });
             // SIGTERM and SIGINT quit like the menu does, so QEMU stops and
             // the run directory is removed.
@@ -774,6 +816,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The heap window belongs to the main one.
+            if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
+                if let Some(heap) = window.app_handle().get_webview_window("heap") {
+                    let _ = heap.close();
+                }
+            }
             // Dropped files become valid sources for the commands that take paths.
             if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
                 if let Some(app) = window.app_handle().try_state::<App>() {
@@ -809,6 +857,10 @@ pub fn run() {
             heap_use_elf,
             heap_forget_elf,
             heap_snapshot,
+            heap_history,
+            heap_events,
+            heap_stack,
+            heap_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building eink-qemu");

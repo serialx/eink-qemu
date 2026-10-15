@@ -85,14 +85,22 @@ pub struct StartOptions {
     pub ghosting: bool,
 }
 
-/// Where the QEMU binaries are, and the -L data directory when packaged.
+/// Where the QEMU binaries are, the -L data directory when packaged, and
+/// the plugin directory.
 #[derive(Debug, Clone)]
 pub struct QemuPaths {
     pub bin: PathBuf,
     pub share: Option<PathBuf>,
+    pub plugins: PathBuf,
 }
 
 impl QemuPaths {
+    /// The heaptrace plugin (contrib/plugins/heaptrace.c), if this QEMU has it.
+    pub fn heaptrace(&self) -> Option<PathBuf> {
+        let name = if cfg!(windows) { "libheaptrace.dll" } else if cfg!(target_os = "macos") { "libheaptrace.dylib" } else { "libheaptrace.so" };
+        Some(self.plugins.join(name)).filter(|path| path.is_file())
+    }
+
     pub fn binary(&self, machine: &str) -> PathBuf {
         let name = if machine == "x3" || machine == "x4" { "qemu-system-riscv32" } else { "qemu-system-xtensa" };
         self.bin.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() })
@@ -137,6 +145,8 @@ struct Run {
     kill: StdMutex<Option<oneshot::Sender<()>>>,
     exited: watch::Receiver<Option<String>>,
     stopping: AtomicBool,
+    /// The heaptrace plugin's log, or why this run does not record allocations.
+    trace: Result<PathBuf, String>,
     /// Heap pool starts found so far (see heap.rs).
     pools: Mutex<heap::Pools>,
     dir: tempfile::TempDir,
@@ -151,6 +161,18 @@ struct Shared {
     info: SessionInfo,
     run: Option<Arc<Run>>,
     cancel: Option<watch::Sender<bool>>,
+}
+
+/// How the current run records allocations for the heap view: the plugin
+/// and the ELF it reads, or why it does not.
+pub type TracePlan = Result<(PathBuf, PathBuf), String>;
+
+/// A heap snapshot, the run it is of, and that run's allocation log (or why
+/// there is none).
+pub struct HeapRead {
+    pub run: u64,
+    pub snapshot: heap::Snapshot,
+    pub trace: Result<PathBuf, String>,
 }
 
 struct Framebuffer {
@@ -345,6 +367,10 @@ impl Session {
         }
     }
 
+    pub fn qemu(&self) -> &QemuPaths {
+        &self.qemu
+    }
+
     pub fn info(&self) -> SessionInfo {
         self.shared.lock().unwrap().info.clone()
     }
@@ -450,7 +476,7 @@ impl Session {
         drop(screen);
     }
 
-    pub async fn start(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>) -> Result<SessionInfo, AppError> {
+    pub async fn start(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan) -> Result<SessionInfo, AppError> {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let id;
         {
@@ -473,7 +499,7 @@ impl Session {
         let _ops = self.ops.lock().await;
         *self.screen.lock().unwrap() = None;
         let result = match self.card_path() {
-            Some(card) => self.launch(id, &options, flash, &card, cancel_rx).await,
+            Some(card) => self.launch(id, &options, flash, &card, trace, cancel_rx).await,
             None => Err((Exit { kind: "failed", reason: Some(AppError::no_card().message) }, AppError::no_card())),
         };
         self.shared.lock().unwrap().cancel = None;
@@ -545,6 +571,7 @@ impl Session {
         options: &StartOptions,
         flash: Vec<u8>,
         card: &Path,
+        trace: TracePlan,
         mut cancel: watch::Receiver<bool>,
     ) -> Result<Arc<Run>, (Exit, AppError)> {
         let failed = |error: AppError| (Exit { kind: "failed", reason: Some(error.message.clone()) }, error);
@@ -569,9 +596,20 @@ impl Session {
         }
         let qmp_listener = Listener::bind(dir.path(), "qmp").await.map_err(|e| failed(e.into()))?;
         let display_listener = Listener::bind(dir.path(), "display").await.map_err(|e| failed(e.into()))?;
-        let args = self
+        let mut args = self
             .args(options, &flash_path, card, &qmp_listener.chardev(), &display_listener.address())
             .map_err(failed)?;
+        let trace = match trace {
+            Ok((plugin, elf)) => {
+                let out = dir.path().join("heaptrace.bin");
+                args.extend([
+                    "-plugin".into(),
+                    format!("{},elf={},out={}", escape(&plugin.to_string_lossy()), escape(&elf.to_string_lossy()), escape(&out.to_string_lossy())),
+                ]);
+                Ok(out)
+            }
+            Err(reason) => Err(reason),
+        };
         self.log(format!(
             "$ {} {}",
             binary.file_name().unwrap_or_default().to_string_lossy(),
@@ -722,6 +760,7 @@ impl Session {
             kill,
             exited,
             stopping: AtomicBool::new(false),
+            trace,
             pools: Mutex::new(heap::Pools::new()),
             dir,
         });
@@ -938,7 +977,7 @@ impl Session {
 
     /// Read the firmware's heaps (heap.rs). The guest is stopped around it,
     /// as for an SD operation; while another operation runs, EBUSY.
-    pub async fn heap_snapshot(self: &Arc<Self>, elf: &heap::Elf) -> Result<heap::Snapshot, AppError> {
+    pub async fn heap_snapshot(self: &Arc<Self>, elf: &heap::Elf) -> Result<HeapRead, AppError> {
         let Ok(_ops) = self.ops.try_lock() else { return Err(AppError::busy()) };
         let run = self.current().ok_or_else(|| AppError::new("EIDLE", "Start the emulator to see its heaps."))?;
         {
@@ -949,7 +988,7 @@ impl Session {
         let result = heap::snapshot(&mut guest, elf, &mut *run.pools.lock().await).await;
         let _ = run.paused.send(false);
         match result {
-            Ok(snapshot) => Ok(snapshot),
+            Ok(snapshot) => Ok(HeapRead { run: run.id, snapshot, trace: run.trace.clone() }),
             Err(HeapError::Mismatch(message)) => Err(AppError::new("EMISMATCH", message)),
             Err(HeapError::Read(message)) => Err(AppError::new("EREAD", message)),
             Err(HeapError::Guest(error)) => {

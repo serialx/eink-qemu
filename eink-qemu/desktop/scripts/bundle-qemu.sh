@@ -1,6 +1,7 @@
 #!/bin/sh
 # Stage native QEMU for the app bundle in src-tauri/qemu:
 #   qemu/bin/qemu-system-{riscv32,xtensa}   from <repo>/build (or $EINK_QEMU_BUILD)
+#   qemu/plugins/libheaptrace.dylib         the heap view's allocation tracer, if built
 #   qemu/lib/*.dylib                        every non-system library they load
 #   qemu/share/esp32c3-rom.bin, esp32s3_rev0_rom.bin   (the app passes -L qemu/share)
 #   qemu/COPYING                            QEMU's licence
@@ -22,18 +23,30 @@ for name in qemu-system-riscv32 qemu-system-xtensa; do
     [ -x "$build/$name" ] || { echo "bundle-qemu.sh: $build/$name is missing; build QEMU first" >&2; exit 1; }
 done
 
+# The plugin is in contrib/plugins of a build tree, or plugins/ beside the bin/
+# of an installed release archive.
+plugin=
+for candidate in "$build/contrib/plugins/libheaptrace.dylib" "$build/../plugins/libheaptrace.dylib"; do
+    [ -f "$candidate" ] && { plugin=$candidate; break; }
+done
+
 rm -rf "$out"
-mkdir -p "$out/bin" "$out/lib" "$out/share"
+mkdir -p "$out/bin" "$out/lib" "$out/share" "$out/plugins"
 cp "$build/qemu-system-riscv32" "$build/qemu-system-xtensa" "$out/bin/"
+if [ -n "$plugin" ]; then
+    cp "$plugin" "$out/plugins/"
+else
+    echo "bundle-qemu.sh: no libheaptrace.dylib (QEMU built without --enable-plugins?); the heap view will not record allocation stacks" >&2
+fi
 # The X3/X4 (ESP32-C3) and X4 Pro/Picco (ESP32-S3) mask ROMs, from qemu_find_file().
 cp "$root/pc-bios/esp32c3-rom.bin" "$root/pc-bios/esp32s3_rev0_rom.bin" "$out/share/"
 cp "$root/COPYING" "$out/COPYING"
 
-python3 - "$out" "$build" <<'PY'
+python3 - "$out" "$build" "$plugin" <<'PY'
 import os, re, shutil, subprocess, sys
 
-out, build = sys.argv[1], sys.argv[2]
-bindir, libdir = os.path.join(out, 'bin'), os.path.join(out, 'lib')
+out, build, plugin = sys.argv[1], sys.argv[2], sys.argv[3]
+bindir, libdir, plugindir = os.path.join(out, 'bin'), os.path.join(out, 'lib'), os.path.join(out, 'plugins')
 SYSTEM = ('/usr/lib/', '/System/')
 
 def homebrew_lib():
@@ -97,6 +110,12 @@ for name in sorted(os.listdir(bindir)):
     sources[path] = os.path.realpath(os.path.join(build, name))
     executables[path] = sources[path]
     queue.append(path)
+if plugin:
+    # QEMU loads the plugin; its own references resolve like a binary's.
+    path = os.path.join(plugindir, os.path.basename(plugin))
+    sources[path] = os.path.realpath(plugin)
+    executables[path] = sources[os.path.join(bindir, 'qemu-system-xtensa')]
+    queue.append(path)
 changes = {}   # bundled file -> [(old install name, basename)]
 while queue:
     path = queue.pop(0)
@@ -151,7 +170,7 @@ for path in changes:
     for dep in deps(path):
         if not (dep.startswith(SYSTEM) or dep.startswith('@loader_path/')):
             raise SystemExit(f'bundle-qemu.sh: {path} still references {dep}')
-print(f'bundled {len(bundled)} libraries into {libdir}')
+print(f'bundled {len(bundled)} libraries into {libdir}' + (', and the heaptrace plugin' if plugin else ''))
 PY
 
 du -sh "$out" | sed 's/^/qemu bundle: /'

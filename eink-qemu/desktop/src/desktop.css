@@ -123,6 +123,8 @@ button.danger:hover:enabled { background: var(--danger); opacity: .9; }
 .heap-live { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); }
 .heap-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--meter); box-shadow: 0 0 0 3px var(--brand-tint); }
 .heap-live.paused .heap-dot { background: var(--faint); box-shadow: none; }
+.heap-note { margin-top: -4px; color: var(--faint); font-size: 12px; }
+.heap-note:empty { display: none; }
 .num { font-variant-numeric: tabular-nums; }
 .heap-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; }
 .tile { display: flex; flex-direction: column; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }

@@ -4,6 +4,7 @@
 # the CI's dist-qemu-*-x86_64-w64-mingw32 archives unpacked into one
 # directory, or `ninja install` of a MinGW build.
 #   qemu/bin/qemu-system-{riscv32,xtensa}.exe and the DLLs they load
+#   qemu/plugins/libheaptrace.dll   the heap view's allocation tracer, if built
 #   qemu/share/esp32c3-rom.bin, esp32s3_rev0_rom.bin   (the app passes -L qemu/share)
 #   qemu/COPYING                                        QEMU's licence
 # Windows finds DLLs beside the .exe, so nothing is rewritten. Runs on any
@@ -20,15 +21,22 @@ for name in qemu-system-riscv32 qemu-system-xtensa; do
 done
 
 rm -rf "$out"
-mkdir -p "$out/bin" "$out/share"
+mkdir -p "$out/bin" "$out/share" "$out/plugins"
 cp "$src/bin/qemu-system-riscv32.exe" "$src/bin/qemu-system-xtensa.exe" "$out/bin/"
 for dll in "$src"/bin/*.dll; do
     [ -f "$dll" ] && cp "$dll" "$out/bin/"
 done
+# The plugin's DLLs come from bin/, where QEMU's process finds them.
+if [ -f "$src/plugins/libheaptrace.dll" ]; then
+    cp "$src/plugins/libheaptrace.dll" "$out/plugins/"
+else
+    echo "bundle-qemu-windows.sh: no plugins/libheaptrace.dll (QEMU built without --enable-plugins?); the heap view will not record allocation stacks" >&2
+fi
 # Debug information is most of a MinGW build's size.
 for tool in x86_64-w64-mingw32-strip llvm-strip /opt/homebrew/opt/llvm/bin/llvm-strip; do
     if command -v "$tool" >/dev/null 2>&1; then
         "$tool" --strip-debug "$out"/bin/*.exe
+        [ -f "$out/plugins/libheaptrace.dll" ] && "$tool" --strip-debug "$out/plugins/libheaptrace.dll"
         break
     fi
 done
@@ -51,7 +59,7 @@ else
         mswsock.dll rpcrt4.dll wtsapi32.dll netapi32.dll psapi.dll dbghelp.dll winspool.drv '
     bundled=$(ls "$out/bin" | tr 'A-Z' 'a-z')
     missing=$(
-        for file in "$out"/bin/*.exe "$out"/bin/*.dll; do
+        for file in "$out"/bin/*.exe "$out"/bin/*.dll "$out"/plugins/*.dll; do
             [ -f "$file" ] && "$objdump" -p "$file" | sed -n 's/^[[:space:]]*DLL Name: //p'
         done | sort -u | while read -r dll; do
             lower=$(printf '%s' "$dll" | tr 'A-Z' 'a-z')

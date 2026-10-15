@@ -36,13 +36,24 @@ export interface Attached {
 export interface SdEntry { name: string; size: number; isDir: boolean; mtime: number | null }
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
 export interface UploadPlan { files: number; bytes: number; conflicts: string[] }
-/** One heap (src-tauri/src/heap.rs). `blocks` is flat: offset, length, flags, requested size. */
+/** One heap (src-tauri/src/heap.rs). `blocks` is flat: offset, length, flags,
+    requested size; with an allocation log, each block's site and stack id. */
 export interface Heap {
   name: string; caps: string[]; start: number; end: number; pool: number; tail: number;
   free: number; used: number; largest: number; count: number; nfree: number;
   infoFree: number; infoMinFree: number; corrupt: number; blocks: number[];
+  sites?: number[]; stk?: number[];
 }
-export interface HeapSnapshot { time: number; heaps: Heap[]; missing: number }
+/** heapview.py's /snapshot shape (src-tauri/src/heapview.rs): time in seconds. */
+export interface HeapSnapshot {
+  time: number; heaps: Heap[]; missing: number; traced?: boolean;
+  /** Why allocations are not recorded, when they are not. */
+  traceNote?: string | null;
+  /** Milliseconds the read took, the emulator paused for most of it. */
+  took?: number;
+}
+/** A recorded allocation stack, symbolized (heapview.py's /stack). */
+export interface HeapStack { frames: { fn: string; loc: string }[]; caller: number; site: number }
 export interface StartOptions { machine: Machine; panel: string; wifi: boolean; turbo: boolean; ghosting: boolean }
 
 /** Errors from Rust carry a code (fat.js codes, EBUSY, EQEMU, …) and a message. */
@@ -94,6 +105,8 @@ export const api = {
   heapUseElf: (path: string) => call<FileInfo>('heap_use_elf', { path }),
   heapForgetElf: () => call<void>('heap_forget_elf'),
   heapSnapshot: () => call<HeapSnapshot>('heap_snapshot'),
+  heapStack: (id: number) => call<HeapStack | null>('heap_stack', { id }),
+  heapWindow: () => call<void>('heap_window'),
   saveScreenshot: (png: Uint8Array, name: string) =>
     call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),
 };
