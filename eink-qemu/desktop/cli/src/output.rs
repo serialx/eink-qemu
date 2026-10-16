@@ -88,12 +88,17 @@ pub fn describe(r: &Value) -> Option<String> {
         }
         "end" => Some(format!(
             "{side}{} {} steps in {:.1} s · {}",
-            if r["ok"] == true { "PASS" } else { "FAIL" },
+            if r["interrupted"] == true { "INTERRUPTED" } else if r["ok"] == true { "PASS" } else { "FAIL" },
             s(&r["steps"]),
             r["duration_s"].as_f64().unwrap_or(0.0),
             r["report"].as_str().or(r["run_dir"].as_str()).unwrap_or_default()
         )),
         "error" => Some(format!("{side}error: {}", s(&r["error"]))),
+        "done" => Some(format!("{}{}{}", if r["ok"] == true { "done" } else { "done (a step failed)" },
+            r["screen"].as_str().map(|p| format!(" · screen {p}")).unwrap_or_default(),
+            if r["stopped"] == true { " · stopped" } else { "" })),
+        "interrupted" => Some(format!("{side}interrupted after {} steps", s(&r["steps"]))),
+        "steps-done" => None,
         "compare" => None,
         _ => None,
     }

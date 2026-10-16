@@ -62,7 +62,8 @@ pub fn run(command: SdCommand) -> u8 {
 }
 
 fn locked(image: &std::path::Path) -> Result<cards::Card, (u8, String)> {
-    cards::open_card(&cards::default_locks_dir(), image).map_err(|e| (EXIT_SETUP, format!("{}: {}", image.display(), e.message)))
+    let locks = crate::launch::shared_locks();
+    cards::open_card(&locks, image).map_err(|e| (EXIT_SETUP, crate::launch::lock_error(&image.display().to_string(), &e.message, &locks)))
 }
 
 fn exec(command: SdCommand) -> Result<serde_json::Value, (u8, String)> {
@@ -100,6 +101,9 @@ fn exec(command: SdCommand) -> Result<serde_json::Value, (u8, String)> {
         }
         SdCommand::Get { image, path, dest } => {
             let card = locked(&image)?;
+            // The destination may be another card someone has open: hold its lock for the write.
+            let locks = crate::launch::shared_locks();
+            let _dest_lock = cards::reserve(&locks, &dest).map_err(|e| (EXIT_SETUP, crate::launch::lock_error(&dest.display().to_string(), &e.message, &locks)))?;
             sd::export(&card.path, &path, &dest).map_err(sd_err)?;
             json!({"type": "sd", "got": path, "dest": dest})
         }

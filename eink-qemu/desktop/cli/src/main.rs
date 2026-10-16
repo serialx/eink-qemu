@@ -17,22 +17,53 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Exit codes: 0 every step passed, 1 a step failed, 2 bad usage or steps,
-/// 3 the run could not start (firmware, card, QEMU).
+/// 3 the run could not start (firmware, card, QEMU), 130 interrupted.
 pub const EXIT_FAIL: u8 = 1;
 pub const EXIT_USAGE: u8 = 2;
 pub const EXIT_SETUP: u8 = 3;
+pub const EXIT_INTERRUPTED: u8 = 130;
+
+/// Seconds for a time limit: more than 0, at most a day.
+fn seconds(text: &str) -> Result<f64, String> {
+    let v: f64 = text.parse().map_err(|_| format!("{text:?} is not a number of seconds"))?;
+    if !v.is_finite() || v <= 0.0 || v > 86_400.0 {
+        return Err("use a number of seconds above 0, at most 86400".into());
+    }
+    Ok(v)
+}
+
+/// Milliseconds: 0 to an hour.
+fn millis(text: &str) -> Result<u64, String> {
+    let v: u64 = text.parse().map_err(|_| format!("{text:?} is not a whole number of milliseconds"))?;
+    if v > 3_600_000 {
+        return Err("at most 3600000 ms".into());
+    }
+    Ok(v)
+}
+
+/// The real-time clock's start: YYYY-MM-DDTHH:MM:SS, YYYY-MM-DD, or now.
+fn rtc(text: &str) -> Result<String, String> {
+    if text == "now" {
+        return Ok(text.into());
+    }
+    let ok = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S").is_ok()
+        || chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok();
+    if ok { Ok(text.into()) } else { Err("use YYYY-MM-DDTHH:MM:SS (or YYYY-MM-DD, or now)".into()) }
+}
 
 const AFTER_HELP: &str = "\
 Steps run in order; `eink-qemu steps` lists them. A typical run:
 
   eink-qemu run .pio/build/default --put book.epub ready press:confirm \\
-      'wait-log:Loaded ePub' shot:opened heap:opened
+      wait-screen press:confirm 'wait-log:Page render' shot:opened heap:opened
 
-Each step prints one JSON record on stdout; the run directory (printed in
-the first record, default eink-qemu-out/<time>-<name>, linked from
-eink-qemu-out/latest) keeps run.jsonl, log.txt, frames/, shots/, heaps/ and
-report.html. Exit codes: 0 passed, 1 a step failed, 2 bad usage, 3 the run
-could not start.";
+On a blank card Home has Browse Files selected: the first confirm opens the
+file list, the second opens its first book. Each step prints one JSON record
+on stdout; the run directory (printed in the first record, default
+eink-qemu-out/<time>-<name>, linked from eink-qemu-out/latest) keeps
+run.jsonl, log.txt, frames/, shots/, heaps/ and report.html. Exit codes:
+0 passed, 1 a step failed, 2 bad usage, 3 the run could not start,
+130 interrupted. Guide: eink-qemu/desktop/cli/README.md.";
 
 #[derive(Parser)]
 #[command(name = "eink-qemu", version, about = "Run e-ink reader firmware (Xteink X3, X4, X4 Pro, BOOX Picco) in QEMU from the command line", after_help = AFTER_HELP)]
@@ -143,10 +174,10 @@ pub struct RunArgs {
     #[arg(long, value_name = "HOST[=DIR]")]
     pub put: Vec<String>,
     /// Board: x3, x4, x4pro or picco. Default: from the firmware's chip (ESP32-C3 = x3, ESP32-S3 = x4pro).
-    #[arg(long)]
+    #[arg(long, value_parser = ["x3", "x4", "x4pro", "picco"])]
     pub machine: Option<String>,
     /// X4 Pro display panel: uc8279-68 or uc8179.
-    #[arg(long, default_value = "uc8279-68")]
+    #[arg(long, default_value = "uc8279-68", value_parser = ["uc8279-68", "uc8179"])]
     pub panel: String,
     /// The firmware's ELF for heap sites and --trace: auto (beside the firmware), none, or a path.
     #[arg(long, value_name = "auto|none|PATH")]
@@ -155,18 +186,22 @@ pub struct RunArgs {
     #[arg(long)]
     pub trace: bool,
     /// Default time limit of waits, in host seconds.
-    #[arg(long, default_value_t = 60.0, value_name = "SECONDS")]
+    #[arg(long, default_value_t = 60.0, value_name = "SECONDS", value_parser = seconds)]
     pub timeout: f64,
     /// Time limit of `ready`, in host seconds.
-    #[arg(long, default_value_t = 180.0, value_name = "SECONDS")]
+    #[arg(long, default_value_t = 180.0, value_name = "SECONDS", value_parser = seconds)]
     pub ready_timeout: f64,
     /// How long the display must stay unchanged to count as settled (shots, wait-screen, frames), in host ms.
     /// The panel must also have been idle (not BUSY) for --panel-idle.
-    #[arg(long, default_value_t = 200, value_name = "MS")]
+    #[arg(long, default_value_t = 200, value_name = "MS", value_parser = millis)]
     pub settle: u64,
     /// How long the panel must have been idle after a refresh, in guest ms, before the screen counts as settled.
-    #[arg(long, default_value_t = 300, value_name = "MS")]
+    #[arg(long, default_value_t = 300, value_name = "MS", value_parser = millis)]
     pub panel_idle: u64,
+    /// Before each press, touch or swipe, wait (up to 3 s) until the firmware's log has been quiet and the panel
+    /// idle for this many guest ms: firmware busy with background work can miss a short press. 0 turns it off.
+    #[arg(long, default_value_t = 200, value_name = "MS", value_parser = millis)]
+    pub input_quiet: u64,
     /// Fast peripherals (SD, panel, SPI): quicker runs without real device timing. Not for timing comparisons.
     #[arg(long)]
     pub turbo: bool,
@@ -180,7 +215,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub wifi: bool,
     /// Real-time clock start, as YYYY-MM-DDTHH:MM:SS, or `now`. Fixed by default so runs compare pixel for pixel.
-    #[arg(long, default_value = "2026-01-01T09:00:00", value_name = "TIME")]
+    #[arg(long, default_value = "2026-01-01T09:00:00", value_name = "TIME", value_parser = rtc)]
     pub rtc: String,
     /// Directory with qemu-system-riscv32 / qemu-system-xtensa (default: the repository's build/ or EINK_QEMU_BIN).
     #[arg(long, value_name = "DIR")]
@@ -213,13 +248,16 @@ pub struct RunArgs {
     #[arg(long)]
     pub hold: bool,
     /// End a held session after this long without a command, in seconds.
-    #[arg(long, default_value_t = 1800, value_name = "SECONDS")]
+    #[arg(long, default_value_t = 1800, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=604_800))]
     pub hold_timeout: u64,
     /// Show the run in the desktop app's window (it stays open after the steps; close it to finish).
     #[arg(long)]
     pub gui: bool,
     #[arg(long, hide = true)]
     pub ready_file: Option<PathBuf>,
+    /// The complete step list, one per line (start passes it to its background run).
+    #[arg(long, hide = true)]
+    pub steps_file: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {

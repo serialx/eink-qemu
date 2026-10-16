@@ -14,7 +14,6 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub const PANELS: [&str; 2] = ["uc8279-68", "uc8179"];
 const MIB: u64 = 1024 * 1024;
 
 pub struct Prepared {
@@ -43,7 +42,13 @@ pub fn run_dir(out: Option<&Path>, firmware: &Path, suffix: &str) -> Result<Path
 /// background run that `start` prepared the directory for).
 pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool) -> Result<PathBuf, String> {
     let dir = match out {
-        Some(out) => out.to_path_buf(),
+        Some(out) => {
+            if !reuse && out.exists() && std::fs::read_dir(out).map(|mut d| d.next().is_some()).unwrap_or(false) {
+                return Err(format!("{} already exists and is not empty; choose another --out", out.display()));
+            }
+            std::fs::create_dir_all(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+            out.to_path_buf()
+        }
         None => {
             let stem = firmware
                 .file_stem()
@@ -54,20 +59,32 @@ pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool
             let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' }).collect();
             let time = chrono::Local::now().format("%Y%m%d-%H%M%S");
             let base = PathBuf::from("eink-qemu-out");
-            let mut dir = base.join(format!("{time}-{stem}{suffix}"));
-            let mut n = 2;
-            while dir.exists() {
-                dir = base.join(format!("{time}-{stem}{suffix}-{n}"));
-                n += 1;
+            std::fs::create_dir_all(&base).map_err(|e| format!("cannot create {}: {e}", base.display()))?;
+            // Each candidate is created exclusively, so two runs never share one.
+            let mut n = 1;
+            loop {
+                let name = if n == 1 { format!("{time}-{stem}{suffix}") } else { format!("{time}-{stem}{suffix}-{n}") };
+                let dir = base.join(name);
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => break dir,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+                    Err(e) => return Err(format!("cannot create {}: {e}", dir.display())),
+                }
             }
-            dir
         }
     };
-    if !reuse && dir.exists() && std::fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
-        return Err(format!("{} already exists and is not empty; choose another --out", dir.display()));
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dir = dunce::canonicalize(&dir).unwrap_or(dir);
+    if !reuse {
+        // Claims the directory: a second run given the same --out stops here.
+        let marker = dir.join(".eink-qemu-run");
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("another run is using {}; choose another --out", dir.display())
+            } else {
+                format!("cannot write in {}: {e}", dir.display())
+            }
+        })?;
+    }
     if out.is_none() {
         point_latest(&dir);
     }
@@ -79,14 +96,19 @@ pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool
 pub fn point_latest(dir: &Path) {
     let Some(parent) = dir.parent() else { return };
     let latest = parent.join("latest");
-    let _ = std::fs::remove_file(&latest);
+    // Made beside it and renamed over it, so `latest` is never missing.
+    let temp = parent.join(format!(".latest-{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
     #[cfg(unix)]
     {
-        if std::os::unix::fs::symlink(dir.file_name().unwrap_or_default(), &latest).is_ok() {
+        if std::os::unix::fs::symlink(dir.file_name().unwrap_or_default(), &temp).is_ok() && std::fs::rename(&temp, &latest).is_ok() {
             return;
         }
     }
-    let _ = std::fs::write(&latest, dir.to_string_lossy().as_bytes());
+    if std::fs::write(&temp, dir.to_string_lossy().as_bytes()).is_ok() && std::fs::rename(&temp, &latest).is_err() {
+        let _ = std::fs::remove_file(&latest);
+        let _ = std::fs::rename(&temp, &latest);
+    }
 }
 
 /// Where the QEMU binaries are: --qemu, EINK_QEMU_BIN, a build/ or bin/
@@ -169,11 +191,44 @@ fn choose_elf(args: &RunArgs, firmware: &Path, flash: &Flash) -> Result<(Option<
     }
 }
 
+/// The card lock directory shared with the desktop app (EINK_QEMU_LOCKS overrides it).
+pub fn shared_locks() -> PathBuf {
+    std::env::var_os("EINK_QEMU_LOCKS").map(PathBuf::from).unwrap_or_else(cards::default_locks_dir)
+}
+
+/// A lock error, with what to do when the lock directory is not writable.
+pub fn lock_error(what: &str, message: &str, locks: &Path) -> String {
+    let denied = message.contains("Operation not permitted") || message.contains("Permission denied") || message.contains("os error 1)") || message.contains("os error 13)");
+    if denied {
+        format!(
+            "{what}: {message} The tool takes card locks in {}, shared with the desktop app so the two never write one card; \
+             this process may not write there (a sandbox?). Allow writes to it, or set EINK_QEMU_LOCKS to a writable directory.",
+            locks.display()
+        )
+    } else {
+        format!("{what}: {message}")
+    }
+}
+
+/// Bad options that clap cannot see alone, found before any work starts.
+pub fn check_args(args: &RunArgs) -> Result<(), String> {
+    if args.sd_in_place && args.sd.is_none() {
+        return Err("--sd-in-place needs --sd IMG".into());
+    }
+    for pattern in &args.crash_pattern {
+        regex::Regex::new(pattern).map_err(|e| format!("--crash-pattern {pattern}: {e}"))?;
+    }
+    if args.trace && args.elf.as_deref() == Some("none") {
+        return Err("--trace needs the firmware's ELF; drop --elf none".into());
+    }
+    Ok(())
+}
+
 fn card_for(args: &RunArgs, dir: &Path) -> Result<(PathBuf, Value, Option<cards::Card>), String> {
-    let locks = cards::default_locks_dir();
+    let locks = shared_locks();
     if args.sd_in_place {
         let src = args.sd.as_deref().ok_or("--sd-in-place needs --sd IMG")?;
-        let card = cards::open_card(&locks, src).map_err(|e| format!("--sd {}: {}", src.display(), e.message))?;
+        let card = cards::open_card(&locks, src).map_err(|e| lock_error(&format!("--sd {}", src.display()), &e.message, &locks))?;
         let path = card.path.clone();
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         return Ok((path.clone(), json!({"path": path, "source": path, "in_place": true, "size_mib": size / MIB}), Some(card)));
@@ -182,12 +237,20 @@ fn card_for(args: &RunArgs, dir: &Path) -> Result<(PathBuf, Value, Option<cards:
     let info = match &args.sd {
         Some(src) => {
             let src = cards::validate_card(src).map_err(|e| format!("--sd {}: {}", src.display(), e.message))?;
-            // Copy under the card's lock, so a desktop window is not writing it meanwhile.
-            let _lock = cards::reserve(&locks, &src).map_err(|e| format!("--sd {}: {} Close it there or copy it first.", src.display(), e.message))?;
+            // Copy under the card's lock, so a desktop window is not writing it
+            // meanwhile; without a writable lock directory, copy anyway and say so.
+            let (lock, lock_note) = match cards::reserve(&locks, &src) {
+                Ok(lock) => (Some(lock), None),
+                Err(e) if e.code == "EBUSY" => {
+                    return Err(format!("--sd {}: {} Close it there or copy it first.", src.display(), e.message));
+                }
+                Err(e) => (None, Some(lock_error("the card was copied without its lock", &e.message, &locks))),
+            };
             let out = std::fs::File::create(&card).map_err(|e| format!("cannot create {}: {e}", card.display()))?;
             sd::sparse_copy(&src, &out).map_err(|e| format!("cannot copy {}: {e}", src.display()))?;
+            drop(lock);
             let size = std::fs::metadata(&card).map(|m| m.len()).unwrap_or(0);
-            json!({"path": card, "source": src, "in_place": false, "size_mib": size / MIB})
+            json!({"path": card, "source": src, "in_place": false, "size_mib": size / MIB, "lock_note": lock_note})
         }
         None => {
             let size = args.sd_size * MIB;
@@ -234,14 +297,6 @@ fn stage(card: &Path, puts: &[String]) -> Result<Vec<Value>, String> {
 pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared, String> {
     if !firmware.exists() {
         return Err(format!("{} does not exist", firmware.display()));
-    }
-    if let Some(m) = args.machine.as_deref() {
-        if !["x3", "x4", "x4pro", "picco"].contains(&m) {
-            return Err(format!("--machine {m}: use x3, x4, x4pro or picco"));
-        }
-    }
-    if !PANELS.contains(&args.panel.as_str()) {
-        return Err(format!("--panel {}: use {}", args.panel, PANELS.join(" or ")));
     }
     let flash = flash::make_flash(firmware, args.machine.as_deref()).map_err(|e| format!("{}: {e}", firmware.display()))?;
     let (elf, elf_note) = choose_elf(args, firmware, &flash)?;
@@ -293,10 +348,11 @@ pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared
 
 /// Start QEMU for a prepared run; the session reports to `events`.
 pub async fn launch(p: &mut Prepared, events: Arc<RunEvents>) -> Result<Arc<Session>, String> {
-    let locks = cards::default_locks_dir();
+    // The run's own copy is known to this run alone: its lock lives beside it.
+    let locks = p.dir.join(".locks");
     let card = match p.card_lock.take() {
         Some(card) => card,
-        None => cards::open_card(&locks, &p.card).map_err(|e| format!("SD card {}: {}", p.card.display(), e.message))?,
+        None => cards::open_card(&locks, &p.card).map_err(|e| lock_error(&format!("SD card {}", p.card.display()), &e.message, &locks))?,
     };
     let session = Session::new(events.clone(), p.qemu.clone(), Some(card));
     let trace = p.trace.clone();

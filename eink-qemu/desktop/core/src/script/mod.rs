@@ -7,7 +7,7 @@
 //! Times: `t` in a record is host seconds since the run started; `guest_ms`
 //! is the guest's virtual clock (QEMU's guest-clock object), which under
 //! -icount is the time the firmware lives in. Waits on the guest (`wait`,
-//! key holds) count guest time; time limits count host time.
+//! key holds, quiet periods) count guest time; time limits count host time.
 
 pub mod automation;
 pub mod events;
@@ -16,6 +16,7 @@ pub mod metrics;
 pub mod readiness;
 pub mod steps;
 
+use crate::heap::BLOCK_FREE;
 use crate::heapview::HeapView;
 use crate::session::{AppError, Session};
 use events::RunEvents;
@@ -23,7 +24,7 @@ use readiness::{Readiness, Verdict};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::future::Future;
 use std::io::{BufWriter, Write};
@@ -36,9 +37,15 @@ use steps::{Kind, Step};
 
 /// The QOM path of the guest clock the run adds (-object guest-clock,id=…).
 pub const GUEST_CLOCK_ID: &str = "eink-clock";
+/// The panel device every board names "panel".
+const PANEL: &str = "/machine/peripheral/panel";
 const POLL: Duration = Duration::from_millis(15);
 /// How long a shot right after an action waits for the screen to respond.
 const ACTION_GRACE: Duration = Duration::from_secs(2);
+/// The longest an input step waits for the firmware's log to go quiet.
+const INPUT_QUIET_LIMIT: Duration = Duration::from_secs(3);
+/// How long an action waits for the console lines read before it to arrive.
+const LOG_BARRIER: Duration = Duration::from_millis(500);
 /// Log lines that mean the guest crashed.
 pub const CRASH_PATTERNS: &[&str] = &[
     r"Guru Meditation Error",
@@ -74,6 +81,15 @@ impl GuestClock {
     }
 }
 
+/// How long since a moment taken as (host instant, guest ns): guest time
+/// when both guest readings exist, else host time.
+fn since(from: (Instant, Option<i64>), guest_now: Option<i64>) -> Duration {
+    match (from.1, guest_now) {
+        (Some(a), Some(b)) => Duration::from_nanos((b - a).max(0) as u64),
+        _ => from.0.elapsed(),
+    }
+}
+
 /// A settled screen the recorder kept (frames/NNNN-<ms>ms.png).
 #[derive(Debug, Clone, Serialize)]
 pub struct FrameInfo {
@@ -82,13 +98,15 @@ pub struct FrameInfo {
     pub t: f64,
     pub guest_ms: Option<i64>,
     pub file: String,
-    pub sha256: String,
+    /// SHA-256 of the 8-bit gray pixels (not of the PNG file).
+    pub pixels_sha256: String,
 }
 
 /// Keeps every settled screen as a PNG, and tells waits when the screen has
 /// settled: no display update for `settle` (host time) and, where the panel
-/// model reports BUSY, the panel idle for `panel_idle` of guest time. That
-/// spans the gap between a refresh and the grayscale passes after it.
+/// model reports BUSY, the panel idle for `panel_idle` of guest time since
+/// the latest update. That spans the gap between a refresh and the
+/// grayscale passes after it.
 pub struct Recorder {
     /// The update count the screen last settled at.
     settled: AtomicU64,
@@ -97,9 +115,6 @@ pub struct Recorder {
     /// Whether the panel reports BUSY (false on older QEMU builds).
     pub busy_known: AtomicBool,
 }
-
-/// The panel device every board names "panel".
-const PANEL: &str = "/machine/peripheral/panel";
 
 impl Recorder {
     pub fn spawn(
@@ -120,11 +135,11 @@ impl Recorder {
         let me = recorder.clone();
         tokio::spawn(async move {
             let mut seen = 0u64;
-            // The last display update seen: its count, host seconds and guest ms.
+            // The latest display update: its count, host seconds and guest ms.
             let mut change: (u64, f64, Option<i64>) = (0, 0.0, None);
+            // When the panel was first seen idle after the latest update.
+            let mut idle_from: Option<(Instant, Option<i64>)> = None;
             let mut last_sha = String::new();
-            // Guest time (ns) the panel was last seen busy, or host time without a guest clock.
-            let mut busy_at: Option<(Instant, Option<i64>)> = None;
             while !me.stop.load(Ordering::Relaxed) {
                 tokio::time::sleep(POLL).await;
                 let screen = events.screen();
@@ -133,33 +148,37 @@ impl Recorder {
                 }
                 if screen.updates != change.0 {
                     change = (screen.updates, events.now(), clock.now_ms().await);
+                    idle_from = None;
                 }
-                if screen.last_update.is_some_and(|t| t.elapsed() < settle) {
-                    continue;
-                }
+                let mut guest_now = None;
                 if me.busy_known.load(Ordering::Relaxed) {
                     match session.qmp("qom-get", Some(json!({"path": PANEL, "property": "busy"}))).await {
-                        Ok(Value::Bool(busy)) => {
-                            let guest = clock.now_ns().await;
-                            if busy {
-                                busy_at = Some((Instant::now(), guest));
-                                continue;
-                            }
-                            if let Some((host, at)) = busy_at {
-                                let idle = match (at, guest) {
-                                    (Some(at), Some(now)) => Duration::from_nanos((now - at).max(0) as u64),
-                                    _ => host.elapsed(),
-                                };
-                                if idle < panel_idle {
-                                    continue;
-                                }
-                            }
+                        Ok(Value::Bool(true)) => {
+                            idle_from = None;
+                            continue;
+                        }
+                        Ok(Value::Bool(false)) => {
+                            guest_now = clock.now_ns().await;
+                            idle_from.get_or_insert((Instant::now(), guest_now));
                         }
                         Ok(_) | Err(_) if session.machine().is_some() => me.busy_known.store(false, Ordering::Relaxed),
                         _ => continue,
                     }
                 }
-                busy_at = None;
+                if screen.last_update.is_some_and(|t| t.elapsed() < settle) {
+                    continue;
+                }
+                if me.busy_known.load(Ordering::Relaxed) {
+                    if let Some(from) = idle_from {
+                        if since(from, guest_now) < panel_idle {
+                            continue;
+                        }
+                    }
+                }
+                // Nothing new arrived while the panel was asked about.
+                if events.screen().updates != screen.updates {
+                    continue;
+                }
                 let (_, t, guest) = change;
                 if keep {
                     if let Some(fb) = session.screen() {
@@ -172,13 +191,14 @@ impl Recorder {
                                 None => format!("frames/{index:04}-h{}ms.png", (t * 1000.0) as u64),
                             };
                             if image::write_png(&dir.join(&file), fb.width, fb.height, &fb.pixels).is_ok() {
-                                frames.push(FrameInfo { index, t: round3(t), guest_ms: guest, file, sha256: sha.clone() });
+                                frames.push(FrameInfo { index, t: round3(t), guest_ms: guest, file, pixels_sha256: sha.clone() });
                                 last_sha = sha;
                             }
                         }
                     }
                 }
                 seen = screen.updates;
+                idle_from = None;
                 me.settled.store(seen, Ordering::SeqCst);
             }
         });
@@ -217,6 +237,9 @@ pub struct RunOptions {
     pub settle: Duration,
     /// How long the panel must have been idle (not BUSY), in guest time.
     pub panel_idle: Duration,
+    /// How long the log must have been quiet before an input step, in guest
+    /// time (zero: do not wait).
+    pub input_quiet: Duration,
     /// Quiet screen seconds that make firmware without CrossPoint's log ready.
     pub ready_quiet: f64,
     /// The firmware's ELF, for heap sites and allocation traces.
@@ -235,6 +258,7 @@ impl RunOptions {
             ready_timeout: 180.0,
             settle: Duration::from_millis(200),
             panel_idle: Duration::from_millis(300),
+            input_quiet: Duration::from_millis(200),
             ready_quiet: 5.0,
             elf: None,
             crash_patterns: CRASH_PATTERNS.iter().map(|p| Regex::new(p).unwrap()).collect(),
@@ -286,13 +310,19 @@ pub struct Runner {
     pending_action: bool,
     readiness: Readiness,
     readiness_pos: usize,
+    /// Screen updates before the current boot (a reset): readiness by a
+    /// quiet screen needs one after it.
+    readiness_screen_base: u64,
     crash_pos: usize,
     heap: HeapView,
     traces: HashMap<String, u64>,
     shots: HashMap<String, PathBuf>,
-    names: HashMap<String, u32>,
+    /// Output names taken so far, as "kind/name".
+    names: HashSet<String>,
     /// Records so far; the next record's `i`.
     pub index: usize,
+    /// The last step record.
+    pub last_step: Option<Value>,
     records: BufWriter<File>,
     sink: Sink,
     /// The first failed record, if any.
@@ -301,6 +331,11 @@ pub struct Runner {
 
 fn epoch_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+}
+
+/// A name with `{i}` replaced by the innermost repeat's iteration.
+fn expand(name: &str, iters: &[u32]) -> String {
+    name.replace("{i}", &iters.last().copied().unwrap_or(1).to_string())
 }
 
 impl Runner {
@@ -324,12 +359,14 @@ impl Runner {
             pending_action: false,
             readiness: Readiness::new(),
             readiness_pos: 0,
+            readiness_screen_base: 0,
             crash_pos: 0,
             heap: HeapView::default(),
             traces: HashMap::new(),
             shots: HashMap::new(),
-            names: HashMap::new(),
+            names: HashSet::new(),
             index: 0,
+            last_step: None,
             records,
             sink,
             failed: None,
@@ -347,13 +384,29 @@ impl Runner {
         (self.sink)(record);
     }
 
+    /// The latest settled screen kept in frames/, if any.
+    pub fn latest_frame(&self) -> Option<FrameInfo> {
+        self.frames.last_frame()
+    }
+
     /// Run `steps` in order; false at the first failure (recorded, with the
-    /// failure bundle in fail/).
+    /// failure bundle in fail/). After the last step the log is checked once
+    /// more for a crash.
     pub async fn run(&mut self, steps: &[Step]) -> bool {
         if let Some(elf) = self.opts.elf.clone() {
             let _ = self.heap.elf(&elf).await;
         }
-        self.run_list(steps, Vec::new()).await
+        if !self.run_list(steps, Vec::new()).await {
+            return false;
+        }
+        // A crash printed with or just after the last step's success.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        self.session.log_barrier(LOG_BARRIER).await;
+        if let Err(failure) = self.check_alive() {
+            self.record_failure("check", "(log check after the last step)", &[], Instant::now(), failure).await;
+            return false;
+        }
+        true
     }
 
     fn run_list<'a>(&'a mut self, steps: &'a [Step], iters: Vec<u32>) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
@@ -377,53 +430,73 @@ impl Runner {
         })
     }
 
-    async fn run_step(&mut self, step: &Step, iters: &[u32]) -> bool {
-        let started = Instant::now();
-        let result = self.exec(step, iters).await;
-        let guest = self.clock.now_ms().await;
+    fn base_record(&self, kind: &str, text: &str, iters: &[u32], started: Instant, guest: Option<i64>, ok: bool) -> Map<String, Value> {
         let mut record = Map::new();
         record.insert("type".into(), json!("step"));
         record.insert("i".into(), json!(self.index));
-        record.insert("step".into(), json!(step.kind.name()));
-        record.insert("text".into(), json!(step.text));
+        record.insert("step".into(), json!(kind));
+        record.insert("text".into(), json!(text));
         if !iters.is_empty() {
             record.insert("iter".into(), json!(iters));
         }
-        let ok = result.is_ok();
         record.insert("ok".into(), json!(ok));
         record.insert("t".into(), json!(round3(self.events.now())));
         record.insert("ms".into(), json!(started.elapsed().as_millis() as u64));
         record.insert("guest_ms".into(), json!(guest));
-        let (fields, error) = match result {
-            Ok(fields) => (fields, None),
-            Err(failure) => (failure.fields, Some(failure.message)),
-        };
-        for (k, v) in fields {
+        record
+    }
+
+    async fn record_failure(&mut self, kind: &str, text: &str, iters: &[u32], started: Instant, failure: Failure) {
+        let guest = self.clock.now_ms().await;
+        let mut record = self.base_record(kind, text, iters, started, guest, false);
+        for (k, v) in failure.fields {
             record.insert(k, v);
         }
-        if let Some(error) = &error {
-            record.insert("error".into(), json!(error));
-        }
+        record.insert("error".into(), json!(failure.message));
         self.index += 1;
-        let record = Value::Object(record);
-        if !ok {
-            let bundle = self.failure_bundle(&record).await;
-            let mut record = record;
-            record["fail_dir"] = json!(bundle);
-            self.emit(&record);
-            self.failed = Some(record);
-            return false;
-        }
+        let mut record = Value::Object(record);
+        let bundle = self.failure_bundle(&record).await;
+        record["fail_dir"] = json!(bundle);
         self.emit(&record);
-        true
+        self.last_step = Some(record.clone());
+        self.failed.get_or_insert(record);
+    }
+
+    async fn run_step(&mut self, step: &Step, iters: &[u32]) -> bool {
+        let started = Instant::now();
+        let result = self.exec(step, iters).await;
+        match result {
+            Ok(fields) => {
+                let guest = self.clock.now_ms().await;
+                let mut record = self.base_record(step.kind.name(), &step.text, iters, started, guest, true);
+                for (k, v) in fields {
+                    record.insert(k, v);
+                }
+                self.index += 1;
+                let record = Value::Object(record);
+                self.emit(&record);
+                self.last_step = Some(record);
+                true
+            }
+            Err(failure) => {
+                self.record_failure(step.kind.name(), &step.text, iters, started, failure).await;
+                false
+            }
+        }
     }
 
     /// A unique name for a step's output of one kind (shots, heaps,
-    /// traces): a name used before gets -2, -3, …
+    /// traces): a name taken before gets -2, -3, …, skipping names taken
+    /// explicitly.
     fn unique(&mut self, kind: &str, name: &str) -> String {
-        let n = self.names.entry(format!("{kind}/{name}")).or_insert(0);
-        *n += 1;
-        if *n == 1 { name.to_string() } else { format!("{name}-{n}") }
+        let mut candidate = name.to_string();
+        let mut n = 1;
+        while self.names.contains(&format!("{kind}/{candidate}")) {
+            n += 1;
+            candidate = format!("{name}-{n}");
+        }
+        self.names.insert(format!("{kind}/{candidate}"));
+        candidate
     }
 
     /// Fail if the guest crashed or QEMU is gone.
@@ -435,10 +508,10 @@ impl Runner {
             }
         }
         let patterns = &self.opts.crash_patterns;
-        let found = self.events.with_lines(self.crash_pos, |lines| {
+        let (found, end) = self.events.with_lines_end(self.crash_pos, |lines| {
             lines.iter().find(|l| patterns.iter().any(|p| p.is_match(&l.text))).map(|l| l.text.clone())
         });
-        self.crash_pos = self.events.line_count();
+        self.crash_pos = end;
         if let Some(line) = found {
             let mut f = Failure::new(format!("the guest crashed: {line}"));
             f.fields.insert("crash_line".into(), json!(line));
@@ -447,21 +520,71 @@ impl Runner {
         Ok(())
     }
 
-    /// Mark an action: later waits look only at what follows.
-    fn action(&mut self) {
+    /// Mark an action: later waits look only at what follows. Lines read
+    /// before it are delivered first, so none of them can satisfy a wait.
+    async fn action(&mut self) {
+        self.session.log_barrier(LOG_BARRIER).await;
         self.log_cursor = self.events.line_count();
         self.screen_cursor = self.events.screen().updates;
         self.pending_action = true;
     }
 
+    /// Before input: wait until the firmware's log has been quiet and the
+    /// panel idle for `input_quiet` of guest time, at most INPUT_QUIET_LIMIT.
+    /// Firmware busy with background work (laying out pages) can miss a
+    /// short press.
+    async fn input_quiet(&mut self, f: &mut Fields) -> Result<(), Failure> {
+        if self.opts.input_quiet.is_zero() {
+            return Ok(());
+        }
+        let started = Instant::now();
+        let mut count = self.events.line_count();
+        let mut quiet_from = (Instant::now(), self.clock.now_ns().await);
+        loop {
+            self.check_alive()?;
+            let guest = self.clock.now_ns().await;
+            let now_count = self.events.line_count();
+            let busy = self.panel_busy().await == Some(true);
+            if now_count != count || busy {
+                count = now_count;
+                quiet_from = (Instant::now(), guest);
+            } else if since(quiet_from, guest) >= self.opts.input_quiet {
+                break;
+            }
+            if started.elapsed() > INPUT_QUIET_LIMIT {
+                f.insert("input_quiet_reached".into(), json!(false));
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        f.insert("waited_ms".into(), json!(started.elapsed().as_millis() as u64));
+        Ok(())
+    }
+
+    async fn panel_busy(&mut self) -> Option<bool> {
+        if !self.frames.busy_known.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.session.qmp("qom-get", Some(json!({"path": PANEL, "property": "busy"}))).await.ok()?.as_bool()
+    }
+
+    /// A new boot is starting (reset): readiness waits for it.
+    async fn begin_reset(&mut self) {
+        self.session.log_barrier(LOG_BARRIER).await;
+        self.readiness = Readiness::after_reset(&self.readiness);
+        self.readiness_pos = self.events.line_count();
+        self.readiness_screen_base = self.events.screen().updates;
+    }
+
     /// Let the guest run for `ms` of its own time (host time without the
     /// guest clock), at most ten times as long plus five seconds of host time.
     async fn guest_sleep(&mut self, ms: f64) -> Result<(), Failure> {
+        let ms = ms.clamp(0.0, steps::MAX_SECONDS * 1000.0);
         let host_limit = Duration::from_secs_f64(ms / 1000.0 * 10.0 + 5.0);
         let started = Instant::now();
         match self.clock.now_ns().await {
             Some(start) => {
-                let target = start + (ms * 1_000_000.0) as i64;
+                let target = start.saturating_add((ms * 1_000_000.0) as i64);
                 loop {
                     self.check_alive()?;
                     let now = self.clock.now_ns().await.unwrap_or(target);
@@ -487,7 +610,7 @@ impl Runner {
     }
 
     /// The last few log lines, for an error message.
-    fn tail(&self, n: usize) -> Vec<String> {
+    pub fn tail(&self, n: usize) -> Vec<String> {
         let count = self.events.line_count();
         self.events.with_lines(count.saturating_sub(n), |lines| lines.iter().map(|l| l.text.clone()).collect())
     }
@@ -498,7 +621,7 @@ impl Runner {
 
     async fn exec(&mut self, step: &Step, iters: &[u32]) -> StepResult {
         self.check_alive()?;
-        if matches!(step.kind, Kind::Ready { .. } | Kind::Wait { .. } | Kind::WaitLog { .. } | Kind::WaitScreen { .. }) {
+        if matches!(step.kind, Kind::Ready { .. } | Kind::Wait { .. } | Kind::WaitLog { .. } | Kind::WaitScreen { .. } | Kind::WaitQuiet { .. }) {
             self.pending_action = false;
         }
         let mut f = Fields::new();
@@ -507,30 +630,34 @@ impl Runner {
                 let limit = timeout.unwrap_or(self.opts.ready_timeout);
                 let started = Instant::now();
                 loop {
-                    let count = self.events.line_count();
-                    let now = self.events.now();
                     let readiness = &mut self.readiness;
-                    self.events.with_lines(self.readiness_pos, |lines| {
+                    let ((), end) = self.events.with_lines_end(self.readiness_pos, |lines| {
                         for l in lines {
                             readiness.feed(&l.text, l.t);
                         }
                     });
-                    self.readiness_pos = count;
+                    self.readiness_pos = end;
+                    let now = self.events.now();
                     let screen = self.events.screen();
-                    let quiet = screen.first_update.and(screen.last_update).map(|t| t.elapsed().as_secs_f64());
-                    match self.readiness.verdict(quiet, self.opts.ready_quiet) {
+                    let quiet = (screen.updates > self.readiness_screen_base).then(|| screen.last_update.map(|t| t.elapsed().as_secs_f64())).flatten();
+                    match self.readiness.verdict(quiet, self.opts.ready_quiet, now) {
                         Verdict::Ready(how) => {
+                            self.check_alive()?;
                             f.insert("how".into(), json!(how));
                             f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(now))));
                             if let Some(ms) = self.readiness.home_fw_ms {
                                 f.insert("home_fw_ms".into(), json!(ms));
                             }
                             f.insert("restarts".into(), json!(self.readiness.restarts));
-                            self.log_cursor = count;
+                            self.log_cursor = end;
                             self.screen_cursor = screen.updates;
                             return Ok(f);
                         }
-                        Verdict::Failed(why) => return Err(Failure::new(why)),
+                        Verdict::Failed(why) => {
+                            let mut failure = Failure::new(why);
+                            failure.fields.insert("last_lines".into(), json!(self.tail(8)));
+                            return Err(failure);
+                        }
                         Verdict::Waiting => {}
                     }
                     self.check_alive()?;
@@ -549,10 +676,11 @@ impl Runner {
                 let started = Instant::now();
                 loop {
                     let from = self.log_cursor;
-                    let found = self.events.with_lines(from, |lines| {
+                    let (found, _) = self.events.with_lines_end(from, |lines| {
                         lines.iter().position(|l| pattern.is_match(&l.text)).map(|i| (i, lines[i].text.clone(), lines[i].t))
                     });
                     if let Some((i, line, t)) = found {
+                        self.check_alive()?;
                         self.log_cursor = from + i + 1;
                         f.insert("line".into(), json!(line));
                         f.insert("line_t".into(), json!(round3(t)));
@@ -585,6 +713,7 @@ impl Runner {
                 loop {
                     let settled = self.frames.settled();
                     if settled > self.screen_cursor && settled == self.events.screen().updates {
+                        self.check_alive()?;
                         self.screen_cursor = settled;
                         let after = self.session.screen().map(|s| crate::flash::sha256_hex(&s.pixels));
                         f.insert("changed".into(), json!(before != after));
@@ -600,6 +729,32 @@ impl Runner {
                     tokio::time::sleep(POLL).await;
                 }
             }
+            Kind::WaitQuiet { seconds } => {
+                let need = Duration::from_secs_f64(*seconds);
+                let limit = self.timeout.max(seconds * 3.0 + 5.0);
+                let started = Instant::now();
+                let mut count = self.events.screen().updates;
+                let mut quiet_from = (Instant::now(), self.clock.now_ns().await);
+                loop {
+                    self.check_alive()?;
+                    let guest = self.clock.now_ns().await;
+                    let screen = self.events.screen();
+                    if screen.updates != count {
+                        count = screen.updates;
+                        quiet_from = (Instant::now(), guest);
+                    } else if since(quiet_from, guest) >= need && self.frames.settled() == screen.updates {
+                        self.screen_cursor = screen.updates;
+                        if let Some(frame) = self.frames.last_frame() {
+                            f.insert("frame".into(), json!(frame.file));
+                        }
+                        return Ok(f);
+                    }
+                    if started.elapsed().as_secs_f64() > limit {
+                        return Err(Failure::new(format!("the screen did not stay unchanged for {seconds} s within {limit:.0} s")));
+                    }
+                    tokio::time::sleep(POLL).await;
+                }
+            }
             Kind::Timeout { seconds } => {
                 self.timeout = *seconds;
                 f.insert("timeout_s".into(), json!(seconds));
@@ -607,7 +762,8 @@ impl Runner {
             Kind::Press { key, ms } => {
                 let machine = self.machine();
                 let (path, property) = key_path(&machine, key).map_err(Failure::new)?;
-                self.action();
+                self.input_quiet(&mut f).await?;
+                self.action().await;
                 self.session.qmp("qom-set", Some(json!({"path": path, "property": property, "value": true}))).await?;
                 let held = self.guest_sleep(f64::from(*ms)).await;
                 self.session.qmp("qom-set", Some(json!({"path": path, "property": property, "value": false}))).await?;
@@ -618,7 +774,8 @@ impl Runner {
             Kind::Touch { x, y, ms } => {
                 let (w, h) = self.touch_panel()?;
                 let (px, py) = (x.resolve(w), y.resolve(h));
-                self.action();
+                self.input_quiet(&mut f).await?;
+                self.action().await;
                 self.pointer(px, py, w, h, Some(true)).await?;
                 let held = self.guest_sleep(f64::from(*ms)).await;
                 self.pointer(px, py, w, h, Some(false)).await?;
@@ -629,7 +786,8 @@ impl Runner {
             Kind::Swipe { from, to, ms } => {
                 let (w, h) = self.touch_panel()?;
                 let (x0, y0, x1, y1) = (from.0.resolve(w), from.1.resolve(h), to.0.resolve(w), to.1.resolve(h));
-                self.action();
+                self.input_quiet(&mut f).await?;
+                self.action().await;
                 self.pointer(x0, y0, w, h, Some(true)).await?;
                 let moves = 12;
                 let mut result = Ok(());
@@ -647,10 +805,9 @@ impl Runner {
                 f.insert("to".into(), json!([x1.round(), y1.round()]));
             }
             Kind::Reset => {
+                self.begin_reset().await;
                 self.session.reset().await?;
-                self.action();
-                self.readiness = Readiness::new();
-                self.readiness_pos = self.events.line_count();
+                self.action().await;
             }
             Kind::Shot { name } => {
                 if self.pending_action {
@@ -664,18 +821,18 @@ impl Runner {
                     f.insert("changed_after_action".into(), json!(self.events.screen().updates > self.screen_cursor));
                 }
                 let fb = self.settled_screen().await?;
-                let name = self.unique("shots", name);
+                let name = self.unique("shots", &expand(name, iters));
                 let file = format!("shots/{name}.png");
                 let path = self.opts.dir.join(&file);
                 image::write_png(&path, fb.width, fb.height, &fb.pixels).map_err(Failure::new)?;
                 self.shots.insert(name.clone(), path);
                 f.insert("name".into(), json!(name));
                 f.insert("file".into(), json!(file));
-                f.insert("sha256".into(), json!(crate::flash::sha256_hex(&fb.pixels)));
+                f.insert("pixels_sha256".into(), json!(crate::flash::sha256_hex(&fb.pixels)));
                 f.insert("size".into(), json!([fb.width, fb.height]));
             }
             Kind::Heap { name } => {
-                let label = name.clone().unwrap_or_else(|| "heap".into());
+                let label = expand(name.as_deref().unwrap_or("heap"), iters);
                 let label = self.unique("heaps", &label);
                 let snap = self.read_heap().await?;
                 let file = format!("heaps/{label}.json");
@@ -698,7 +855,7 @@ impl Runner {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let to = epoch_us();
                 let window = self.heap.trace_window(from, to).ok_or_else(|| Failure::new("the allocation log could not be read"))?;
-                let label = self.unique("traces", name);
+                let label = self.unique("traces", &expand(name, iters));
                 let file = format!("traces/{label}.json");
                 std::fs::write(self.opts.dir.join(&file), window.to_string()).map_err(|e| Failure::new(e.to_string()))?;
                 f.insert("name".into(), json!(label));
@@ -713,9 +870,10 @@ impl Runner {
                 f.insert("top_sites".into(), json!(top));
             }
             Kind::Mark { name } => {
-                f.insert("name".into(), json!(name));
+                f.insert("name".into(), json!(expand(name, iters)));
             }
             Kind::ExpectLog { pattern } => {
+                self.session.log_barrier(LOG_BARRIER).await;
                 let found = self.events.with_lines(0, |lines| lines.iter().find(|l| pattern.is_match(&l.text)).map(|l| l.text.clone()));
                 match found {
                     Some(line) => {
@@ -725,6 +883,7 @@ impl Runner {
                 }
             }
             Kind::ExpectNoLog { pattern } => {
+                self.session.log_barrier(LOG_BARRIER).await;
                 let found = self.events.with_lines(0, |lines| lines.iter().find(|l| pattern.is_match(&l.text)).map(|l| l.text.clone()));
                 if let Some(line) = found {
                     let mut failure = Failure::new(format!("a log line matches /{}/: {line}", pattern.as_str()));
@@ -733,7 +892,8 @@ impl Runner {
                 }
             }
             Kind::ExpectShot { name, reference, masks } => {
-                let shot = self.shots.get(name).cloned().ok_or_else(|| Failure::new(format!("no shot:{name} before this step")))?;
+                let name = expand(name, iters);
+                let shot = self.shots.get(&name).cloned().ok_or_else(|| Failure::new(format!("no shot:{name} before this step")))?;
                 let a = image::read_png(&shot).map_err(Failure::new)?;
                 let b = image::read_png(reference).map_err(Failure::new)?;
                 let diff_file = format!("shots/{name}.diff.png");
@@ -751,12 +911,19 @@ impl Runner {
                 }
             }
             Kind::Hmp { command } => {
+                // A reset through the monitor starts a new boot, as `reset` does.
+                let resets = command.trim_start().starts_with("system_reset");
+                if resets {
+                    self.begin_reset().await;
+                }
                 let out = self.session.qmp("human-monitor-command", Some(json!({"command-line": command}))).await?;
+                if resets {
+                    self.action().await;
+                }
                 f.insert("output".into(), json!(out.as_str().unwrap_or_default().trim_end()));
             }
             Kind::Repeat { .. } => unreachable!("repeat is expanded by run_list"),
         }
-        let _ = iters;
         Ok(f)
     }
 
@@ -775,7 +942,7 @@ impl Runner {
                 return Err(Failure::new(if updates == 0 {
                     "the firmware has not drawn anything yet; put ready or wait-screen before the shot".to_string()
                 } else {
-                    format!("the screen kept changing for {} s", self.timeout)
+                    format!("the screen kept changing (or the panel stayed busy) for {} s", self.timeout)
                 }));
             }
             tokio::time::sleep(POLL).await;
@@ -817,14 +984,18 @@ impl Runner {
         }
     }
 
-    /// A fresh heap snapshot; retried while another reader holds the guest.
+    /// A fresh heap snapshot, with the allocation sites' names; retried
+    /// while another reader holds the guest.
     async fn read_heap(&mut self) -> Result<Value, Failure> {
         let started = Instant::now();
         loop {
             self.heap.invalidate();
             let elf = self.opts.elf.clone();
             match self.heap.snapshot(&self.session, elf.as_deref()).await {
-                Ok(snap) => return Ok(snap),
+                Ok(mut snap) => {
+                    snap["siteNames"] = self.heap.sites(0);
+                    return Ok(snap);
+                }
                 Err(e) if e.code == "EBUSY" && started.elapsed() < Duration::from_secs(5) => {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
@@ -875,8 +1046,7 @@ pub fn validate(steps: &[Step], machine: &str, traced: bool) -> Result<(), Strin
                 Kind::Touch { .. } | Kind::Swipe { .. } if machine != "x4pro" && machine != "picco" => {
                     return Err(format!("`{}`: the {machine} has no touchscreen (the X4 Pro and the Picco do); use press", step.text));
                 }
-                Kind::TraceStart { name } | Kind::TraceStop { name } if !traced => {
-                    let _ = name;
+                Kind::TraceStart { .. } | Kind::TraceStop { .. } if !traced => {
                     return Err(format!("`{}`: allocation traces need --trace (and the firmware's ELF)", step.text));
                 }
                 Kind::TraceStart { name } => started.push(name.clone()),
@@ -909,15 +1079,23 @@ pub fn key_path(machine: &str, key: &str) -> Result<(String, String), String> {
     Ok((format!("/machine/{object}"), key.to_string()))
 }
 
-/// The numbers of a heap snapshot a record carries: every heap's free,
-/// largest free block and lowest free since boot, and totals.
+/// The numbers of a heap snapshot a record carries. `free` and `min_free`
+/// add up every heap's own counters (multi_heap_info's free bytes and
+/// lowest free since boot, what heap_caps_get_free_size and CrossPoint's
+/// [MEM] report count); `largest` is the largest free block of any heap
+/// (the firmware's MaxAlloc is that less allocator overhead). `dram_*`
+/// count the heaps in internal DRAM only; `internal_*` add the RTC heap.
+/// With allocation tracing, `live_sites` are the sites holding the most
+/// requested bytes in live blocks.
 pub fn heap_summary(snap: &Value) -> Fields {
     let mut f = Fields::new();
     let heaps = snap["heaps"].as_array().cloned().unwrap_or_default();
     let n = |h: &Value, k: &str| h[k].as_u64().unwrap_or(0);
     let mut list = Vec::new();
     let (mut free, mut largest, mut min_free) = (0u64, 0u64, 0u64);
-    let (mut ifree, mut ilargest) = (0u64, 0u64);
+    let (mut ifree, mut ilargest, mut dfree, mut dlargest) = (0u64, 0u64, 0u64, 0u64);
+    let mut by_site: HashMap<i64, (u64, u64)> = HashMap::new();
+    let mut attributed = false;
     for h in &heaps {
         let internal = h["caps"].as_array().is_some_and(|c| c.iter().any(|v| v == "INTERNAL"));
         free += n(h, "infoFree");
@@ -927,6 +1105,24 @@ pub fn heap_summary(snap: &Value) -> Fields {
             ifree += n(h, "infoFree");
             ilargest = ilargest.max(n(h, "largest"));
         }
+        if h["name"] == "DRAM" {
+            dfree += n(h, "infoFree");
+            dlargest = dlargest.max(n(h, "largest"));
+        }
+        if let (Some(blocks), Some(sites)) = (h["blocks"].as_array(), h["sites"].as_array()) {
+            attributed = true;
+            for (i, b) in blocks.chunks(4).enumerate() {
+                let flags = b.get(2).and_then(Value::as_u64).unwrap_or(0) as u32;
+                if flags & BLOCK_FREE != 0 {
+                    continue;
+                }
+                let requested = b.get(3).and_then(Value::as_u64).unwrap_or(0);
+                let site = sites.get(i).and_then(Value::as_i64).unwrap_or(-1);
+                let entry = by_site.entry(site).or_default();
+                entry.0 += 1;
+                entry.1 += requested;
+            }
+        }
         list.push(json!({
             "name": h["name"], "start": format!("{:#x}", n(h, "start")), "free": n(h, "infoFree"), "largest": n(h, "largest"),
             "min_free": n(h, "infoMinFree"), "used": n(h, "used"), "blocks": n(h, "count"), "corrupt": n(h, "corrupt"),
@@ -935,9 +1131,30 @@ pub fn heap_summary(snap: &Value) -> Fields {
     f.insert("free".into(), json!(free));
     f.insert("largest".into(), json!(largest));
     f.insert("min_free".into(), json!(min_free));
+    f.insert("dram_free".into(), json!(dfree));
+    f.insert("dram_largest".into(), json!(dlargest));
     f.insert("internal_free".into(), json!(ifree));
     f.insert("internal_largest".into(), json!(ilargest));
     f.insert("heaps".into(), json!(list));
+    if attributed {
+        let names = snap["siteNames"].as_array().cloned().unwrap_or_default();
+        let mut sites: Vec<(i64, (u64, u64))> = by_site.into_iter().collect();
+        sites.sort_by_key(|s| std::cmp::Reverse(s.1 .1));
+        let top: Vec<Value> = sites
+            .iter()
+            .take(10)
+            .map(|(site, (blocks, bytes))| {
+                let name = usize::try_from(*site).ok().and_then(|i| names.get(i));
+                json!({
+                    "fn": name.map(|n| n["fn"].clone()).unwrap_or(json!("(allocated before tracing, or not traced)")),
+                    "loc": name.map(|n| n["loc"].clone()).unwrap_or(json!("")),
+                    "blocks": blocks,
+                    "bytes": bytes,
+                })
+            })
+            .collect();
+        f.insert("live_sites".into(), json!(top));
+    }
     f.insert("elf".into(), snap["elf"].clone());
     if !snap["elfNote"].is_null() {
         f.insert("elf_note".into(), snap["elfNote"].clone());
@@ -962,5 +1179,29 @@ mod tests {
     fn coords() {
         assert_eq!(Coord::Frac(0.5).resolve(101), 50.0);
         assert_eq!(Coord::Px(7.0).resolve(10), 7.0);
+    }
+
+    #[test]
+    fn names_expand() {
+        assert_eq!(expand("page{i}", &[2, 7]), "page7");
+        assert_eq!(expand("page{i}", &[]), "page1");
+    }
+
+    #[test]
+    fn heap_summary_counts_dram_and_live_sites() {
+        let snap = json!({
+            "heaps": [
+                {"name": "DRAM", "caps": ["INTERNAL"], "infoFree": 100, "infoMinFree": 50, "largest": 80, "start": 0, "count": 2,
+                 "blocks": [0, 32, 2, 20, 32, 64, 1, 0], "sites": [0, -1]},
+                {"name": "RTC", "caps": ["INTERNAL"], "infoFree": 10, "infoMinFree": 5, "largest": 8, "start": 0, "count": 0}
+            ],
+            "siteNames": [{"fn": "makeBook", "loc": "book.cpp:1"}]
+        });
+        let f = heap_summary(&snap);
+        assert_eq!(f["free"], 110);
+        assert_eq!(f["dram_free"], 100);
+        assert_eq!(f["internal_free"], 110);
+        assert_eq!(f["live_sites"][0]["fn"], "makeBook");
+        assert_eq!(f["live_sites"][0]["bytes"], 20);
     }
 }

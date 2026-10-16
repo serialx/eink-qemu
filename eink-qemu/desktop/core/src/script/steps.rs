@@ -14,14 +14,18 @@ Waiting
                              (CrossPoint), or the screen quiet for 5 s (others)
   wait-log:REGEX             a log line matching REGEX, after the last action
   wait-screen[:SECONDS]      the screen changed after the last action and settled
+                             (a transient screen such as a loading screen counts)
+  wait-quiet[:SECONDS]       the screen unchanged for SECONDS of guest time
+                             (default 2), e.g. after a loading screen
   wait:SECONDS               let the guest run (guest time)
   timeout:SECONDS            time limit of later waits (default 60 s)
-Input (each is an action: later waits look only at what follows it)
+Input (each is an action: later waits look only at what follows it; each
+first waits up to 3 s for the firmware's log to go quiet, see --input-quiet)
   press:KEY[:MS]             press and release a key (hold 150 ms of guest time)
                              X3, X4: back confirm left right up down power
                              X4 Pro: up down power home    Picco: up down power
-  touch:X,Y[:MS]             tap the touchscreen (X4 Pro, Picco) at panel pixels,
-                             or percentages: touch:50%,90%
+  touch:X,Y[:MS]             tap the touchscreen (X4 Pro, Picco) at pixels of the
+                             screenshot (origin top left), or percentages: touch:50%,90%
   swipe:DIR[:MS]             swipe left, right, up or down across the middle
   swipe:X1,Y1,X2,Y2[:MS]     swipe between two points (default 300 ms)
   reset                      reset the device (the SD card and flash are kept)
@@ -30,7 +34,10 @@ Capture
   heap[:NAME]                walk every heap; heaps/NAME.json with blocks
   trace-start:NAME           mark the start of an allocation window (--trace)
   trace-stop:NAME            allocations, frees and bytes kept since trace-start
-  mark:NAME                  a labelled record, for reports and comparisons
+  mark:NAME                  a labelled record; compare groups wait-log values
+                             by the mark before them
+  In NAME, {i} is the iteration of the innermost repeat (shot:page{i}); a name
+  used again gets -2, -3, ...
 Checks
   expect-log:REGEX           some log line so far matches REGEX
   expect-no-log:REGEX        no log line so far matches REGEX
@@ -78,6 +85,7 @@ pub enum Kind {
     Wait { seconds: f64 },
     WaitLog { pattern: Regex },
     WaitScreen { timeout: Option<f64> },
+    WaitQuiet { seconds: f64 },
     Timeout { seconds: f64 },
     Press { key: String, ms: u32 },
     Touch { x: Coord, y: Coord, ms: u32 },
@@ -103,6 +111,7 @@ impl Kind {
             Kind::Wait { .. } => "wait",
             Kind::WaitLog { .. } => "wait-log",
             Kind::WaitScreen { .. } => "wait-screen",
+            Kind::WaitQuiet { .. } => "wait-quiet",
             Kind::Timeout { .. } => "timeout",
             Kind::Press { .. } => "press",
             Kind::Touch { .. } => "touch",
@@ -137,8 +146,11 @@ impl Kind {
     }
 }
 
+/// The longest wait or time limit a step takes, in seconds.
+pub const MAX_SECONDS: f64 = 86_400.0;
+
 const KINDS: &[&str] = &[
-    "ready", "wait", "wait-log", "wait-screen", "timeout", "press", "touch", "swipe", "reset", "shot", "heap",
+    "ready", "wait", "wait-log", "wait-screen", "wait-quiet", "timeout", "press", "touch", "swipe", "reset", "shot", "heap",
     "trace-start", "trace-stop", "mark", "expect-log", "expect-no-log", "expect-shot", "repeat", "end", "hmp",
 ];
 
@@ -213,6 +225,12 @@ fn number(token: &str, arg: Option<&str>, what: &str) -> Result<f64, String> {
     if !value.is_finite() || value < 0.0 {
         return Err(format!("`{token}`: {what} must be zero or more"));
     }
+    if value > MAX_SECONDS && kind != "repeat" {
+        return Err(format!("`{token}`: {what} is at most {MAX_SECONDS} (a day)"));
+    }
+    if kind == "repeat" && value > 100_000.0 {
+        return Err(format!("`{token}`: repeat at most 100000 times"));
+    }
     Ok(value)
 }
 
@@ -230,8 +248,9 @@ fn pattern(token: &str, kind: &str, arg: Option<&str>) -> Result<Regex, String> 
 
 fn name(token: &str, kind: &str, arg: Option<&str>) -> Result<String, String> {
     let text = arg.filter(|a| !a.is_empty()).ok_or_else(|| format!("`{token}` needs a name; {}", usage(kind)))?;
-    if !text.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || text.starts_with('.') {
-        return Err(format!("`{token}`: names use letters, digits, '.', '_' and '-' (they become file names)"));
+    let bare = text.replace("{i}", "1");
+    if !bare.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || bare.starts_with('.') {
+        return Err(format!("`{token}`: names use letters, digits, '.', '_', '-' and {{i}} (they become file names)"));
     }
     Ok(text.to_string())
 }
@@ -266,6 +285,7 @@ fn parse_one(token: &str, kind: &str, arg: Option<&str>) -> Result<Kind, String>
         "wait" => Kind::Wait { seconds: number(token, arg, "a number of seconds")? },
         "wait-log" => Kind::WaitLog { pattern: pattern(token, kind, arg)? },
         "wait-screen" => Kind::WaitScreen { timeout: optional_number(token, arg, "a time limit in seconds")? },
+        "wait-quiet" => Kind::WaitQuiet { seconds: optional_number(token, arg, "a number of seconds")?.unwrap_or(2.0) },
         "timeout" => {
             let seconds = number(token, arg, "a number of seconds")?;
             if seconds == 0.0 {
@@ -422,6 +442,9 @@ mod tests {
         assert!(steps(&["end"]).unwrap_err().contains("without"));
         assert!(steps(&["shot:a/b"]).unwrap_err().contains("names use"));
         assert!(steps(&["wait"]).unwrap_err().contains("usage: wait:SECONDS"));
+        assert!(steps(&["wait:1e300"]).unwrap_err().contains("at most"));
+        assert!(steps(&["timeout:NaN"]).is_err());
+        assert!(steps(&["shot:page{i}", "wait-quiet", "wait-quiet:3"]).is_ok());
         assert!(steps(&["book.epub"]).unwrap_err().contains("go before the firmware"));
         let parsed = steps(&["expect-shot:p1=ref/p1.png@0,0,10,20@5,5,1,1"]).unwrap();
         let Kind::ExpectShot { masks, .. } = &parsed[0].kind else { panic!() };

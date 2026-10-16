@@ -66,6 +66,13 @@ impl RunEvents {
         f(&lines[from.min(lines.len())..])
     }
 
+    /// As `with_lines`, also returning the index just past the lines `f`
+    /// saw, taken under the same lock, for a cursor to continue from.
+    pub fn with_lines_end<T>(&self, from: usize, f: impl FnOnce(&[LogLine]) -> T) -> (T, usize) {
+        let lines = self.lines.lock().unwrap();
+        (f(&lines[from.min(lines.len())..]), lines.len())
+    }
+
     pub fn screen(&self) -> ScreenState {
         *self.screen.lock().unwrap()
     }

@@ -8,7 +8,7 @@
 use crate::launch;
 use crate::output::Printer;
 use crate::run::{collect_steps, execute, usage};
-use crate::{RunArgs, EXIT_FAIL, EXIT_SETUP};
+use crate::{RunArgs, EXIT_FAIL, EXIT_INTERRUPTED, EXIT_SETUP, EXIT_USAGE};
 use eink_core::script::image;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -25,14 +25,26 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
     }
     let parts: Vec<&str> = names.split(',').map(str::trim).collect();
     let [a, b] = parts[..] else { return usage(&printer, "--names takes two names: A,B") };
-    let valid = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
-    if !valid(a) || !valid(b) || a == b {
-        return usage(&printer, "--names takes two different names of letters, digits, '-', '_' or '.'");
+    // Each name is one folder inside the comparison directory.
+    let valid = |n: &str| !n.is_empty() && !n.starts_with('.') && n.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if !valid(a) || !valid(b) || a.eq_ignore_ascii_case(b) {
+        return usage(&printer, "--names takes two different names of letters, digits, '-', '_' or '.', not starting with '.'");
     }
-    let steps = match collect_steps(&args, &tokens) {
+    let (_, steps) = match collect_steps(&args, &tokens) {
         Ok(s) => s,
         Err(e) => return usage(&printer, &e),
     };
+    if let Err(e) = crate::launch::check_args(&args) {
+        return usage(&printer, &e);
+    }
+    // Both boards must take the steps before either run starts.
+    for firmware in [&base, &candidate] {
+        if let Ok(flash) = eink_core::flash::make_flash(firmware, args.machine.as_deref()) {
+            if let Err(e) = eink_core::script::validate(&steps, &flash.machine, args.trace) {
+                return usage(&printer, &format!("{}: {e}", firmware.display()));
+            }
+        }
+    }
     let dir = match launch::run_dir(args.out.as_deref(), Path::new("compare"), "") {
         Ok(d) => d,
         Err(e) => return usage(&printer, &e),
@@ -51,10 +63,6 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
     } else {
         tokio::join!(run_a, run_b)
     };
-    if out_a.code == EXIT_SETUP || out_b.code == EXIT_SETUP {
-        printer.record(&json!({"type": "compare", "ok": false, "error": "a run could not start; see its error record", "dir": dir}));
-        return EXIT_SETUP;
-    }
     let summary = summarize(&dir, (a, &base, &dir_a), (b, &candidate, &dir_b));
     let _ = std::fs::write(dir.join("compare.json"), serde_json::to_string_pretty(&summary).unwrap_or_default());
     let md = markdown(&summary);
@@ -63,18 +71,31 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
     printer.note(&md);
     let differing = summary["shots"].as_array().map(|s| s.iter().filter(|x| x["identical"] == false).count()).unwrap_or(0);
     let ok = out_a.code == 0 && out_b.code == 0 && (!require_identical || differing == 0);
+    let codes = [out_a.code, out_b.code];
+    let code = if codes.contains(&EXIT_INTERRUPTED) {
+        EXIT_INTERRUPTED
+    } else if codes.contains(&EXIT_USAGE) {
+        EXIT_USAGE
+    } else if codes.contains(&EXIT_SETUP) {
+        EXIT_SETUP
+    } else if ok {
+        0
+    } else {
+        EXIT_FAIL
+    };
     printer.record(&json!({
         "type": "compare",
         "ok": ok,
         "dir": dir,
         "names": [a, b],
         "results": [out_a.code == 0, out_b.code == 0],
+        "codes": codes,
         "differing_shots": differing,
         "summary": dir.join("compare.json"),
         "markdown": dir.join("compare.md"),
         "report": report,
     }));
-    if ok { 0 } else { EXIT_FAIL }
+    code
 }
 
 fn records(dir: &Path) -> Vec<Value> {
@@ -103,18 +124,34 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
     let (ra, rb) = (records(a.2), records(b.2));
     let read_json = |d: &Path, f: &str| std::fs::read_to_string(d.join(f)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
     let (ma, mb) = (read_json(a.2, "metrics.json"), read_json(b.2, "metrics.json"));
-    let outcome = |r: &[Value]| {
+    let outcome = |r: &[Value], d: &Path| {
         let end = r.iter().rev().find(|x| x["type"] == "end").cloned().unwrap_or(Value::Null);
+        if end.is_null() {
+            // It never started: the reason is in error.txt.
+            let error = std::fs::read_to_string(d.join("error.txt")).unwrap_or_else(|_| "the run did not finish".into());
+            return json!({"ok": false, "steps": 0, "error": error, "failed_step": null, "started": false});
+        }
         json!({"ok": end["ok"], "steps": end["steps"], "error": end["error"], "failed_step": end["failed_step"]})
     };
     let ready = |r: &[Value]| steps_of(r, "ready").first().map(|x| json!({"how": x["how"], "home_fw_ms": x["home_fw_ms"], "boot_s": x["boot_s"]}));
 
-    // Values of wait-log steps (name=123ms in the matched line), by step text: medians.
+    // Values of wait-log steps (name=123ms in the matched line), by the
+    // mark before them and the step text: medians and sums.
     let values = |r: &[Value]| {
         let mut by: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
-        for x in steps_of(r, "wait-log") {
+        let mut window = String::new();
+        for x in r.iter().filter(|x| x["type"] == "step") {
+            if x["step"] == "mark" {
+                window = x["name"].as_str().unwrap_or_default().to_string();
+                continue;
+            }
+            if x["step"] != "wait-log" {
+                continue;
+            }
             if let Some(v) = x["values"].as_object() {
-                let entry = by.entry(x["text"].as_str().unwrap_or_default().to_string()).or_default();
+                let text = x["text"].as_str().unwrap_or_default();
+                let key = if window.is_empty() { text.to_string() } else { format!("{window} / {text}") };
+                let entry = by.entry(key).or_default();
                 for (k, n) in v {
                     if let Some(n) = n.as_f64() {
                         entry.entry(k.clone()).or_default().push(n);
@@ -130,7 +167,8 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         for (key, list) in keys {
             let mut la = list.clone();
             let mut lb = vb.get(text).and_then(|k| k.get(key)).cloned().unwrap_or_default();
-            value_rows.push(json!({"step": text, "value": key, "n": [la.len(), lb.len()], "median": [median(&mut la), median(&mut lb)]}));
+            let (sa, sb): (f64, f64) = (la.iter().sum(), lb.iter().sum());
+            value_rows.push(json!({"step": text, "value": key, "n": [la.len(), lb.len()], "median": [median(&mut la), median(&mut lb)], "sum": [sa, sb]}));
         }
     }
 
@@ -166,7 +204,7 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
             continue;
         };
         let (fa, fb) = (a.2.join(x["file"].as_str().unwrap_or_default()), b.2.join(y["file"].as_str().unwrap_or_default()));
-        if x["sha256"] == y["sha256"] {
+        if x["pixels_sha256"] == y["pixels_sha256"] {
             shot_rows.push(json!({"name": name, "identical": true, "a": rel(dir, &fa), "b": rel(dir, &fb)}));
             continue;
         }
@@ -202,7 +240,7 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         "timing": [sa["timing"], sb["timing"]],
         "card": [sa["card"]["size_mib"], sb["card"]["size_mib"]],
         "runs": [rel(dir, a.2), rel(dir, b.2)],
-        "outcome": [outcome(&ra), outcome(&rb)],
+        "outcome": [outcome(&ra, a.2), outcome(&rb, b.2)],
         "ready": [ready(&ra), ready(&rb)],
         "metrics": metric_rows,
         "values": value_rows,
@@ -268,6 +306,11 @@ pub fn markdown(s: &Value) -> String {
     for row in s["values"].as_array().into_iter().flatten() {
         let (x, y) = (&row["median"][0], &row["median"][1]);
         out += &format!("| `{}` {} median (n={}/{}) | {} | {} | {} |\n", cell(&row["step"]), cell(&row["value"]), cell(&row["n"][0]), cell(&row["n"][1]), cell(x), cell(y), delta(x, y));
+        let n = row["n"][0].as_u64().unwrap_or(0).max(row["n"][1].as_u64().unwrap_or(0));
+        if n > 1 && row["value"].as_str().is_some_and(|v| v.ends_with("_ms")) {
+            let (x, y) = (&row["sum"][0], &row["sum"][1]);
+            out += &format!("| `{}` {} sum | {} | {} | {} |\n", cell(&row["step"]), cell(&row["value"]), cell(x), cell(y), delta(x, y));
+        }
     }
     let heaps = s["heaps"].as_array().cloned().unwrap_or_default();
     if !heaps.is_empty() {

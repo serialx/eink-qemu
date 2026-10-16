@@ -298,7 +298,11 @@ pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String>
     }
     if data.len() == FLASH_SIZE {
         // Dumps may be encrypted or lack a boot header: every byte is kept.
-        let chip = detect_chip(&data, machine).unwrap_or(9);
+        // A named board must take the dump's chip, as mkflash.py checks.
+        let chip = match machine {
+            Some(_) => detect_chip(&data, machine)?,
+            None => detect_chip(&data, None).unwrap_or(9),
+        };
         return Ok(Flash { image: data, chip, machine: pick(chip), app: None, kind: "dump" });
     }
     let chip = detect_chip(&data, machine)?;
@@ -321,10 +325,56 @@ pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String>
         image.resize(FLASH_SIZE, 0xFF);
         return Ok(Flash { image, chip, machine: pick(chip), app: None, kind: "merged" });
     }
+    validate_app(&data)?;
     let boot = if chip == 5 { BOOT_C3 } else { BOOT_S3 };
     let table = partition_table(if machine == Some("picco") { PARTITIONS_PICCO } else { PARTITIONS })?;
     let (image, chip) = compose(&data, boot, &table, machine)?;
     Ok(Flash { image, chip, machine: pick(chip), app: Some(source.to_path_buf()), kind: "app" })
+}
+
+/// Check an ESP application image the way the ROM loader would: every
+/// segment inside the file, the checksum, and the appended SHA-256 when the
+/// header says there is one (the desktop page's validateApp).
+pub fn validate_app(bytes: &[u8]) -> Result<(), String> {
+    let invalid = |reason: &str| Err(format!("not a complete ESP application image: {reason} (a truncated or damaged .bin?)"));
+    if bytes.len() < 24 || bytes[0] != 0xE9 || !(1..=16).contains(&bytes[1]) {
+        return invalid("bad header or segment count");
+    }
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let (mut offset, mut checksum) = (24usize, 0xEFu8);
+    for _ in 0..bytes[1] {
+        if offset + 8 > bytes.len() {
+            return invalid("truncated segment header");
+        }
+        let (address, length) = (word(offset), word(offset + 4) as usize);
+        offset += 8;
+        if length > FLASH_SIZE || offset + length > bytes.len() || u64::from(address) + length as u64 > 1 << 32 {
+            return invalid("truncated or invalid segment length");
+        }
+        checksum = bytes[offset..offset + length].iter().fold(checksum, |c, b| c ^ b);
+        offset += length;
+    }
+    let checksum_at = offset / 16 * 16 + 15;
+    if checksum_at >= bytes.len() {
+        return invalid("truncated checksum");
+    }
+    if bytes[checksum_at] != checksum {
+        return invalid("checksum mismatch");
+    }
+    match bytes[23] {
+        0 => Ok(()),
+        1 => {
+            let end = checksum_at + 1;
+            if end + 32 > bytes.len() {
+                return invalid("truncated SHA-256 digest");
+            }
+            if sha2::Sha256::digest(&bytes[..end])[..] != bytes[end..end + 32] {
+                return invalid("SHA-256 mismatch");
+            }
+            Ok(())
+        }
+        _ => invalid("invalid appended-hash flag"),
+    }
 }
 
 /// SHA-256 of bytes, as lowercase hex.
@@ -333,8 +383,41 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn test_app(chip: u16) -> Vec<u8> {
+    // One 16-byte segment, the checksum at the 16-byte boundary, no hash.
+    let mut app = vec![0u8; 24];
+    app[0] = 0xE9;
+    app[1] = 1;
+    app[12..14].copy_from_slice(&chip.to_le_bytes());
+    app.extend_from_slice(&0x3FC8_0000u32.to_le_bytes());
+    app.extend_from_slice(&16u32.to_le_bytes());
+    app.extend((1..=16u8).collect::<Vec<_>>());
+    let checksum = (1..=16u8).fold(0xEFu8, |c, b| c ^ b);
+    app.resize(63, 0);
+    app.push(checksum);
+    app
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_truncated_apps_and_mismatched_dumps() {
+        let app = test_app(5);
+        assert!(validate_app(&app).is_ok());
+        assert!(validate_app(&app[..40]).unwrap_err().contains("truncated"));
+        let mut bad = app.clone();
+        bad[33] ^= 1;
+        assert!(validate_app(&bad).unwrap_err().contains("checksum"));
+        let dir = tempfile::tempdir().unwrap();
+        let mut dump = vec![0xFFu8; FLASH_SIZE];
+        dump[..24].copy_from_slice(&app[..24]);
+        let path = dir.path().join("dump.bin");
+        std::fs::write(&path, &dump).unwrap();
+        assert!(make_flash(&path, Some("x4pro")).is_err());
+        assert_eq!(make_flash(&path, None).unwrap().machine, "x3");
+    }
 
     #[test]
     fn crc_matches_zlib() {
@@ -355,10 +438,7 @@ mod tests {
 
     #[test]
     fn composes_a_release_app_like_mkflash() {
-        // A minimal C3 app: header with chip 5.
-        let mut app = vec![0u8; 4096];
-        app[0] = 0xE9;
-        app[12] = 5;
+        let app = test_app(5);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.bin");
         std::fs::write(&path, &app).unwrap();

@@ -122,13 +122,20 @@ Keep `firmware.elf` beside you for symbols. To find a hang: run with `-s -S`, at
 `xtensa-esp32s3-elf-addr2line -pfiaC -e firmware.elf <PC>`.
 
 To test a firmware without a person at the keys, use the command-line tool
-([eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md)): `eink-qemu/cli run
-<build dir> --put book.epub ready press:confirm 'wait-log:Page render'
-shot:page1 heap:page1` boots headless, runs the steps, and keeps the log,
-every settled screen, screenshots, heaps and a report in a run directory;
-`compare` runs two builds side by side; `start`/`do`/`stop` keep a session
-for exploring step by step. Each step prints one JSON record. Prefer it to
-`drive.py` and to on-device scripting for anything the emulator models.
+([eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md)). On an X3 with a
+blank card, this opens the book and keeps its first page and heaps (the first
+confirm opens Browse Files, the second the book):
+
+```sh
+eink-qemu/cli run <build dir> --put book.epub ready press:confirm wait-screen \
+  press:confirm 'wait-log:Page render' shot:page1 heap:page1
+```
+
+It boots headless, runs the steps, and keeps the log, every settled screen,
+screenshots, heaps and a report in a run directory; `compare` runs two builds
+side by side; `start`/`do`/`stop` keep a session for exploring step by step.
+Each step prints one JSON record. Prefer it to `drive.py` and to on-device
+scripting for anything the emulator models.
 
 To watch the firmware's heaps live, use the desktop app (`eink-qemu/desktop`):
 its Heap tab and heap window map every ESP-IDF 5.x TLSF heap (DRAM, RTC, and

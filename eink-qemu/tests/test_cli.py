@@ -21,9 +21,16 @@ FIRMWARE = os.environ.get('EINK_QEMU_TEST_FIRMWARE')
 
 
 def app_image(chip):
-    image = bytearray(4096)
-    image[0] = 0xE9
+    """A minimal valid ESP app: one 16-byte segment and its checksum."""
+    image = bytearray(24)
+    image[0], image[1] = 0xE9, 1
     image[12:14] = chip.to_bytes(2, 'little')
+    data = bytes(range(1, 17))
+    image += (0x3FC80000).to_bytes(4, 'little') + len(data).to_bytes(4, 'little') + data
+    checksum = 0xEF
+    for b in data:
+        checksum ^= b
+    image += bytes(63 - len(image)) + bytes([checksum])
     return bytes(image)
 
 
@@ -74,6 +81,23 @@ class Cli(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn('no matching `end`', records(result.stdout)[0]['error'])
 
+    def test_bad_limits_and_names_are_usage_errors(self):
+        app = self.tmp / 'x3.bin'
+        app.write_bytes(app_image(5))
+        self.assertEqual(cli('run', str(app), '--timeout', 'NaN', 'ready').returncode, 2)
+        self.assertEqual(cli('run', str(app), 'wait:1e300').returncode, 2)
+        self.assertEqual(cli('run', str(app), '--crash-pattern', '[', 'ready').returncode, 2)
+        result = cli('compare', str(app), str(app), '--names', '..,x', '--out', str(self.tmp / 'c'), 'ready')
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.tmp / 'card.img').exists())
+
+    def test_truncated_firmware_is_rejected(self):
+        app = self.tmp / 'short.bin'
+        app.write_bytes(app_image(5)[:40])
+        result = cli('run', str(app), '--out', str(self.tmp / 'run'), 'ready')
+        self.assertEqual(result.returncode, 3)
+        self.assertIn('not a complete ESP application image', records(result.stdout)[0]['error'])
+
     def test_missing_firmware_is_a_setup_error(self):
         result = cli('run', str(self.tmp / 'missing.bin'), '--out', str(self.tmp / 'run'), 'ready')
         self.assertEqual(result.returncode, 3)
@@ -103,14 +127,16 @@ class Cli(unittest.TestCase):
     @unittest.skipUnless(RISCV.exists(), 'build qemu-system-riscv32 first')
     def test_run_crosspoint(self):
         out = self.tmp / 'run'
-        result = cli('run', FIRMWARE, '--out', str(out), 'ready', 'shot:home', 'heap:home', timeout=300)
+        result = cli('run', FIRMWARE, '--out', str(out), 'ready', 'shot:home', 'heap:home', 'reset', 'ready', timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         steps = [r for r in records(result.stdout) if r['type'] == 'step']
-        self.assertEqual([s['step'] for s in steps], ['ready', 'shot', 'heap'])
+        self.assertEqual([s['step'] for s in steps], ['ready', 'shot', 'heap', 'reset', 'ready'])
         self.assertEqual(steps[0]['how'], 'home')
         self.assertTrue((out / 'shots/home.png').exists())
-        self.assertGreater(steps[2]['free'], 0)
-        self.assertTrue((out / 'report.html').exists())
+        self.assertGreater(steps[2]['dram_free'], 0)
+        # ready after a reset waits for the new boot.
+        self.assertGreater(steps[4]['ms'], 3000)
+        self.assertIn('PASS', (out / 'report.html').read_text())
         self.assertTrue(list((out / 'frames').glob('*.png')))
 
 

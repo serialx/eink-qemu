@@ -9,7 +9,7 @@
 mod settings;
 
 use eink_core::cards::{card_key, identity_key, open_card, reserve, reserve_path, validate_card, Card};
-use eink_core::script::automation::Automation;
+use eink_core::script::automation::{Automation, Finalizer};
 use eink_core::script::events::RunEvents;
 use eink_core::session::{self, AppError, Events, QemuPaths, Session, SessionInfo, StartOptions};
 use eink_core::{display, firmware, heap, heapview, sd};
@@ -79,6 +79,8 @@ struct App {
     problems: Mutex<Vec<String>>,
     /// The heap view: ELF, symbols, allocation log, history.
     heap: tokio::sync::Mutex<heapview::HeapView>,
+    /// A scripted run's finalizer (`eink-qemu run --gui`), run before the app quits.
+    automation: Arc<Mutex<Option<Finalizer>>>,
 }
 
 impl App {
@@ -986,10 +988,12 @@ pub fn run() {
                 let events = events.clone();
                 async move { Session::new(events, paths, card) }
             });
+            let finalizer: Arc<Mutex<Option<Finalizer>>> = Arc::default();
             if let (Some(spec), Some(run_events)) = (automation, run_events) {
                 let session = session.clone();
+                let finalizer = finalizer.clone();
                 tauri::async_runtime::spawn(async move {
-                    eink_core::script::automation::run(session, run_events, spec).await;
+                    eink_core::script::automation::run(session, run_events, spec, finalizer).await;
                 });
             }
             let _ = settings.save(&settings_path);
@@ -1002,6 +1006,7 @@ pub fn run() {
                 grants: Mutex::default(),
                 problems: Mutex::new(problems),
                 heap: Default::default(),
+                automation: finalizer,
             });
             // SIGTERM and SIGINT quit like the menu does, so QEMU stops and
             // the run directory is removed.
@@ -1080,6 +1085,9 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             if let Some(app) = handle.try_state::<App>() {
+                if let Some(finalizer) = app.automation.lock().unwrap().as_ref() {
+                    finalizer.finalize();
+                }
                 let session = app.session.clone();
                 tauri::async_runtime::block_on(session.shutdown());
             }

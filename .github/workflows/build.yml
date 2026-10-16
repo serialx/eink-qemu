@@ -263,10 +263,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # The artifact holds public/boot's files at its root (its one upload path).
       - uses: actions/download-artifact@v8
         with:
           name: desktop-resources
-          path: eink-qemu/desktop
+          path: eink-qemu/desktop/public/boot
 
       - uses: actions/download-artifact@v8
         with:

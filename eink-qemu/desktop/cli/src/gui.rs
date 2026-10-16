@@ -48,10 +48,13 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     if args.hold {
         return usage(&printer, "--gui keeps the window open after the steps already; drop --hold");
     }
-    let steps = match collect_steps(&args, &tokens) {
+    let (all_steps, steps) = match collect_steps(&args, &tokens) {
         Ok(s) => s,
         Err(e) => return usage(&printer, &e),
     };
+    if let Err(e) = launch::check_args(&args) {
+        return usage(&printer, &e);
+    }
     let desktop = match find_desktop() {
         Ok(d) => d,
         Err(e) => return usage(&printer, &e),
@@ -92,11 +95,6 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     start["trace"] = json!(prepared.trace.as_ref().ok().map(|(p, _)| p.clone()));
     let mut crash_patterns: Vec<String> = if args.no_crash_check { Vec::new() } else { CRASH_PATTERNS.iter().map(|s| s.to_string()).collect() };
     crash_patterns.extend(args.crash_pattern.iter().cloned());
-    let mut all_steps = Vec::new();
-    if let Some(script) = &args.script {
-        all_steps.extend(eink_core::script::steps::script_lines(&std::fs::read_to_string(script).unwrap_or_default()));
-    }
-    all_steps.extend(tokens.iter().cloned());
     let spec = Automation {
         dir: dir.clone(),
         firmware: prepared.firmware.clone(),
@@ -111,6 +109,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         ready_timeout: args.ready_timeout,
         settle_ms: args.settle.max(20),
         panel_idle_ms: args.panel_idle,
+        input_quiet_ms: args.input_quiet,
         crash_patterns,
         frames: !args.no_frames,
         steps: all_steps,
@@ -140,6 +139,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     printer.note(&format!("eink-qemu: running in the desktop window ({}); close it to finish", desktop.display()));
     let mut ok = false;
     let mut steps_done = false;
+    let mut setup_failed = false;
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -147,9 +147,10 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
             if record["type"] == "steps-done" {
                 ok = record["ok"] == true;
                 steps_done = true;
+                setup_failed = record["setup_failed"] == true;
                 printer.note(&format!("eink-qemu: steps {}; the window stays open, close it to finish", if ok { "passed" } else { "failed" }));
-                continue;
             }
+            // steps-done goes out too: a script can close the window on it.
             printer.record(&record);
         }
     }
@@ -160,7 +161,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         printer.record(&json!({"type": "error", "stage": "gui", "error": "the desktop app exited before the steps finished", "log_tail": tail, "run_dir": dir}));
     }
     finish(&dir, ok && steps_done, started, &printer);
-    if ok && steps_done { 0 } else if steps_done { EXIT_FAIL } else { EXIT_SETUP }
+    if ok && steps_done { 0 } else if steps_done && !setup_failed { EXIT_FAIL } else { EXIT_SETUP }
 }
 
 /// The QEMU directory the CLI resolved, for the app.
@@ -194,12 +195,12 @@ fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer) {
         "run_dir": dir,
         "gui": true,
     });
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(dir.join("run.jsonl")) {
+    let mut end = end;
+    end["report"] = json!(dir.join("report.html"));
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(dir.join("run.jsonl")) {
         use std::io::Write;
         let _ = writeln!(file, "{end}");
     }
-    let report = crate::report::write(dir).ok();
-    let mut end = end;
-    end["report"] = json!(report);
+    let _ = crate::report::write(dir);
     printer.record(&end);
 }

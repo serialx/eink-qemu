@@ -218,6 +218,10 @@ pub struct Session {
     runs: AtomicU64,
     log_tx: mpsc::Sender<String>,
     dropped: Arc<AtomicU64>,
+    /// Console lines read so far, and how many of them reached `Events::logs`
+    /// (or were dropped): `log_barrier` waits for the second to catch up.
+    ingested: AtomicU64,
+    delivered: Arc<AtomicU64>,
     log_file: Arc<StdMutex<Option<std::fs::File>>>,
     screen: StdMutex<Option<Framebuffer>>,
     card: StdMutex<Option<Card>>,
@@ -324,6 +328,7 @@ impl Session {
         scavenge_run_dirs();
         let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_QUEUE);
         let dropped = Arc::new(AtomicU64::new(0));
+        let delivered = Arc::new(AtomicU64::new(0));
         // EINK_QEMU_LOG: also append console lines to a file (tests).
         let log_file = Arc::new(StdMutex::new(std::env::var_os("EINK_QEMU_LOG").and_then(|path| {
             std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
@@ -331,6 +336,7 @@ impl Session {
         {
             let sink = events.clone();
             let dropped = dropped.clone();
+            let delivered = delivered.clone();
             let file = log_file.clone();
             // Console lines are batched so a chatty firmware costs one IPC message per tick.
             tokio::spawn(async move {
@@ -344,6 +350,7 @@ impl Session {
                         }
                     }
                     let lost = dropped.swap(0, Ordering::Relaxed);
+                    let received = batch.len() as u64;
                     if lost > 0 {
                         batch.push(format!("[eink-qemu: {lost} console lines dropped while the console was busy]"));
                     }
@@ -352,6 +359,7 @@ impl Session {
                         let _ = file.write_all((batch.join("\n") + "\n").as_bytes());
                     }
                     sink.logs(std::mem::take(&mut batch));
+                    delivered.fetch_add(received + lost, Ordering::SeqCst);
                 }
             });
         }
@@ -367,6 +375,8 @@ impl Session {
             runs: AtomicU64::new(0),
             log_tx,
             dropped,
+            ingested: AtomicU64::new(0),
+            delivered,
             log_file,
             screen: StdMutex::new(None),
             card: StdMutex::new(card),
@@ -374,8 +384,19 @@ impl Session {
     }
 
     pub fn log(&self, line: impl Into<String>) {
+        self.ingested.fetch_add(1, Ordering::SeqCst);
         if self.log_tx.try_send(line.into()).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Wait (at most `limit`) until every console line read so far has been
+    /// handed to `Events::logs`, so what follows is ordered after it.
+    pub async fn log_barrier(&self, limit: Duration) {
+        let target = self.ingested.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        while self.delivered.load(Ordering::SeqCst) < target && started.elapsed() < limit {
+            tokio::time::sleep(Duration::from_millis(3)).await;
         }
     }
 
