@@ -76,92 +76,210 @@ pub fn detect_chip(data: &[u8], machine: Option<&str>) -> Result<u16, String> {
 /// One partition-table entry: type, subtype, offset, size.
 type Entry = (u8, u8, u32, u32);
 
-/// Encode a partition CSV in ESP-IDF's binary format, as gen_esp32part.py
-/// reads it: named or numeric types and subtypes, sizes and offsets with
-/// K/M suffixes, offsets left empty placed after the previous partition
-/// (apps on 64 KiB boundaries), and the encrypted/readonly flags.
-pub fn partition_table(csv: &str) -> Result<Vec<u8>, String> {
-    let number = |text: &str| -> Result<u32, String> {
-        let bad = || format!("bad number {text:?} in partition CSV");
-        let (digits, scale) = match text.chars().last() {
-            Some('K' | 'k') => (&text[..text.len() - 1], 1024),
-            Some('M' | 'm') => (&text[..text.len() - 1], 1024 * 1024),
-            _ => (text, 1),
-        };
-        let value = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
-            Some(hex) => u32::from_str_radix(hex, 16),
-            None => digits.parse(),
-        }
-        .map_err(|_| bad())?;
-        value.checked_mul(scale).ok_or_else(bad)
+/// Python's `int(text, 0)`: an optional sign, then decimal (no leading
+/// zeros), 0x hex, 0o octal or 0b binary, with single underscores between
+/// digits.
+fn python_int(text: &str) -> Option<i64> {
+    let (negative, body) = match text.as_bytes().first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
     };
-    let mut table = Vec::new();
-    let mut next = (TABLE_OFFSET + 0x1000) as u32;
-    for line in csv.lines() {
+    let lower = body.to_ascii_lowercase();
+    let (radix, digits) = match lower.get(..2) {
+        Some("0x") => (16, &lower[2..]),
+        Some("0o") => (8, &lower[2..]),
+        Some("0b") => (2, &lower[2..]),
+        _ => (10, lower.as_str()),
+    };
+    // Python allows one underscore after the prefix and between digits.
+    let digits = if radix != 10 { digits.strip_prefix('_').unwrap_or(digits) } else { digits };
+    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+        return None;
+    }
+    let clean: String = digits.chars().filter(|&c| c != '_').collect();
+    if radix == 10 && clean.len() > 1 && clean.starts_with('0') && clean.chars().any(|c| c != '0') {
+        return None;
+    }
+    let value = i64::from_str_radix(&clean, radix).ok()?;
+    Some(if negative { -value } else { value })
+}
+
+/// gen_esp32part.py's `parse_int`: K/M suffixes (any case), then
+/// `int(x, 0)`, then a keyword (any case).
+fn parse_int(text: &str, keywords: &[(&str, u8)]) -> Result<i64, String> {
+    let lower = text.to_ascii_lowercase();
+    for (letter, scale) in [('k', 1024), ('m', 1024 * 1024)] {
+        if lower.ends_with(letter) {
+            return parse_int(&text[..text.len() - 1], keywords).map(|v| v * scale);
+        }
+    }
+    if let Some(v) = python_int(text) {
+        return Ok(v);
+    }
+    if keywords.is_empty() {
+        return Err(format!("invalid field value {text}"));
+    }
+    keywords
+        .iter()
+        .find(|(k, _)| *k == lower)
+        .map(|&(_, v)| i64::from(v))
+        .ok_or_else(|| format!("value '{text}' is not valid; known keywords: {}", keywords.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(", ")))
+}
+
+const APP_SUBTYPES: &[(&str, u8)] = &[
+    ("factory", 0x00), ("test", 0x20), ("ota_0", 0x10), ("ota_1", 0x11), ("ota_2", 0x12), ("ota_3", 0x13),
+    ("ota_4", 0x14), ("ota_5", 0x15), ("ota_6", 0x16), ("ota_7", 0x17), ("ota_8", 0x18), ("ota_9", 0x19),
+    ("ota_10", 0x1a), ("ota_11", 0x1b), ("ota_12", 0x1c), ("ota_13", 0x1d), ("ota_14", 0x1e), ("ota_15", 0x1f),
+    ("tee_0", 0x30), ("tee_1", 0x31),
+];
+const DATA_SUBTYPES: &[(&str, u8)] = &[
+    ("ota", 0x00), ("phy", 0x01), ("nvs", 0x02), ("coredump", 0x03), ("nvs_keys", 0x04), ("efuse", 0x05),
+    ("undefined", 0x06), ("esphttpd", 0x80), ("fat", 0x81), ("spiffs", 0x82), ("littlefs", 0x83), ("tee_ota", 0x90),
+];
+const FLAG_ENCRYPTED: u32 = 1;
+const FLAG_READONLY: u32 = 2;
+
+/// One partition-table entry with its label and flags, for checking.
+struct Part {
+    name: Vec<u8>,
+    kind: u8,
+    subtype: u8,
+    offset: u32,
+    size: u32,
+    flags: u32,
+}
+
+/// ESP-IDF's table rules (gen_esp32part.py's verify): offsets aligned (apps
+/// to 64 KiB, the rest to 4 KiB), app sizes to 4 KiB, unique labels, no
+/// overlap or entry below the table's sector, at most one OTA data
+/// partition and of 0x2000 bytes, OTA data and core dumps writable, a
+/// writable NVS of at least 0x3000 bytes; and here, everything inside 16 MiB.
+fn verify(parts: &[Part]) -> Result<(), String> {
+    if parts.is_empty() {
+        return Err("empty partition table".into());
+    }
+    let label = |p: &Part| String::from_utf8_lossy(&p.name).into_owned();
+    for p in parts {
+        let align = if p.kind == 0 { 0x10000 } else { 0x1000 };
+        if p.size == 0 || p.offset as u64 + p.size as u64 > FLASH_SIZE as u64 {
+            return Err(format!("partition '{}' ({:#x} bytes at {:#x}) lies outside 16 MiB flash", label(p), p.size, p.offset));
+        }
+        if p.offset % align != 0 {
+            return Err(format!("partition '{}' offset {:#x} is not aligned to {align:#x}", label(p), p.offset));
+        }
+        if p.kind == 0 && p.size % 0x1000 != 0 {
+            return Err(format!("app partition '{}' size {:#x} is not aligned to 0x1000", label(p), p.size));
+        }
+        if p.kind == 1 && (p.subtype == 0 || p.subtype == 3) && p.flags & FLAG_READONLY != 0 {
+            return Err(format!("partition '{}' (OTA data or core dump) is always read-write and cannot be read-only", label(p)));
+        }
+        if p.kind == 1 && p.subtype == 2 && p.size < 0x3000 && p.flags & FLAG_READONLY == 0 {
+            return Err(format!("NVS partition '{}' of {:#x} bytes must be flagged readonly (read/write NVS needs at least 0x3000)", label(p), p.size));
+        }
+    }
+    for (i, p) in parts.iter().enumerate() {
+        if parts[..i].iter().any(|q| q.name == p.name) {
+            return Err(format!("partition names must be unique: '{}' appears twice", label(p)));
+        }
+    }
+    let mut sorted: Vec<&Part> = parts.iter().collect();
+    sorted.sort_by_key(|p| p.offset);
+    for (i, p) in sorted.iter().enumerate() {
+        if (p.offset as usize) < TABLE_OFFSET + 0x1000 {
+            return Err(format!("partition '{}' offset {:#x} is below {:#x}", label(p), p.offset, TABLE_OFFSET + 0x1000));
+        }
+        if i > 0 && p.offset < sorted[i - 1].offset + sorted[i - 1].size {
+            return Err(format!("partition '{}' at {:#x} overlaps '{}'", label(p), p.offset, label(sorted[i - 1])));
+        }
+    }
+    let ota: Vec<&Part> = parts.iter().filter(|p| p.kind == 1 && p.subtype == 0).collect();
+    if ota.len() > 1 {
+        return Err("found more than one OTA data partition (type data, subtype ota)".into());
+    }
+    if ota.first().is_some_and(|p| p.size != 0x2000) {
+        return Err("the OTA data partition must have size 0x2000".into());
+    }
+    Ok(())
+}
+
+/// Encode a partition CSV in ESP-IDF's binary format, reading it as
+/// gen_esp32part.py does: fields split at every comma (no quoting), named
+/// or numeric types and subtypes in any case, `int(x, 0)` numbers with K/M
+/// suffixes, an empty data subtype meaning `undefined`, empty offsets placed
+/// after the previous partition (apps on 64 KiB), a negative size meaning
+/// "up to that offset", and the encrypted/readonly flags.
+pub fn partition_table(csv: &str) -> Result<Vec<u8>, String> {
+    let mut parts: Vec<Part> = Vec::new();
+    let mut last_end = (TABLE_OFFSET + 0x1000) as i64;
+    for (number, line) in csv.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let mut fields: Vec<&str> = line.split(',').map(str::trim).collect();
-        if fields.len() == 5 {
-            fields.push("");
+        let at = |e: String| format!("partition CSV line {}: {e}", number + 1);
+        let padded = format!("{line},,,,");
+        let fields: Vec<&str> = padded.split(',').map(str::trim).collect();
+        let (name, kind, subtype, offset, size, flags) = (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]);
+        if kind.is_empty() {
+            return Err(at("the type field can't be empty".into()));
         }
-        let [name, kind, subtype, offset, size, flags] = fields[..] else {
-            return Err(format!("bad partition CSV line: {line}"));
+        let kind = parse_int(kind, &[("app", 0), ("data", 1), ("bootloader", 2), ("partition_table", 3)]).map_err(at)?;
+        if kind == 2 || kind == 3 {
+            return Err(at("bootloader and partition_table entries are not supported here".into()));
+        }
+        let kind = u8::try_from(kind).map_err(|_| at(format!("type {kind} out of range")))?;
+        let subtype = match (kind, subtype) {
+            (0, "") => return Err(at("an app partition cannot have an empty subtype".into())),
+            (_, "") => 0x06,
+            (0, text) => parse_int(text, APP_SUBTYPES).map_err(at)?,
+            (1, text) => parse_int(text, DATA_SUBTYPES).map_err(at)?,
+            (_, text) => parse_int(text, &[]).map_err(at)?,
         };
-        let kind: u8 = match kind {
-            "app" => 0,
-            "data" => 1,
-            other => u8::try_from(number(other).map_err(|_| format!("unknown partition type {other}"))?)
-                .map_err(|_| format!("partition type {other} out of range"))?,
-        };
-        let subtype: u8 = match (kind, subtype) {
-            (0, "factory") => 0,
-            (0, "test") => 0x20,
-            (0, ota) if ota.starts_with("ota_") => match ota[4..].parse::<u8>() {
-                Ok(n) if n < 16 => 0x10 + n,
-                _ => return Err(format!("unknown partition subtype {ota}")),
-            },
-            (1, "ota") => 0,
-            (1, "phy") => 1,
-            (1, "nvs") => 2,
-            (1, "coredump") => 3,
-            (1, "nvs_keys") => 4,
-            (1, "efuse") => 5,
-            (1, "undefined") => 6,
-            (1, "esphttpd") => 0x80,
-            (1, "fat") => 0x81,
-            (1, "spiffs") => 0x82,
-            (1, "littlefs") => 0x83,
-            (_, other) => u8::try_from(number(other).map_err(|_| format!("unknown partition subtype {other}"))?)
-                .map_err(|_| format!("partition subtype {other} out of range"))?,
-        };
-        let size = number(size)?;
+        let subtype = u8::try_from(subtype).map_err(|_| at(format!("subtype {subtype} out of range")))?;
+        if size.is_empty() {
+            return Err(at("the size field can't be empty".into()));
+        }
+        let mut size = parse_int(size, &[]).map_err(at)?;
         let offset = if offset.is_empty() {
             let align = if kind == 0 { 0x10000 } else { 0x1000 };
-            next.div_ceil(align) * align
+            (last_end + align - 1) / align * align
         } else {
-            number(offset)?
+            let offset = parse_int(offset, &[]).map_err(at)?;
+            if offset < last_end {
+                return Err(at(format!("partitions overlap: this one starts at {offset:#x}, the previous one ends at {last_end:#x}")));
+            }
+            offset
         };
-        next = offset.checked_add(size).ok_or("partition beyond 4 GiB")?;
-        let mut bits = 0u32;
-        for flag in flags.split(':').map(str::trim).filter(|f| !f.is_empty()) {
+        if size < 0 {
+            size = -size - offset;
+        }
+        last_end = offset + size;
+        let mut bits = 0;
+        for flag in flags.split(':') {
             bits |= match flag {
-                "encrypted" => 1,
-                "readonly" => 2,
-                other => return Err(format!("unknown partition flag {other}")),
+                "encrypted" => FLAG_ENCRYPTED,
+                "readonly" => FLAG_READONLY,
+                "" => 0,
+                other => return Err(at(format!("unknown flag '{other}'"))),
             };
         }
         if name.len() > 16 {
-            return Err("partition label exceeds 16 bytes".into());
+            return Err(at(format!("label '{name}' is longer than 16 bytes")));
         }
-        table.extend_from_slice(&[0xAA, 0x50, kind, subtype]);
-        table.extend_from_slice(&offset.to_le_bytes());
-        table.extend_from_slice(&size.to_le_bytes());
+        let fits = |v: i64| u32::try_from(v).map_err(|_| at(format!("{v:#x} does not fit the table")));
+        parts.push(Part { name: name.as_bytes().to_vec(), kind, subtype, offset: fits(offset)?, size: fits(size)?, flags: bits });
+    }
+    verify(&parts)?;
+    let mut table = Vec::new();
+    for p in &parts {
+        table.extend_from_slice(&[0xAA, 0x50, p.kind, p.subtype]);
+        table.extend_from_slice(&p.offset.to_le_bytes());
+        table.extend_from_slice(&p.size.to_le_bytes());
         let mut label = [0u8; 16];
-        label[..name.len()].copy_from_slice(name.as_bytes());
+        label[..p.name.len()].copy_from_slice(&p.name);
         table.extend_from_slice(&label);
-        table.extend_from_slice(&bits.to_le_bytes());
+        table.extend_from_slice(&p.flags.to_le_bytes());
     }
     let digest = md5::Md5::digest(&table);
     table.extend_from_slice(&[0xEB, 0xEB]);
@@ -171,7 +289,6 @@ pub fn partition_table(csv: &str) -> Result<Vec<u8>, String> {
         return Err("partition table exceeds 0xC00 bytes".into());
     }
     table.resize(TABLE_SIZE, 0xFF);
-    read_partitions(&table)?;
     Ok(table)
 }
 
@@ -192,12 +309,12 @@ pub fn read_partition_file(path: &Path) -> Result<Vec<u8>, String> {
     Ok(table)
 }
 
-/// Decode and check a binary partition table.
+/// Decode and check a binary partition table with ESP-IDF's rules.
 fn read_partitions(table: &[u8]) -> Result<Vec<Entry>, String> {
     if table.is_empty() || table.len() > 0x1000 || !table.len().is_multiple_of(ENTRY_SIZE) {
         return Err("invalid partition table size".into());
     }
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut parts: Vec<Part> = Vec::new();
     for pos in (0..table.len()).step_by(ENTRY_SIZE) {
         let record = &table[pos..pos + ENTRY_SIZE];
         if record.iter().all(|&b| b == 0xFF) {
@@ -209,20 +326,15 @@ fn read_partitions(table: &[u8]) -> Result<Vec<Entry>, String> {
             }
             break;
         }
+        if record[..2] != [0xAA, 0x50] {
+            return Err("invalid partition entry (bad magic)".into());
+        }
         let word = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
-        let (kind, subtype, offset, size) = (record[2], record[3], word(4), word(8));
-        if record[..2] != [0xAA, 0x50] || size == 0 || offset < 0x9000 || offset as u64 + size as u64 > FLASH_SIZE as u64 {
-            return Err("invalid partition entry or partition outside 16 MiB flash".into());
-        }
-        if entries.iter().any(|&(_, _, o, s)| offset < o + s && o < offset + size) {
-            return Err("overlapping partitions".into());
-        }
-        entries.push((kind, subtype, offset, size));
+        let name = record[12..28].iter().copied().take_while(|&b| b != 0).collect();
+        parts.push(Part { name, kind: record[2], subtype: record[3], offset: word(4), size: word(8), flags: word(28) });
     }
-    if entries.is_empty() {
-        return Err("empty partition table".into());
-    }
-    Ok(entries)
+    verify(&parts)?;
+    Ok(parts.iter().map(|p| (p.kind, p.subtype, p.offset, p.size)).collect())
 }
 
 /// zlib's crc32 continued from `seed`, as the ESP-IDF NVS generator uses it.
@@ -275,15 +387,16 @@ pub fn nvs_image(size: usize, namespace: &str, values: &[(&str, u8)]) -> Vec<u8>
     page
 }
 
-/// The partition an app goes to, as `idf.py flash` picks it: the factory
-/// app, else ota_0, else the first app. The Picco's stock layout keeps its
-/// factory slot for recovery, so its app goes to ota_0.
+/// The partition an app goes to, as ESP-IDF's boot default picks it
+/// (parttool's PARTITION_BOOT_DEFAULT): the factory app, else the lowest
+/// OTA slot. The Picco's stock layout keeps its factory slot for recovery,
+/// so its app goes to ota_0.
 fn app_partition(entries: &[Entry], picco: bool) -> Option<Entry> {
     let find = |subtype: u8| entries.iter().copied().find(|e| e.0 == 0 && e.1 == subtype);
     if picco {
         return find(0x10);
     }
-    find(0x00).or_else(|| find(0x10)).or_else(|| entries.iter().copied().find(|e| e.0 == 0))
+    find(0x00).or_else(|| (0x10..0x20).find_map(find))
 }
 
 /// Merge a bootloader, a partition table and an app into 16 MiB, with the
@@ -299,7 +412,7 @@ fn compose(app: &[u8], boot: &[u8], table: &[u8], machine: Option<&str>) -> Resu
     let entries = read_partitions(table)?;
     let picco = machine == Some("picco");
     let Some((_, subtype, app_offset, app_size)) = app_partition(&entries, picco) else {
-        return Err(format!("the partition table has no {} partition", if picco { "ota_0 app" } else { "app" }));
+        return Err(format!("the partition table has no {} partition", if picco { "ota_0 app" } else { "factory or OTA app" }));
     };
     if app.len() > app_size as usize {
         return Err(format!(
@@ -615,7 +728,44 @@ mod tests {
         );
         assert_eq!(u32::from_le_bytes(table[3 * 32 + 28..3 * 32 + 32].try_into().unwrap()), 2);
         assert!(partition_table("x, app, ota_16, , 1M\n").is_err());
+        assert!(partition_table("factory, app, factory, 0x11000, 1M\n").unwrap_err().contains("not aligned to 0x10000"));
         assert!(partition_table("x, data, nvs, 0x9000, 4K, sticky\n").is_err());
+    }
+
+    /// Cases where gen_esp32part.py's reading is subtle (checked against it).
+    #[test]
+    fn matches_gen_esp32part_on_corner_cases() {
+        let parts = |csv: &str| partition_table(csv).and_then(|t| read_partitions(&t));
+        // No CSV quoting: quotes stay in the label; keywords in any case.
+        let quoted = partition_table("\"factory\",app,factory,,1M\n").unwrap();
+        assert_eq!(&quoted[12..21], b"\"factory\"");
+        assert!(parts("factory,\"app\",factory,,1M\n").is_err());
+        assert_eq!(parts("factory,APP,FACTORY,,1M\n").unwrap(), [(0, 0, 0x10000, 0x100000)]);
+        // An empty data subtype is `undefined`; numbers are int(x, 0).
+        assert_eq!(parts("custom,data,,,12K\nfactory,app,factory,,1M\n").unwrap()[0], (1, 6, 0x9000, 0x3000));
+        assert_eq!(parts("factory,0b0,0b0,,0b100000000000000000000\n").unwrap(), [(0, 0, 0x10000, 0x100000)]);
+        assert!(parts("factory,00,00,,01048576\n").is_err());
+        // A negative size runs up to that offset.
+        assert_eq!(parts("factory,app,factory,0x10000,-0x110000\n").unwrap(), [(0, 0, 0x10000, 0x100000)]);
+        // ESP-IDF's table rules.
+        for bad in [
+            "factory,app,factory,0x10000,12345\n",
+            "x,data,nvs,0x9001,0x5000\nfactory,app,factory,,1M\n",
+            "a,data,nvs,,0x5000\na,app,factory,,1M\n",
+            "otadata,data,ota,,0x1000\nfactory,app,factory,,1M\n",
+            "otadata,data,ota,,0x2000,readonly\nfactory,app,factory,,1M\n",
+            "nvs,data,nvs,,0x2000\nfactory,app,factory,,1M\n",
+            "factory,app,factory,0x10000,1M\nnvs,data,nvs,0x9000,0x5000\n",
+            "factory,app,factory,0x10000,1M\nota_0,app,ota_0,0x110000,1M\notadata,data,ota,0xffffff,1\n",
+        ] {
+            assert!(partition_table(bad).is_err(), "{bad}");
+        }
+        // The app goes to factory, else the lowest OTA slot; a test-only table has nowhere.
+        let entries = parts("otadata,data,ota,,0x2000\ntest,app,test,0x10000,1M\nota_1,app,ota_1,,1M\n").unwrap();
+        assert_eq!(app_partition(&entries, false).unwrap().2, 0x110000);
+        let entries = parts("ota_2,app,ota_2,0x10000,1M\nota_1,app,ota_1,,1M\n").unwrap();
+        assert_eq!(app_partition(&entries, false).unwrap().1, 0x11);
+        assert_eq!(app_partition(&parts("test,app,test,0x10000,1M\n").unwrap(), false), None);
     }
 
     #[test]

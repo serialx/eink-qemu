@@ -40,20 +40,28 @@ A build directory brings its own bootloader and partition table. A release
 app gets the bundled bootloader and Arduino-ESP32's 16 MB partition table
 (the Picco's stock layout on the Picco); give the firmware's own table with
 `--partitions partitions.csv` (or its binary table) when it uses another
-layout. The app goes where `idf.py flash` puts it: the factory partition,
-else ota_0. The board follows the firmware's chip: ESP32-C3 runs as the X3,
+layout; it is read and checked as ESP-IDF's `gen_esp32part.py` does. The app
+goes to ESP-IDF's boot-default slot: the factory partition, else the lowest
+OTA slot. The board follows the firmware's chip: ESP32-C3 runs as the X3,
 ESP32-S3 as the X4 Pro. Name the X4 or the Picco with `--machine`.
 
 ## A first run, any firmware
 
 ```sh
-eink-qemu/cli run build/ ready shot:boot press:down wait-screen shot:next heap:next
+eink-qemu/cli run build/ ready shot:boot heap:boot
 ```
 
-`ready` passes once the screen has been quiet for 5 s (`--ready-quiet`); a
-screen that never stops changing (a ticking clock) needs a shorter quiet or
-a `wait-log:` on a line of your own. `press:down` waits for the screen to
-change and settle, `shot` keeps it, `heap` walks the heaps. The firmware log
+`ready` passes once the screen has been quiet for 5 host seconds
+(`--ready-quiet`); a screen that never stops changing (a ticking clock)
+needs a shorter quiet or a `wait-log:` on a line of your own. `shot` keeps
+the screen and `heap` walks the heaps. Look at `shots/boot.png` before you
+script input: which key or touch does what is up to the firmware. A press
+or touch succeeds once it is delivered, whether or not the firmware reacts;
+the `wait-screen` after it is what fails when nothing changes:
+
+```sh
+eink-qemu/cli run build/ ready touch:240,400 wait-screen shot:next
+``` The firmware log
 comes from USB Serial/JTAG, where ESP-IDF mirrors its console by default;
 firmware that logs only to UART0 needs `--console uart0`. The emulated
 boards' ROM prints its boot lines only on USB, so on UART0 the log starts
@@ -74,7 +82,10 @@ eink-qemu/cli run ~/crosspoint-reader/.pio/build/default --put book.epub \
 ```
 
 This makes a blank card (the stock X3 card's 2050 MiB with 32 KiB clusters),
-copies the book onto it, boots, and waits for Home. On a blank card Home has
+copies the book onto it, boots, and waits for Home. A book in Korean,
+Chinese or Japanese also needs CrossPoint's SD fonts on the card (see
+[Driving CrossPoint](#driving-crosspoint)); without them its pages show
+replacement boxes, and identical screenshots then say nothing about its text. On a blank card Home has
 Browse Files selected: the first `confirm` opens the file list, the second
 opens its first entry, the book. The run waits for the first page, then
 keeps a screenshot and the heaps. Each step prints one JSON record on
@@ -98,9 +109,9 @@ stdout. The run directory is in the first record and linked from
 Exit codes: 0 when every step passed, 1 when a step failed, 2 for bad usage
 or steps (found before the emulator starts), 3 when the run could not start
 (firmware, card, QEMU), 130 when interrupted (Ctrl-C or SIGTERM, which still
-write the end record and report). A run that could not start leaves only
-`error.txt` in its directory, and the same command, `--out` included, can be
-run again.
+write the end record and report). A run that could not start leaves
+`error.txt`, a `run.jsonl` with the setup error and a `report.html` saying
+why, and the same command, `--out` included, can be run again.
 
 ### The X4 Pro
 
@@ -164,10 +175,12 @@ none of them can satisfy the wait. After a match, the next `wait-log` looks
 past the matched line.
 
 Before each input step the tool waits until the firmware's log has been
-quiet and the panel idle for `--input-quiet` (200 ms of guest time, at most
-3 s). Firmware busy with background work, such as CrossPoint laying out the
-next pages after a render, does not poll its buttons and would miss a short
-press. The record's `waited_ms` says how long it waited.
+quiet, the panel idle and the CPU idle (from the emulator's instruction
+count) for `--input-quiet` (200 ms of guest time, at most 3 s). Firmware
+busy with background work, such as CrossPoint laying out or prewarming the
+next pages after a render, often logs nothing while it works, does not poll
+its buttons and would miss a short press. The record's `waited_ms` says how
+long it waited.
 
 The screen counts as settled when the display has been quiet for `--settle`
 (200 ms of host time) and the panel has not been BUSY for `--panel-idle`
@@ -185,8 +198,8 @@ values (`bw_render_ms`, `total_ms` and the rest) land in the record.
 
 ### Ready
 
-`ready` passes when the screen has been quiet for 5 s (`--ready-quiet`)
-after an update of this boot, and the ROM has not rebooted the firmware
+`ready` passes when the screen has shown a drawn (not blank) image,
+unchanged for 5 host seconds (`--ready-quiet`), after an update of this boot, and the ROM has not rebooted the firmware
 meanwhile (`how` is `screen-quiet`). CrossPoint is read more closely, from
 its profile: three completed panel refreshes (Home drawn), then its first
 `[MEM]` report, about 10 s of guest time (`how` is `home`). A reboot starts
@@ -208,7 +221,9 @@ Runs are close to deterministic: accurate timing, a fixed real-time clock
 (`--rtc`, 2026-01-01 09:00 by default) and a card made the same way give the
 same screens and heaps run after run, and firmware timings within a few
 milliseconds. When a timing comparison matters, use accurate timing (no
-`--turbo`) and the 2050 MiB card.
+`--turbo`) and the 2050 MiB card. Clocks at a glance: `wait`, `wait-quiet`,
+key holds, `--input-quiet` and `--panel-idle` are guest time; `--ready-quiet`,
+`--settle` and every time limit are host time.
 
 ## Records
 
@@ -219,7 +234,7 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 
 | Step | Fields |
 | --- | --- |
-| `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`quiet`), `boot_s` (host seconds from the boot's start, the run's or the last reset, to ready), `home_fw_ms` (CrossPoint: the firmware's ms at Home), `restarts` |
+| `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`quiet`), `boot_s` (host seconds from this boot's ROM banner, or without one from the run's start or the last reset, to Home for CrossPoint or to the last screen update before the quiet; the step's own `ms` also counts the quiet), `home_fw_ms` (CrossPoint: the firmware's ms at Home), `restarts` |
 | `mark` | `name`, and the counters so far: `screen_updates` (display updates the guest sent), `panel_refreshes`, `panel_refresh_ms` (their guest time) |
 | `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs) |
 | `wait-screen`, `wait-quiet` | `frame`, `changed` |
@@ -281,7 +296,8 @@ eink-qemu/cli compare base/.pio/build/default pr/.pio/build/default \
 ```
 
 Both run at once from identical cards, and both boards must take the steps
-before either starts. The comparison directory holds each run's directory
+before either starts. Put the workload's prerequisites (the book, its fonts,
+the options) in the pull request beside the numbers. The comparison directory holds each run's directory
 and:
 
 - `compare.md`: a table for a pull request: result, boot to ready, each
@@ -363,10 +379,21 @@ check a screenshot when a step does not do what you expect.
 - In Settings, `confirm` on a tab header moves to the next tab; `down` and
   `right` move into the list. `back` from a row returns to its tab header,
   and from the header leaves Settings.
+- Coming back from a book, Home selects the book's tile, which sits above
+  Browse Files: Settings is then four `down`s away, not three. In a list of
+  values (Text Settings, Size), the first `down` selects the first value, not
+  the one after the current. Take a `shot` after each move until the path is
+  known; `back` on Home resumes the book, so stop pressing `back` at Home.
 - To check that a setting survives a reset: change it (for the font size,
   Settings, the Reader tab, Text Settings, Size), press `back` until Home,
   `wait-quiet:3`, then `reset ready`, open the same screen again, and compare
   the shots. Settings are written when you leave the screen.
+- Sleep: a long Power press (`press:power:600`) shows the sleep screen and
+  the log says "Entering deep sleep"; QEMU then suspends the VM, which waits
+  and shots handle. `press:power` wakes it into a new boot: follow it with
+  `ready`. A short press does not sleep, and a `press` that succeeded only
+  means the key was delivered: check with `shot` or `wait-log:Entering deep
+  sleep`.
 - On the X4 Pro, tap the menu entries (coordinates are screenshot pixels,
   origin top left, 480 wide by 800 tall in portrait), turn pages with
   `swipe:left` and `swipe:right` or `down`/`up`, and `press:home` returns to
@@ -378,11 +405,33 @@ check a screenshot when a step does not do what you expect.
 
 ## Driving the stock Xteink firmware
 
-Observed on the stock X4 Pro 7.5.11 dump. It powers itself off unless
-Power is held when its app starts (about 2.3 s of guest time): run with
-`--power-hold 3000`. It has no CrossPoint log lines, so `ready` is the quiet
-screen, and its first screens are touch dialogs: use `touch:` rather than
-the keys. Its heaps walk without an ELF.
+Observed on the stock X4 Pro 7.5.11 dump; check a screenshot when a step
+does not do what you expect. It powers itself off unless Power is held when
+its app starts (about 2.3 s of guest time): run with `--power-hold 3000`.
+It has no CrossPoint log lines, so `ready` is the quiet screen. It is
+driven by touch (`down` does nothing on its first dialog). Its heaps walk
+without an ELF.
+
+On a blank card, from boot to an opened book (screenshot pixels):
+
+```text
+ready
+touch:408,155       # close the System Font dialog (its X): an empty Bookshelf
+wait-screen
+touch:440,84        # the menu button: Read, All Files, USB, Cloud, Settings
+wait-screen
+touch:330,247       # All Files
+wait-screen
+touch:200,183       # the first file (an EPUB put on the card with --put)
+wait-quiet:5        # it shows "Opening…" first
+shot:page1
+```
+
+A short `press:power` puts it to sleep: the screen stays, with a small moon
+beside the battery, and the log has `hal_sleep ... entered=1`; another
+press wakes it (`sleep_result success=1`). That sleep keeps the VM running.
+When its boot gate turns it off (no Power hold), the VM is suspended: QEMU's
+deep sleep, which `ready` reports instead of waiting out.
 
 ## The desktop window
 
@@ -425,7 +474,7 @@ than calling it dead.
 | `--elf auto\|none\|PATH` | The ELF for heap sites and traces |
 | `--turbo` | Fast peripherals; quicker, not for timing comparisons |
 | `--ghosting`, `--animate` | E-ink ghosting and refresh animation (both off) |
-| `--input-quiet MS` | The wait for a quiet log before input (0 turns it off) |
+| `--input-quiet MS` | The wait for a quiet log, idle panel and idle CPU before input (0 turns it off) |
 | `--echo-log` | Print the firmware log on stderr as it comes |
 | `--gdb PORT` | A GDB server on 127.0.0.1:PORT |
 | `--qemu-arg ARG` | Any QEMU argument (repeatable) |

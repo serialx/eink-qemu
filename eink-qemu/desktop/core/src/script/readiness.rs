@@ -60,6 +60,11 @@ impl Readiness {
         Readiness { crosspoint: previous.crosspoint, await_rom: true, ..Self::default() }
     }
 
+    /// Host seconds of this boot's ROM banner, when the console showed one.
+    pub fn rom_banner_at(&self) -> Option<f64> {
+        self.last_rom
+    }
+
     /// For a console without the ROM's banner: a boot after a reset counts
     /// from the reset, and shows itself by drawing.
     pub fn skip_rom_wait(&mut self) {

@@ -72,9 +72,9 @@ cached and avoids CrossPoint 1.6.5's first-boot Wire lock deadlock. Every other
 app, and every S3 app, keeps NVS erased; the official S3 app reaches hardware
 and panel initialization without a seed.
 
-Build directories supply their own bootloader and table. The app goes where
-`idf.py flash` puts it (the factory partition, else ota_0); its table entry
-bounds the app size.
+Build directories supply their own bootloader and table. The app goes to
+ESP-IDF's boot-default slot (the factory partition, else the lowest OTA slot);
+its table entry bounds the app size.
 `--machine x3|x4pro` checks the detected chip and rejects a mismatch. A file of
 exactly 16 MiB passes through unchanged; with `--machine`, its boot header is
 also checked. These helpers target emulator images, not encrypted/secure-boot

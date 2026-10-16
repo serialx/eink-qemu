@@ -15,13 +15,22 @@ use std::sync::LazyLock;
 static IDF_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([EWIDV]) \((\d+)\) ").unwrap());
 static VALUES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)=(-?\d+)(ms|us|B|KB)?\b").unwrap());
 
+/// ANSI color sequences (ESP-IDF's CONFIG_LOG_COLORS wraps lines in them).
+static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").unwrap());
+
+/// A log line without its color codes.
+fn plain(line: &str) -> std::borrow::Cow<'_, str> {
+    if line.contains('\x1b') { ANSI.replace_all(line, "") } else { std::borrow::Cow::Borrowed(line) }
+}
+
 /// The firmware's own timestamp (ms since its boot), when the line has one
-/// in ESP-IDF's format or CrossPoint's.
+/// in ESP-IDF's format (colored or not) or CrossPoint's.
 pub fn firmware_ms(line: &str) -> Option<u64> {
-    if let Some(c) = IDF_LINE.captures(line) {
+    let line = plain(line);
+    if let Some(c) = IDF_LINE.captures(&line) {
         return c[2].parse().ok();
     }
-    CROSSPOINT.timestamp.captures(line).and_then(|c| c[1].parse().ok())
+    CROSSPOINT.timestamp.captures(&line).and_then(|c| c[1].parse().ok())
 }
 
 /// `name=123ms`-style values in a line, for a wait-log record.
@@ -65,6 +74,7 @@ pub fn summarize<'a>(lines: impl IntoIterator<Item = &'a str>) -> Value {
     let (mut count, mut errors, mut warnings) = (0usize, 0usize, 0usize);
     for line in lines {
         count += 1;
+        let line = &*plain(line);
         if let Some(c) = IDF_LINE.captures(line) {
             match &c[1] {
                 "E" => errors += 1,
@@ -149,5 +159,10 @@ mod tests {
         assert!(s.get("crosspoint").is_none());
         assert_eq!(firmware_ms(lines[0]), Some(1930));
         assert_eq!(firmware_ms(lines[3]), None);
+        // CONFIG_LOG_COLORS
+        let colored = ["\x1b[0;31mE (123) app: failed\x1b[0m", "\x1b[0;33mW (124) app: warning\x1b[0m"];
+        let s = summarize(colored);
+        assert_eq!((s["log_errors"].as_u64(), s["log_warnings"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(firmware_ms(colored[0]), Some(123));
     }
 }

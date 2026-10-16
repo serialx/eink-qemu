@@ -230,6 +230,7 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         json!({"metric": "panel refreshes, whole run", "a": ma["panel_refreshes"], "b": mb["panel_refreshes"]}),
         json!({"metric": "panel refresh time, whole run (guest ms)", "a": ma["panel_refresh_ms"], "b": mb["panel_refresh_ms"]}),
         json!({"metric": "ESP-IDF error lines in the log", "a": ma["log_errors"], "b": mb["log_errors"]}),
+        json!({"metric": "ESP-IDF warning lines in the log", "a": ma["log_warnings"], "b": mb["log_warnings"]}),
     ];
     let (ca, cb) = (&ma["crosspoint"], &mb["crosspoint"]);
     if ca.is_object() || cb.is_object() {
@@ -244,46 +245,36 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         ]);
     }
 
-    // Marked windows: from each `mark` to the next (or the end), the guest
-    // time the steps took and the emulator's counters, for any firmware.
+    // Marked windows, in script order: from each `mark` to the next, the
+    // last one to the last step, with the guest time the steps took and the
+    // emulator's counters, for any firmware.
     let windows = |r: &[Value]| {
-        let mut out: BTreeMap<String, Value> = BTreeMap::new();
-        let end = r.iter().rev().find(|x| x["type"] == "end");
-        let marks: Vec<&Value> = r.iter().filter(|x| x["type"] == "step" && x["step"] == "mark").collect();
         let steps: Vec<&Value> = r.iter().filter(|x| x["type"] == "step").collect();
-        let last = steps.last().copied();
-        for (i, mark) in marks.iter().enumerate() {
-            let next = marks.get(i + 1).copied().or(last);
-            let Some(next) = next else { continue };
-            let diff = |k: &str| match (mark[k].as_f64(), next[k].as_f64()) {
-                (Some(x), Some(y)) if !std::ptr::eq(*mark, next) => json!(((y - x) * 10.0).round() / 10.0),
+        let totals = r.iter().rev().find(|x| x["type"] == "end").map(|e| e["metrics"].clone()).unwrap_or(Value::Null);
+        let marks: Vec<usize> = steps.iter().enumerate().filter(|(_, x)| x["step"] == "mark").map(|(i, _)| i).collect();
+        let mut out: Vec<(String, Value)> = Vec::new();
+        for (n, &i) in marks.iter().enumerate() {
+            let mark = steps[i];
+            let next_mark = marks.get(n + 1).map(|&j| steps[j]);
+            let last = steps[steps.len() - 1];
+            let diff = |x: Option<f64>, y: Option<f64>| match (x, y) {
+                (Some(x), Some(y)) => json!(((y - x) * 10.0).round() / 10.0),
                 _ => Value::Null,
             };
-            let mut w = json!({
-                "guest_ms": diff("guest_ms"),
-                "screen_updates": diff("screen_updates"),
-                "panel_refreshes": diff("panel_refreshes"),
-                "panel_refresh_ms": diff("panel_refresh_ms"),
-            });
-            // The last window runs to the last step; its counters come from the end of the run.
-            if marks.get(i + 1).is_none() && next["screen_updates"].is_null() {
-                let totals = end.map(|e| &e["metrics"]);
-                if let Some(t) = totals {
-                    for k in ["screen_updates", "panel_refreshes", "panel_refresh_ms"] {
-                        if let (Some(x), Some(y)) = (mark[k].as_f64(), t[k].as_f64()) {
-                            w[k] = json!(((y - x) * 10.0).round() / 10.0);
-                        }
-                    }
-                }
+            // Counters at the window's end: the next mark's, else the run's totals.
+            let end_of = |k: &str| next_mark.map_or_else(|| totals[k].as_f64(), |m| m[k].as_f64());
+            let mut w = json!({"to_end": next_mark.is_none(), "guest_ms": diff(mark["guest_ms"].as_f64(), next_mark.unwrap_or(last)["guest_ms"].as_f64())});
+            for k in ["screen_updates", "panel_refreshes", "panel_refresh_ms"] {
+                w[k] = diff(mark[k].as_f64(), end_of(k));
             }
-            out.insert(mark["name"].as_str().unwrap_or_default().to_string(), w);
+            out.push((mark["name"].as_str().unwrap_or_default().to_string(), w));
         }
         out
     };
     let (wa, wb) = (windows(&ra), windows(&rb));
     let window_rows: Vec<Value> = wa
         .iter()
-        .map(|(name, a)| json!({"name": name, "a": a, "b": wb.get(name).cloned().unwrap_or(Value::Null)}))
+        .map(|(name, a)| json!({"name": name, "a": a, "b": wb.iter().find(|(n, _)| n == name).map(|(_, w)| w.clone()).unwrap_or(Value::Null)}))
         .collect();
     let start = |r: &[Value]| r.iter().find(|x| x["type"] == "start").cloned().unwrap_or(Value::Null);
     let (sa, sb) = (start(&ra), start(&rb));
@@ -355,14 +346,15 @@ pub fn markdown(s: &Value) -> String {
     }
     let (ba, bb) = (&s["ready"][0]["boot_s"], &s["ready"][1]["boot_s"]);
     if !ba.is_null() || !bb.is_null() {
-        out += &format!("| Boot to ready (s) | {} | {} | {} |\n", cell(ba), cell(bb), delta(ba, bb));
+        out += &format!("| Boot (host s, ROM banner to Home or to the last update before ready) | {} | {} | {} |\n", cell(ba), cell(bb), delta(ba, bb));
     }
     for w in s["windows"].as_array().into_iter().flatten() {
         let name = cell(&w["name"]);
+        let name = if w["a"]["to_end"] == true { format!("{name}` (to the end)") } else { format!("{name}`") };
         for (key, label) in [("guest_ms", "guest ms"), ("panel_refreshes", "panel refreshes"), ("screen_updates", "display updates")] {
             let (x, y) = (&w["a"][key], &w["b"][key]);
             if !x.is_null() || !y.is_null() {
-                out += &format!("| `mark:{name}` window: {label} | {} | {} | {} |\n", cell(x), cell(y), delta(x, y));
+                out += &format!("| `mark:{name} window: {label} | {} | {} | {} |\n", cell(x), cell(y), delta(x, y));
             }
         }
     }

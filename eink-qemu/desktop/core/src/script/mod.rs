@@ -83,7 +83,25 @@ impl GuestClock {
     pub async fn now_ms(&self) -> Option<i64> {
         self.now_ns().await.map(|ns| ns / 1_000_000)
     }
+
+    /// The raw guest clock and the part of it the CPUs spent executing
+    /// (ns): between two samples, busy growth over clock growth is the CPU
+    /// load. None on QEMU builds without "busy-ns", or without -icount.
+    pub async fn load_sample(&self) -> Option<(i64, i64)> {
+        if !self.enabled {
+            return None;
+        }
+        let path = format!("/objects/{GUEST_CLOCK_ID}");
+        let get = async |property: &str| self.session.qmp("qom-get", Some(json!({"path": path, "property": property}))).await.ok()?.as_i64();
+        let ns = get("ns").await?;
+        let busy = get("busy-ns").await.filter(|&b| b >= 0)?;
+        Some((ns, busy))
+    }
 }
+
+/// CPU load above which the firmware counts as working (it runs near 1
+/// while it computes, near 0 while it idles waiting for interrupts).
+const CPU_BUSY_LOAD: f64 = 0.5;
 
 /// How long since a moment taken as (host instant, guest ns): guest time
 /// when both guest readings exist, else host time.
@@ -552,7 +570,7 @@ impl Runner {
     }
 
     /// Before input: wait until the firmware's log has been quiet and the
-    /// panel idle for `input_quiet` of guest time, at most INPUT_QUIET_LIMIT.
+    /// panel and the CPU idle for `input_quiet` of guest time, at most INPUT_QUIET_LIMIT.
     /// Firmware busy with background work (laying out pages) can miss a
     /// short press.
     async fn input_quiet(&mut self, f: &mut Fields) -> Result<(), Failure> {
@@ -562,12 +580,21 @@ impl Runner {
         let started = Instant::now();
         let mut count = self.events.line_count();
         let mut quiet_from = (Instant::now(), self.clock.now_ns().await);
+        let mut load = self.clock.load_sample().await;
         loop {
             self.check_alive()?;
             let guest = self.clock.now_ns().await;
             let now_count = self.events.line_count();
             let busy = self.panel_busy().await == Some(true);
-            if now_count != count || busy {
+            // Firmware working without logging (background layout, a
+            // prewarm) can miss a press as surely as one that logs.
+            let sample = self.clock.load_sample().await;
+            let computing = match (load, sample) {
+                (Some((n0, b0)), Some((n1, b1))) if n1 > n0 => (b1 - b0) as f64 / (n1 - n0) as f64 > CPU_BUSY_LOAD,
+                _ => false,
+            };
+            load = sample.or(load);
+            if now_count != count || busy || computing {
                 count = now_count;
                 quiet_from = (Instant::now(), guest);
             } else if since(quiet_from, guest) >= self.opts.input_quiet {
@@ -603,6 +630,21 @@ impl Runner {
             "panel_refreshes": refreshes,
             "panel_refresh_ms": refresh_ns.map(|ns| (ns as f64 / 1e5).round() / 10.0),
         })
+    }
+
+    /// Whether the device is in deep sleep: QEMU suspended it, or its RTC
+    /// says so (deep sleep with a timer armed keeps the VM running).
+    async fn deep_sleep(&mut self) -> bool {
+        if self.session.asleep() {
+            return true;
+        }
+        let path = match self.session.machine().as_deref() {
+            Some("x3" | "x4") => "/machine/rtccntl",
+            Some(_) => "/machine/soc/rtc_cntl",
+            None => return false,
+        };
+        let reply = self.session.qmp("qom-get", Some(json!({"path": path, "property": "deep-sleep"}))).await;
+        reply.ok().and_then(|v| v.as_bool()).unwrap_or(false)
     }
 
     /// A new boot is starting (reset): readiness waits for it.
@@ -679,20 +721,31 @@ impl Runner {
                     });
                     self.readiness_pos = end;
                     let now = self.events.now();
+                    let asleep = self.deep_sleep().await;
                     let screen = self.events.screen();
                     // A blank panel (all one gray: before the firmware draws,
                     // or mid-flash) is not a boot that finished drawing.
                     let drawn = self.session.screen().is_some_and(|fb| fb.pixels.first().is_some_and(|&p| fb.pixels.iter().any(|&q| q != p)));
                     // A device in deep sleep is quiet because it is off, not ready.
-                    let quiet = (drawn && !self.session.asleep() && screen.updates > self.readiness_screen_base)
+                    let quiet = (drawn && !asleep && screen.updates > self.readiness_screen_base)
                         .then(|| screen.last_update.map(|t| t.elapsed().as_secs_f64()))
                         .flatten();
-                    match self.readiness.verdict(quiet, self.opts.ready_quiet, now) {
+                    // A device in deep sleep is not ready, whatever its last boot
+                    // decided: it is ready again after its next boot.
+                    let verdict = match self.readiness.verdict(quiet, self.opts.ready_quiet, now) {
+                        Verdict::Ready(_) if asleep => Verdict::Waiting,
+                        verdict => verdict,
+                    };
+                    match verdict {
                         Verdict::Ready(how) => {
                             self.check_alive()?;
                             f.insert("how".into(), json!(how));
-                            // From the boot's start (the run's, or the last reset) to Home.
-                            f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(now) - self.boot_started)));
+                            // From this boot's start (its ROM banner; without one, the
+                            // run's start or the last reset) to Home for CrossPoint, or
+                            // to the last screen update before the quiet.
+                            let start = self.readiness.rom_banner_at().map_or(self.boot_started, |t| t.max(self.boot_started));
+                            let drawn = screen.last_update.map(|u| now - u.elapsed().as_secs_f64()).unwrap_or(now);
+                            f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(drawn) - start)));
                             if let Some(ms) = self.readiness.home_fw_ms {
                                 f.insert("home_fw_ms".into(), json!(ms));
                             }
@@ -710,9 +763,8 @@ impl Runner {
                     }
                     self.check_alive()?;
                     if started.elapsed().as_secs_f64() > limit {
-                        let why = if self.session.asleep() && !self.readiness.power_wait {
-                            "the device went into deep sleep (QEMU suspended it) before its boot finished; a key that wakes it \
-                             (press:power) resumes it".to_string()
+                        let why = if asleep && !self.readiness.power_wait {
+                            "the device is in deep sleep; a key that wakes it (press:power) starts a new boot".to_string()
                         } else {
                             self.readiness.waiting_for()
                         };
@@ -936,7 +988,10 @@ impl Runner {
                 f.insert("top_sites".into(), json!(top));
             }
             Kind::Mark { name } => {
-                f.insert("name".into(), json!(expand(name, iters)));
+                // A mark used again (in a repeat without {i}) gets -2, -3, ... so
+                // each of its windows stays apart in a comparison.
+                let label = self.unique("marks", &expand(name, iters));
+                f.insert("name".into(), json!(label));
                 // Counters at the mark, so a comparison can measure the window after it.
                 if let Value::Object(counters) = self.counters().await {
                     f.extend(counters);

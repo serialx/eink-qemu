@@ -44,10 +44,10 @@ def records(stdout):
     return [json.loads(line) for line in stdout.splitlines() if line.startswith('{')]
 
 
-def qmp(binary, machine, commands):
+def qmp(binary, machine, commands, extra=()):
     script = '{"execute":"qmp_capabilities"}\n' + ''.join(json.dumps(c) + '\n' for c in commands) + '{"execute":"quit"}\n'
     out = subprocess.run([str(binary), '-machine', machine, '-display', 'none', '-serial', 'null',
-                          '-object', 'guest-clock,id=clock', '-qmp', 'stdio'],
+                          '-object', 'guest-clock,id=clock', '-qmp', 'stdio', *extra],
                          input=script, capture_output=True, text=True, timeout=30).stdout
     return [json.loads(line) for line in out.splitlines() if '"return"' in line or '"error"' in line]
 
@@ -91,6 +91,27 @@ class Cli(unittest.TestCase):
                 self.assertEqual(out.read_bytes(), mkflash.make_flash(app, None, partitions))
                 self.assertEqual(note is not None, 'NVS: CrossPoint' in result.stdout, result.stdout)
                 self.assertIn('partitions.csv' if partitions else 'Arduino', result.stdout)
+
+    def test_flash_reads_partition_csvs_like_mkflash(self):
+        sys.path.insert(0, str(ROOT))
+        from importlib import import_module
+        mkflash = import_module('eink-qemu.mkflash')
+        corpus = import_module('eink-qemu.tests.test_mkflash').CSV_CORPUS
+        app = self.tmp / 'app.bin'
+        app.write_bytes(app_image(9))
+        for i, text in enumerate(corpus):
+            with self.subTest(csv=text):
+                table = self.tmp / f'table{i}.csv'
+                table.write_text(text)
+                out = self.tmp / f'flash{i}.bin'
+                result = cli('flash', str(app), str(out), '--partitions', str(table))
+                try:
+                    expected = mkflash.make_flash(app, None, table)
+                except ValueError:
+                    expected = None
+                self.assertEqual(result.returncode == 0, expected is not None, result.stderr)
+                if expected is not None:
+                    self.assertEqual(out.read_bytes(), expected)
 
     def test_bad_steps_are_usage_errors(self):
         result = cli('run', str(self.tmp / 'missing.bin'), 'ready', 'wait-logg:x')
@@ -204,6 +225,14 @@ class QemuHooks(unittest.TestCase):
                     {'execute': 'qom-get', 'arguments': {'path': '/machine/peripheral/panel', 'property': 'busy'}},
                 ])
                 self.assertIs(replies[1].get('return'), False)
+
+    @unittest.skipUnless(RISCV.exists(), 'build qemu-system-riscv32 first')
+    def test_guest_busy_time(self):
+        get = {'execute': 'qom-get', 'arguments': {'path': '/objects/clock', 'property': 'busy-ns'}}
+        self.assertEqual(qmp(RISCV, 'x3', [get])[1].get('return'), -1, 'without -icount')
+        busy = qmp(RISCV, 'x3', [get], extra=['-icount', 'shift=0,sleep=on'])[1].get('return')
+        self.assertIsInstance(busy, int)
+        self.assertGreaterEqual(busy, 0)
 
     def test_panel_counters(self):
         for binary, machine in [(RISCV, 'x3'), (RISCV, 'x4'), (XTENSA, 'x4pro'), (XTENSA, 'picco')]:

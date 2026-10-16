@@ -223,8 +223,8 @@ pub struct RunArgs {
     /// How long the panel must have been idle after a refresh, in guest ms, before the screen counts as settled.
     #[arg(long, default_value_t = 300, value_name = "MS", value_parser = millis)]
     pub panel_idle: u64,
-    /// Before each press, touch or swipe, wait (up to 3 s) until the firmware's log has been quiet and the panel
-    /// idle for this many guest ms: firmware busy with background work can miss a short press. 0 turns it off.
+    /// Before each press, touch or swipe, wait (up to 3 s) until the firmware's log has been quiet, the panel idle and
+    /// the CPU idle for this many guest ms: firmware busy with background work can miss a short press. 0 turns it off.
     #[arg(long, default_value_t = 200, value_name = "MS", value_parser = millis)]
     pub input_quiet: u64,
     /// Fast peripherals (SD, panel, SPI): quicker runs without real device timing. Not for timing comparisons.
