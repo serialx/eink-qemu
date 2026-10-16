@@ -138,6 +138,7 @@ impl HeapView {
             "elf": elf.as_ref().and_then(|elf| elf.path.file_name()).map(|n| n.to_string_lossy().into_owned()),
             "elfNote": elf_note,
             "running": true,
+            "run": read.run,
             "heaps": heaps,
             "traced": traced,
             "traceGen": trace.map_or(0, |t| t.gen),

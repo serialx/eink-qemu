@@ -5,7 +5,12 @@
    single bar, and a clicked block opens its details and call stack. Without
    the ELF the maps are drawn alone. Scrubbing the trend shows the heaps at
    that moment (Rust keeps a snapshot per trend point) until Live. */
-import type { FileInfo, Heap, HeapFrame, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './api';
+import type { FileInfo, Heap, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './api';
+import {
+  CORRUPT, FADE, FREE, GUTTER, POISONED, SCALES, SITE_COLORS, Stacks, ago, blockAddr, byKind, callName, copyStack,
+  errorOf, esc, fmt, fragmented, hex, hitMap, isInternal, kib, load, onTheme, paintMap, per, pointerOf, readColors, role,
+  rowBytes, save, shortName, showTip, splitLoc, stackHtml, type Colors, type TipRow,
+} from './heap-core';
 
 /** Where snapshots and the ELF come from: Rust, or the demo's mock. */
 export interface HeapSource {
@@ -22,32 +27,12 @@ export interface HeapSource {
 }
 
 const INTERVAL = 1000;       // ms between snapshots
-const FADE = 4000;           // ms a new allocation or a free stays highlighted
-const ROW = 10;              // css px per map row, the gap included
-const GAP = 2;               // css px between rows
-const STRIP = 10;            // css px: a folded heap's bar
-const GUTTER = 44;           // css px: the row offsets left of a map, the trend's scale
-const TICK = 4;              // rows between offset labels
-const FIT_ROWS = 24;         // rows a heap fills at the "Fit" scale
-const MAX_ROWS = 128;        // rows at most; a bigger heap gets a coarser scale
 const HISTORY = 900;         // trend points kept (15 minutes at one a second)
-const SCALES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024].map((k) => k * 1024);
-const FREE = 1, POISONED = 2, CORRUPT = 4;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const output = document.querySelector<HTMLElement>('.output')!;
 const pane = $('heap');
-
-const fmt = (n: number) => n.toLocaleString('en-US');
-const kib = (n: number) => n >= 1048576 ? `${(n / 1048576).toFixed(2)} MiB` : `${(n / 1024).toFixed(1)} KiB`;
-const hex = (n: number) => '0x' + n.toString(16).padStart(8, '0');
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
-const per = (bytes: number) => bytes >= 1048576 ? `${bytes / 1048576} MiB` : `${bytes / 1024} KiB`;
-const ago = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 120 ? `${s} s` : `${Math.round(s / 60)} min`; };
-const load = <T>(key: string, fallback: T): T => {
-  try { const s = localStorage.getItem(key); return s === null ? fallback : JSON.parse(s) as T; } catch { return fallback; }
-};
-const save = (key: string, value: unknown) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} };
+const tipBox = $('heap-tip');
 
 interface View {
   el: HTMLElement;
@@ -88,8 +73,8 @@ let wanted: number | null = null, fetching = false, pastGen = 0, scrubbing = fal
 const shown = () => past?.snap ?? snap;
 let problem: { code: string; message: string } | null = null;
 const views = new Map<number, View>();
-/** Symbolized stacks by id: a value once fetched, else a pending Promise. */
-const stacks = new Map<number, HeapStack | null | Promise<HeapStack | null>>();
+/** Symbolized stacks by id, fetched once. */
+const stacks = new Stacks((id) => source ? source.stack(id) : Promise.resolve(null));
 /** Allocation site names, indexed by a block's site id. */
 let sites: HeapSite[] = [];
 let sitesPending = false;
@@ -181,11 +166,6 @@ export async function useElf(choice: Promise<FileInfo | null>) {
   }
 }
 
-const errorOf = (error: unknown) => {
-  const { code = 'EIO', message = String(error) } = (typeof error === 'object' && error) ? error as { code?: string; message?: string } : {};
-  return { code, message };
-};
-
 $('heap-pause').addEventListener('click', () => {
   paused = !paused;
   const button = $('heap-pause');
@@ -229,16 +209,7 @@ $('heap-scale-in').addEventListener('click', () => step(-1));
 $('heap-scale-out').addEventListener('click', () => step(1));
 
 /** A heap's bytes per row at the chosen scale, and whether its size forced a coarser one. */
-function rowBytes(size: number): { bpr: number; capped: boolean } {
-  if (scale === 'fit') {
-    let bpr = 256;
-    while (Math.ceil(size / bpr) > FIT_ROWS) bpr *= 2;
-    return { bpr, capped: false };
-  }
-  let bpr = scale;
-  while (Math.ceil(size / bpr) > MAX_ROWS) bpr *= 2;
-  return { bpr, capped: bpr !== scale };
-}
+const bytesPerRow = (size: number) => rowBytes(size, scale);
 
 /* Polling ------------------------------------------------------------------- */
 
@@ -315,50 +286,6 @@ function message(title: string, text: string, action?: string) {
   $('heap-message').hidden = false;
 }
 
-/** What a heap is for, from where ESP-IDF puts it on the ESP32-C3 and -S3. */
-function role(h: Heap, mainStart: number) {
-  if (h.name !== 'DRAM') return '';
-  if (h.start === 0x3fcdc710 || h.start === 0x3fce9710) return 'from boot ROM';
-  if (h.start === 0x3fcc0000 && h.caps.includes('RETENTION')) return 'retention';
-  if (h.start === 0x3fcf0000) return 'data only';
-  return h.start === mainStart ? 'main' : '';
-}
-
-/* Names: C++ ones run to hundreds of characters, so short places get a
-   condensed form and the details the whole name, wrapped. */
-
-/** "a<b<c>>::f" -> "a<…>::f"; operator names are left alone. */
-function untemplate(fn: string) {
-  if (fn.includes('operator')) return fn;
-  let out = '', depth = 0;
-  for (const ch of fn) {
-    if (ch === '<') { if (depth++ === 0) out += '<…'; continue; }
-    if (ch === '>' && depth > 0) { if (--depth === 0) out += '>'; continue; }
-    if (!depth) out += ch;
-  }
-  return out;
-}
-/** Up to the argument list: "ns::f(int)" -> "ns::f". */
-const unargs = (fn: string) => {
-  let depth = 0;
-  for (let i = 0; i < fn.length; i++) {
-    const ch = fn[i];
-    if (ch === '<') depth++;
-    else if (ch === '>') depth--;
-    else if (ch === '(' && depth <= 0 && i > 0 && !fn.slice(0, i).endsWith('operator')) return fn.slice(0, i);
-  }
-  return fn;
-};
-/** "ns::Class::method(int)" -> "Class::method" for the legend. */
-const shortName = (fn: string) => untemplate(unargs(fn.replace(/\(anonymous namespace\)::/g, ''))).split('::').slice(-2).join('::');
-/** "ns::Class<T>::method(int, char*)" -> "ns::Class<…>::method()" for the tooltip. */
-const callName = (fn: string) => `${untemplate(unargs(fn))}()`;
-/** A location as file:line, and the directory it is in. */
-const splitLoc = (loc: string) => {
-  const clean = loc.replace(/ \(discriminator \d+\)$/, ''), cut = clean.lastIndexOf('/');
-  return { file: clean.slice(cut + 1), dir: cut > 0 ? clean.slice(0, cut + 1) : '' };
-};
-
 function paint() {
   $('heap-message').hidden = true;
   const showMaps = !!(running && snap?.heaps.length && !problem);
@@ -405,9 +332,8 @@ function paint() {
   $('heap-note').hidden = !$('heap-note-text').textContent;
 
   // Internal memory first, then PSRAM; by address within each.
-  const rank = (h: Heap) => ['DRAM', 'IRAM', 'RTC', 'PSRAM'].indexOf(h.name);
-  const heaps = [...s.heaps].sort((a, b) => rank(a) - rank(b) || a.start - b.start);
-  const internal = heaps.filter((h) => h.name !== 'PSRAM'), psram = heaps.filter((h) => h.name === 'PSRAM');
+  const heaps = [...s.heaps].sort(byKind);
+  const internal = heaps.filter(isInternal), psram = heaps.filter((h) => !isInternal(h));
   const sum = (list: Heap[], f: (h: Heap) => number) => list.reduce((a, h) => a + f(h), 0);
   const max = (list: Heap[], f: (h: Heap) => number) => list.reduce((a, h) => Math.max(a, f(h)), 0);
   const corrupt = sum(heaps, (h) => h.corrupt);
@@ -444,8 +370,8 @@ function paint() {
     v.el.querySelector('.heap-role')!.textContent = role(h, mainStart);
     v.el.querySelector('.heap-addr')!.textContent = hex(h.start);
     v.el.querySelector('.heap-used')!.innerHTML = h.used ? `<b>${kib(h.used)}</b> / ${kib(size)}` : `empty · ${kib(size)}`;
-    const frag = h.free ? Math.round(100 * (1 - h.largest / h.free)) : 0;
-    const { bpr, capped } = rowBytes(size);
+    const frag = fragmented(h);
+    const { bpr, capped } = bytesPerRow(size);
     v.el.querySelector('.heap-stats')!.innerHTML = ([
       ['free', kib(h.infoFree)], ['largest', kib(h.largest)], ['lowest', kib(h.infoMinFree)],
       ['blocks', `${fmt(h.count)} · ${fmt(h.nfree)} free`], ['fragmented', `${frag}%`],
@@ -512,7 +438,7 @@ function view(h: Heap): View {
   detail.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
     if (target.closest('.hd-close')) select(null);
-    else if (target.closest('.hd-copy')) void copyStack(target.closest<HTMLButtonElement>('.hd-copy')!);
+    else if (target.closest('.hd-copy')) copySelected(target.closest<HTMLButtonElement>('.hd-copy')!);
   });
   detail.addEventListener('toggle', (e) => { if ((e.target as HTMLElement).matches('details')) allocOpen = (e.target as HTMLDetailsElement).open; }, true);
   views.set(h.start, v);
@@ -574,122 +500,39 @@ function track(v: View, h: Heap, now: number) {
 }
 
 /* Colors come from the stylesheet's tokens, read again when the theme changes. */
-type RGB = [number, number, number];
-interface Colors {
-  used: string; usedAlt: string; free: string; meta: string; fresh: string; freed: string; corrupt: string;
-  bg: string; text: string; faint: string; line: string; usedFill: string;
-  sites: string[]; sitesAlt: string[];
-}
 let colors: Colors | null = null;
-const SITE_COLORS = 9;
-function readColors() {
-  const style = getComputedStyle(pane);
-  const probe = document.createElement('canvas').getContext('2d')!;
-  const rgb = (name: string): RGB => {
-    probe.fillStyle = '#000';
-    probe.fillStyle = style.getPropertyValue(name).trim() || '#888';
-    probe.fillRect(0, 0, 1, 1);
-    const [r, g, b] = probe.getImageData(0, 0, 1, 1).data;
-    return [r, g, b];
-  };
-  const css = (c: RGB, a = 1) => a === 1 ? `rgb(${c.join(',')})` : `rgba(${c.join(',')},${a})`;
-  const bg = rgb('--bg');
-  // A neighbour from the same function: the colour a third of the way to the card.
-  const alt = (c: RGB) => css(c.map((x, i) => Math.round(x + (bg[i] - x) * 0.32)) as RGB);
-  const site = [...Array(SITE_COLORS).keys()].map((i) => rgb(`--heap-site-${i}`));
-  const used = rgb('--heap-used');
-  colors = {
-    used: css(used), usedAlt: alt(used), usedFill: css(used, 0.12), free: css(rgb('--heap-free')), meta: css(rgb('--heap-meta')),
-    fresh: css(rgb('--heap-fresh')), freed: css(rgb('--heap-freed')), corrupt: css(rgb('--heap-corrupt')),
-    bg: css(bg), text: css(rgb('--text')), faint: css(rgb('--faint')), line: css(rgb('--border')),
-    sites: site.map((c) => css(c)), sitesAlt: site.map(alt),
-  };
-}
-function themeChanged() {
+const readTheme = () => { colors = readColors(pane); };
+onTheme(() => {
   colors = null;
   if (snap) paint();
-}
-new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeChanged);
+});
 
 /** A block's site id, or -1 without an allocation log. */
 const siteOf = (h: Heap, i: number) => shown()?.traced ? h.sites?.[i] ?? -1 : -1;
 const siteColor = (site: number) => site >= 0 ? colors!.sites[site % SITE_COLORS] : colors!.used;
 
 function draw(v: View) {
-  if (!colors) readColors();
-  const C = colors!, h = v.heap, size = h.end - h.start, now = Date.now();
+  if (!colors) readTheme();
+  const C = colors!, h = v.heap, size = h.end - h.start, now = Date.now(), b = h.blocks;
   const map = v.el.querySelector<HTMLElement>('.heap-map')!, gutter = v.el.querySelector<HTMLElement>('.heap-gutter')!;
-  const width = Math.max(60, map.clientWidth - (v.folded ? 0 : GUTTER));
-  const bpr = v.folded ? size : rowBytes(size).bpr, rows = Math.ceil(size / bpr);
-  const height = v.folded ? STRIP : rows * ROW - GAP;
-  v.bpr = bpr;
-  v.width = width;
-
-  const dpr = devicePixelRatio || 1, pw = Math.round(width * dpr), ph = Math.round(height * dpr);
-  const canvas = v.canvas;
-  if (canvas.width !== pw || canvas.height !== ph) {
-    canvas.width = pw;
-    canvas.height = ph;
-  }
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  if (!v.folded) {
-    let ticks = '';
-    for (let r = 0; r < rows; r += TICK) {
-      const off = r * bpr;
-      ticks += `<span style="top:${r * ROW}px">+${off >= 1048576 ? `${+(off / 1048576).toFixed(2)}M` : `${Math.round(off / 1024)}K`}</span>`;
-    }
-    gutter.style.height = `${height}px`;
-    if (gutter.innerHTML !== ticks) gutter.innerHTML = ticks;
-  }
-
-  const ctx = canvas.getContext('2d')!;
-  ctx.clearRect(0, 0, pw, ph);
-  const bar = v.folded ? ph : Math.round((ROW - GAP) * dpr), pitch = ROW * dpr, sx = pw / bpr;
-  /** Each row's piece of [off, off+len), at least `min` device px wide. */
-  const pieces = (off: number, len: number, min: number, each: (x: number, y: number, w: number) => void) => {
-    for (let a = off, e = Math.min(off + len, size); a < e;) {
-      const r = Math.floor(a / bpr), s = a - r * bpr, take = Math.min(e - a, bpr - s);
-      each(s * sx, r * pitch, Math.max(take * sx, min));
-      a += take;
-    }
+  v.width = Math.max(60, map.clientWidth - (v.folded ? 0 : GUTTER));
+  v.bpr = v.folded ? size : bytesPerRow(size).bpr;
+  // Live, highlights fade; looking back, what changed since the kept
+  // snapshot before stays lit.
+  const glow = (n: number) => {
+    const key = `${b[n * 4]}:${b[n * 4 + 1]}`;
+    if (v.mark) return v.mark.fresh.has(key) ? 0.8 : 0;
+    const t = v.born.get(key);
+    return t ? 1 - (now - t) / FADE : 0;
   };
-  const fill = (off: number, len: number, style: string, min = 0) => {
-    ctx.fillStyle = style;
-    pieces(off, len, min, (x, y, w) => ctx.fillRect(x, y, w, bar));
-  };
-  fill(0, size, C.free);
-  const b = h.blocks;
-  fill(0, b.length ? b[0] : size, C.meta);
-  if (b.length) fill(h.tail, size - h.tail, C.meta);
-  let prevColor = '', alt = false;
-  for (let i = 0, n = 0; i < b.length; i += 4, n++) {
-    const off = b[i], len = b[i + 1], fl = b[i + 2];
-    if (fl & FREE) { prevColor = ''; continue; }
-    const site = siteOf(h, n), base = siteColor(site);
-    // Neighbours of one colour alternate shade so each allocation stands apart.
-    alt = base === prevColor ? !alt : false;
-    prevColor = base;
-    fill(off, len, fl & CORRUPT ? C.corrupt : alt ? (site >= 0 ? C.sitesAlt[site % SITE_COLORS] : C.usedAlt) : base, 1);
-    if (len * sx >= 4) fill(off, Math.min(len, 1 / sx), C.bg);
-    // Live, highlights fade; looking back, what changed since the kept
-    // snapshot before stays lit.
-    const key = `${off}:${len}`, t = v.mark ? 0 : v.born.get(key);
-    const w = v.mark ? (v.mark.fresh.has(key) ? 0.8 : 0) : t ? 1 - (now - t) / FADE : 0;
-    if (w > 0 && w <= 1) { ctx.globalAlpha = 0.85 * w; fill(off, len, C.fresh, 1); ctx.globalAlpha = 1; }
-  }
-  for (const f of v.mark ? v.mark.freed.map((m) => ({ ...m, t: now - FADE * 0.2 })) : v.freed) {
-    const w = 1 - (now - f.t) / FADE;
-    if (w > 0 && w <= 1) { ctx.globalAlpha = 0.85 * w; fill(f.off, f.len, C.freed, 1); ctx.globalAlpha = 1; }
-  }
+  const freed = v.mark ? v.mark.freed.map((m) => ({ ...m, w: 0.8 })) : v.freed.map((f) => ({ off: f.off, len: f.len, w: 1 - (now - f.t) / FADE }));
   // The selected block: outlined, in the text colour so it shows on any fill.
-  if (selected?.start === h.start && !(past ? selected.absent : selected.freedAt)) {
-    const lw = Math.max(1, Math.round(1.5 * dpr));
-    ctx.strokeStyle = C.text;
-    ctx.lineWidth = lw;
-    pieces(selected.off, selected.len, 3 * dpr, (x, y, w) => ctx.strokeRect(x + lw / 2, y + lw / 2, w - lw, bar - lw));
-  }
+  const outline = selected?.start === h.start && !(past ? selected.absent : selected.freedAt) ? selected : null;
+  paintMap(v.canvas, gutter, h, v, C, {
+    color: (n) => siteColor(siteOf(h, n)),
+    alt: (n) => { const site = siteOf(h, n); return site >= 0 ? C.sitesAlt[site % SITE_COLORS] : C.usedAlt; },
+    glow, freed, outline,
+  });
 }
 
 /** The sites holding the most memory, with their colours. */
@@ -729,7 +572,7 @@ function trendPoints(): TrendPoint[] {
 
 let trendGeometry: { points: TrendPoint[]; x: (t: number) => number } | null = null;
 function drawTrend() {
-  if (!colors) readColors();
+  if (!colors) readTheme();
   const C = colors!, canvas = $<HTMLCanvasElement>('heap-trend-canvas'), points = trendPoints();
   const last = points[points.length - 1];
   const span = points.length > 1 ? last.t - points[0].t : 0;
@@ -825,7 +668,7 @@ $('heap-trend-canvas').addEventListener('mousemove', (e) => {
   let best = g.points[0];
   for (const p of g.points) if (Math.abs(g.x(p.t) - px) < Math.abs(g.x(best.t) - px)) best = p;
   const last = g.points[g.points.length - 1];
-  showTip(e, [
+  showTip(tipBox, e, [
     ['time', last.t - best.t < 0.5 ? 'now' : `${ago((last.t - best.t) * 1000)} ago`],
     ['free', kib(best.free)], ['largest block', kib(best.largest)], ['lowest since boot', kib(best.low)],
     ['', best === last ? (past ? 'Click to go back to live' : 'Click or drag to look back') : 'Click or drag to see the heaps then'],
@@ -932,57 +775,11 @@ function animate() {
 
 /* What is under the pointer: heap overhead, or the biggest block there. */
 function hit(v: View, e: MouseEvent) {
-  const h = v.heap, rect = v.canvas.getBoundingClientRect(), size = h.end - h.start;
-  const x = e.clientX - rect.left, y = e.clientY - rect.top;
-  const row = v.folded ? 0 : Math.floor(y / ROW);
-  // The bytes one css pixel covers, so a block thinner than a pixel can be found.
-  const span = Math.max(1, v.bpr / v.width);
-  const lo = Math.floor(row * v.bpr + x / v.width * v.bpr), hi = lo + span;
-  if (x < 0 || x >= v.width || lo < 0 || lo >= size) return null;
-  const b = h.blocks, n = b.length / 4;
-  let a = 0, z = n; // first block ending after lo
-  while (a < z) { const m = (a + z) >> 1; if (b[m * 4] + b[m * 4 + 1] <= lo) a = m + 1; else z = m; }
-  if (!n || hi <= b[0] || a >= n || lo >= h.tail) {
-    return { kind: 'meta' as const, meta: lo < (b[0] ?? size) ? 'heap and TLSF control' : 'pool end', addr: h.start + lo };
-  }
-  let i = a, nUsed = 0, nFree = 0, best = a;
-  for (; i < n && b[i * 4] < hi; i++) {
-    if (b[i * 4 + 2] & FREE) { nFree++; continue; }
-    nUsed++;
-    if ((b[best * 4 + 2] & FREE) || b[i * 4 + 1] > b[best * 4 + 1]) best = i;
-  }
-  const off = b[best * 4], len = b[best * 4 + 1], fl = b[best * 4 + 2], req = b[best * 4 + 3];
-  return { kind: 'block' as const, off, len, fl, req, used: !(fl & FREE), nUsed, nFree, born: v.born.get(`${off}:${len}`),
-    stack: h.stk?.[best] ?? -1, site: siteOf(h, best) };
+  const x = hitMap(v.canvas, v.heap, v, e);
+  if (!x || x.kind === 'meta') return x;
+  return { ...x, born: v.born.get(`${x.off}:${x.len}`), stack: v.heap.stk?.[x.n] ?? -1, site: siteOf(v.heap, x.n) };
 }
-/** A block's addresses: its TLSF header (prev_phys_block) and the pointer malloc returned. */
-const blockAddr = (start: number, off: number) => start + off - 4;
-const pointerOf = (start: number, off: number, fl: number) => blockAddr(start, off) + (fl & POISONED ? 16 : 8);
-
-/** A recorded stack, fetched once; `ready` runs when a pending one arrives. */
-function stackOf(id: number, ready: () => void): HeapStack | null | 'pending' {
-  if (id < 0 || !source) return null;
-  let stack = stacks.get(id);
-  if (stack === undefined) {
-    const pending = source.stack(id).catch(() => null).then((found) => { stacks.set(id, found); return found; });
-    stacks.set(id, stack = pending);
-    void pending.then(ready);
-  }
-  return stack instanceof Promise ? 'pending' : stack;
-}
-
-/** Tooltip rows: [label, value], or [label, value, true] for a long value on its own line. */
-type TipRow = [string, string] | [string, string, true];
-function showTip(e: MouseEvent, rows: TipRow[]) {
-  const t = $('heap-tip');
-  t.innerHTML = rows.map(([k, val, wide]) => k
-    ? `<div${wide ? ' class="wide"' : ''}><span>${esc(k)}</span><b class="num">${esc(val)}</b></div>`
-    : `<div class="hint">${esc(val)}</div>`).join('');
-  t.hidden = false;
-  const tw = t.offsetWidth, th = t.offsetHeight;
-  t.style.left = `${Math.max(8, Math.min(e.clientX + 14, innerWidth - tw - 8))}px`;
-  t.style.top = `${e.clientY + 14 + th > innerHeight ? Math.max(8, e.clientY - th - 10) : e.clientY + 14}px`;
-}
+const stackOf = (id: number, ready: () => void) => stacks.get(id, ready);
 
 function tip(v: View, e: MouseEvent) {
   const x = hit(v, e);
@@ -1011,19 +808,10 @@ function tip(v: View, e: MouseEvent) {
     }
     if (x.used) rows.push(['', shown()?.traced ? 'Click for details and the call stack' : 'Click for details']);
   }
-  showTip(e, rows);
+  showTip(tipBox, e, rows);
 }
 
 /* Block details, under the heap's map ------------------------------------ */
-
-const locHtml = (loc: string) => {
-  if (!loc) return '';
-  const { file, dir } = splitLoc(loc);
-  return `<span class="hd-loc" title="${esc(loc)}"><b>${esc(file)}</b>${dir ? ` <span>${esc(dir)}</span>` : ''}</span>`;
-};
-const frameHtml = (f: HeapFrame, cls: string) =>
-  `<li class="${cls}"><code>${esc(f.fn)}</code>${locHtml(f.loc)}` +
-  f.inl.map((x) => `<div class="hd-inl"><span>inlined</span> <code>${esc(x.fn)}</code>${locHtml(x.loc)}</div>`).join('') + '</li>';
 
 function details(v: View) {
   const s = selected, box = v.detail;
@@ -1050,13 +838,7 @@ function details(v: View) {
     } else if (!stack) {
       body = `<p class="hd-note">No call stack was recorded for this block.</p>`;
     } else {
-      const fr = stack.frames, by = fr[stack.site];
-      body = (by ? `<div class="hd-by"><span class="hd-label">allocated by</span><code>${esc(by.fn)}</code>${locHtml(by.loc)}</div>` : '') +
-        `<div class="hd-stack"><div class="hd-stack-head"><span class="hd-label">call stack</span>` +
-        `<button class="hd-copy" type="button">Copy</button></div>` +
-        (stack.caller ? `<details${allocOpen ? ' open' : ''}><summary>${stack.caller} allocator frame${stack.caller > 1 ? 's' : ''}</summary>` +
-          `<ol>${fr.slice(0, stack.caller).map((f) => frameHtml(f, 'alloc')).join('')}</ol></details>` : '') +
-        `<ol start="${stack.caller + 1}">${fr.slice(stack.caller).map((f, k) => frameHtml(f, stack.caller + k === stack.site ? 'site' : f.lib ? 'lib' : '')).join('')}</ol></div>`;
+      body = stackHtml(stack, allocOpen);
     }
   } else if (used) {
     body = `<p class="hd-note">${esc(!shown()?.elf ? "Load the firmware's ELF to see where blocks were allocated."
@@ -1079,19 +861,9 @@ function details(v: View) {
   box.hidden = false;
 }
 
-async function copyStack(button: HTMLButtonElement) {
-  const s = selected;
-  const stack = s ? stacks.get(s.stack) : null;
-  if (!stack || stack instanceof Promise) return;
-  const text = stack.frames.map((f, i) => `#${i} ${f.fn}${f.loc ? `  ${f.loc}` : ''}` +
-    f.inl.map((x) => `\n     inlined ${x.fn}${x.loc ? `  ${x.loc}` : ''}`).join('')).join('\n');
-  try {
-    await navigator.clipboard.writeText(text);
-    button.textContent = 'Copied';
-  } catch {
-    button.textContent = 'Copy failed';
-  }
-  setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+function copySelected(button: HTMLButtonElement) {
+  const stack = selected ? stacks.get(selected.stack) : null;
+  if (stack && stack !== 'pending') void copyStack(button, stack);
 }
 
 new ResizeObserver(() => { if (visible && snap) { for (const v of views.values()) draw(v); drawTrend(); } }).observe(pane);

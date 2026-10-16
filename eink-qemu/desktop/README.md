@@ -109,13 +109,24 @@ firmware's `heap_caps_get_largest_free_block()`.
 When the ELF is chosen before Start and matches the firmware, QEMU also loads
 the heaptrace plugin (`contrib/plugins/heaptrace.c`), which logs every
 allocation and free with its call stack. The tab then colours each block by
-the function that allocated it, naming it on hover, and the heap window (the tab's expand button) is
-heapview.py's full page: blocks colored by allocation site, live bytes and
-churn by site, the newest events, a stack for any block, and a timeline that
-replays the heaps to any moment since boot. Stacks are symbolized in Rust from
-the ELF's DWARF, so no toolchain is needed. Without the plugin (an ELF chosen
-after Start, a firmware without heap poisoning, or a QEMU built without
-`--enable-plugins`) the tab says why, and the window shows the heaps alone.
+the function that allocated it, naming it on hover. Stacks are symbolized in
+Rust from the ELF's DWARF, so no toolchain is needed.
+
+The heap window (the tab's expand button) is a workbench over the same heaps.
+On the left, the allocation sites, sortable by live bytes, blocks,
+allocations a second and change over the last minute, with a filter; hovering
+one lights its blocks on the maps, and selecting one shows its trend, the call
+stack holding most of its bytes and its newest blocks in the inspector on the
+right. Clicking a block shows its details there. Along the bottom, a timeline
+of internal free memory and of allocations and frees replays the heaps from
+the log to any event since boot: drag on it, step with the arrow keys, or play
+at 1× or 10×. Mark A (or Shift-click the timeline) compares that moment with
+the cursor, B, which follows live until moved: the sites by what they gained,
+the maps by what is new since A and what was freed. Without the plugin (an
+ELF chosen after Start, a firmware without heap poisoning, or a QEMU built
+without `--enable-plugins`) the tab says why, and the window shows the heaps
+alone; its timeline then steps through the snapshots Rust keeps, and
+comparing two of them still shows what changed.
 
 Wi-Fi uses QEMU's user network, so the firmware reaches the internet; turning
 it off keeps the radio present without a host connection. Turbo uses the

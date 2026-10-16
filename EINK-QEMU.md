@@ -129,8 +129,8 @@ fragmentation and a free-memory trend. Each refresh stops the VM, copies the hea
 regions with `pmemsave` and resumes; under `-icount` the guest does not see the
 pause. It takes the monitor socket (`--monitor` for another one, e.g. drive.py's);
 `--once` prints a text summary. The ELF must match the running app.
-The desktop app (`eink-qemu/desktop`) shows the same page in its heap window,
-without a monitor socket, and loads the plugin below by itself.
+The desktop app (`eink-qemu/desktop`) reads the same heaps without a monitor
+socket, in its Heap tab and heap window, and loads the plugin below by itself.
 
 To see which code allocated each block, also load the heaptrace plugin:
 `run.sh flash.bin sd.img -plugin build/contrib/plugins/libheaptrace.so,elf=firmware.elf`

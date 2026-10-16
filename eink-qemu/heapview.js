@@ -1,5 +1,5 @@
-/* Live map of an ESP-IDF firmware's heaps: the page heapview.py serves, and
-   the desktop app's heap window. mount() writes the markup into `root` and
+/* Live map of an ESP-IDF firmware's heaps: the page heapview.py serves.
+   mount() writes the markup into `root` and
    polls `api`, which returns what heapview.py's endpoints do:
      snapshot()                         /snapshot
      history()                          /history
