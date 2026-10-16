@@ -25,10 +25,16 @@ function browserPage(): Plugin {
   const dist = process.env.EINK_WEB_DIST || fileURLToPath(new URL('../../build-wasm-32limit/web-dist', import.meta.url));
   return {
     name: 'eink-qemu-browser-page',
-    transformIndexHtml(html) {
-      return html.replace('<script src="/theme.js"></script>',
-        '<script src="coi-serviceworker.js"></script>\n  <script src="/theme.js"></script>\n' +
-        '  <script src="fat.js"></script>\n  <script src="sd-ops.js"></script>\n  <script src="sd-store.js"></script>');
+    // Before Vite's own pass, which rewrites the theme.js URL for the base.
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html) {
+        const injected = html.replace(/<script src="\.?\/theme\.js"><\/script>/, (tag) =>
+          `<script src="coi-serviceworker.js"></script>\n  ${tag}\n` +
+          '  <script src="fat.js"></script>\n  <script src="sd-ops.js"></script>\n  <script src="sd-store.js"></script>');
+        if (injected === html) throw new Error('index.html: theme.js script tag not found; the browser page needs its classic scripts');
+        return injected;
+      },
     },
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
