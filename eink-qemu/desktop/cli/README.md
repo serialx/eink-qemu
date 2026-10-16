@@ -476,7 +476,7 @@ than calling it dead.
 | `--ghosting`, `--animate` | E-ink ghosting and refresh animation (both off) |
 | `--input-quiet MS` | The wait for a quiet log, idle panel and idle CPU before input (0 turns it off) |
 | `--echo-log` | Print the firmware log on stderr as it comes |
-| `--gdb PORT` | A GDB server on 127.0.0.1:PORT |
+| `--gdb PORT` | A GDB server on 127.0.0.1:PORT (`compare` takes it only with `--sequential`) |
 | `--qemu-arg ARG` | Any QEMU argument (repeatable) |
 
 Stdout carries only records; progress lines go to stderr when it is a

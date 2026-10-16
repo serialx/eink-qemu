@@ -248,7 +248,7 @@ pub struct RunArgs {
     /// Extra QEMU argument (repeatable), e.g. --qemu-arg=-d --qemu-arg=guest_errors.
     #[arg(long, value_name = "ARG", allow_hyphen_values = true)]
     pub qemu_arg: Vec<String>,
-    /// Open a GDB server on 127.0.0.1:PORT.
+    /// Open a GDB server on 127.0.0.1:PORT (compare: only with --sequential).
     #[arg(long, value_name = "PORT")]
     pub gdb: Option<u16>,
     /// Do not keep every settled screen in frames/.
@@ -288,6 +288,45 @@ pub struct RunArgs {
     pub claim: Option<String>,
 }
 
+/// `eink-qemu flash`: write the flash image a run would boot.
+fn flash(firmware: &std::path::Path, output: &std::path::Path, machine: Option<&str>, partitions: Option<&std::path::Path>) -> u8 {
+    let flash = match eink_core::flash::make_flash_with(firmware, machine, partitions) {
+        Ok(flash) => flash,
+        Err(e) => {
+            eprintln!("eink-qemu flash: {e}");
+            return EXIT_SETUP;
+        }
+    };
+    // OUTPUT may be an SD card open in eink-qemu: write under its lock, as
+    // `sd get` does; without a writable lock directory, write anyway and say so.
+    let locks = launch::shared_locks();
+    let _lock = match eink_core::cards::reserve(&locks, output) {
+        Ok(lock) => Some(lock),
+        Err(e) if e.code == "EBUSY" => {
+            eprintln!("eink-qemu flash: {}", e.message);
+            return EXIT_SETUP;
+        }
+        Err(e) => {
+            eprintln!("eink-qemu flash: {}", launch::lock_error("writing without the lock", &e.message, &locks));
+            None
+        }
+    };
+    match std::fs::write(output, &flash.image) {
+        Ok(()) => {
+            println!(
+                "wrote {} ({} bytes, {} for {}, from {}; partitions: {}{})",
+                output.display(), flash.image.len(), flash.kind, flash.machine, firmware.display(), flash.partitions,
+                flash.nvs_seed.map(|s| format!("; NVS: {s}")).unwrap_or_default()
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("eink-qemu flash: cannot write {}: {e}", output.display());
+            EXIT_SETUP
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
@@ -315,26 +354,7 @@ fn main() -> ExitCode {
                 print!("{}", eink_core::script::steps::STEP_HELP);
                 0
             }
-            Command::Flash { firmware, output, machine, partitions } => match eink_core::flash::make_flash_with(&firmware, machine.as_deref(), partitions.as_deref()) {
-                Ok(flash) => match std::fs::write(&output, &flash.image) {
-                    Ok(()) => {
-                        println!(
-                            "wrote {} ({} bytes, {} for {}, from {}; partitions: {}{})",
-                            output.display(), flash.image.len(), flash.kind, flash.machine, firmware.display(), flash.partitions,
-                            flash.nvs_seed.map(|s| format!("; NVS: {s}")).unwrap_or_default()
-                        );
-                        0
-                    }
-                    Err(e) => {
-                        eprintln!("eink-qemu flash: cannot write {}: {e}", output.display());
-                        EXIT_SETUP
-                    }
-                },
-                Err(e) => {
-                    eprintln!("eink-qemu flash: {e}");
-                    EXIT_SETUP
-                }
-            },
+            Command::Flash { firmware, output, machine, partitions } => flash(&firmware, &output, machine.as_deref(), partitions.as_deref()),
             Command::Sd { command } => sdcmd::run(command),
         }
     });

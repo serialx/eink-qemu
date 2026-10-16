@@ -23,6 +23,9 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
     if args.sd_in_place {
         return usage(&printer, "compare does not take --sd-in-place: both runs start from copies of --sd");
     }
+    if args.gdb.is_some() && !sequential {
+        return usage(&printer, "both runs cannot share one --gdb port: add --sequential to run them one after the other");
+    }
     let parts: Vec<&str> = names.split(',').map(str::trim).collect();
     let [a, b] = parts[..] else { return usage(&printer, "--names takes two names: A,B") };
     // Each name is one folder inside the comparison directory.
