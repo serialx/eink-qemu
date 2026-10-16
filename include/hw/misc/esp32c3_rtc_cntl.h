@@ -17,6 +17,14 @@
 /* Named GPIO in: levels of GPIO0-5, the deep-sleep wake pads. */
 #define ESP32C3_RTC_PAD               "pad"
 #define ESP32C3_RTC_PAD_COUNT         6
+/*
+ * Named GPIO out, pulsed once a reset has finished: line 0 after a cold
+ * power-on (QEMU start, an external reset), line 1 after a deep-sleep wake
+ * by a pad. Boards hold Power from these.
+ */
+#define ESP32C3_RTC_BOOT              "boot"
+#define ESP32C3_RTC_BOOT_POWER_ON     0
+#define ESP32C3_RTC_BOOT_PAD_WAKE     1
 
 /**
  * Size of the I/O space for the RTC CTNL.
@@ -77,6 +85,9 @@ typedef struct ESP32C3RtcCntlState {
     bool gpio_wake;
     uint8_t pad_level;
     QEMUTimer sleep_timer;
+    bool guest_reset;           /* the pending reset was requested by the guest */
+    int boot_signal;            /* line of "boot" to pulse after this reset, or -1 */
+    qemu_irq boot[2];
 } ESP32C3RtcCntlState;
 
 

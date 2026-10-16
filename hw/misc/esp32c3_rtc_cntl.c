@@ -8,7 +8,11 @@
  * way but with a reset whose reason is DEEPSLEEP_RESET and whose cause is in
  * SLP_WAKEUP_CAUSE, the pads that woke it in GPIO_WAKEUP STATUS. The deep
  * sleep pads are GPIO0-5 on the "pad" lines, armed per pin in GPIO_WAKEUP
- * (level triggers 4 low / 5 high).
+ * (level triggers 4 low / 5 high). Deep sleep that nothing can end is the
+ * chip powered off: the VM stays suspended until a reset. A reset the guest
+ * did not ask for (QEMU start, QMP system_reset) is a power cycle: POWERON,
+ * with the last wake forgotten. Once a reset finishes, the "boot" lines tell
+ * the board whether it was a cold power-on or a pad wake.
  *
  * Copyright (c) 2023 Espressif Systems (Shanghai) Co. Ltd.
  *
@@ -82,7 +86,9 @@ static void esp32c3_rtc_wake(ESP32C3RtcCntlState *s, uint32_t cause)
     if (s->dig_pwc & DG_WRAP_PD_EN) {
         /* deep sleep: the digital core restarts */
         s->gpio_wakeup = (s->gpio_wakeup & ~0x3f) | (cause & WAKE_GPIO ? esp32c3_rtc_pads_awake(s) : 0);
-        qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
+        if (runstate_check(RUN_STATE_SUSPENDED)) {
+            qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
+        }
         esp32c3_reset_request(s, ESP32C3_DEEPSLEEP_RESET, 1);
         return;
     }
@@ -132,7 +138,12 @@ static void esp32c3_rtc_start_sleep(ESP32C3RtcCntlState *s)
         return;
     }
     if (!(ena & WAKE_GPIO)) {
-        /* No wake source we model: don't hang the guest. */
+        if (deep) {
+            /* Nothing can wake it: the chip is off until a reset (power cycle). */
+            qemu_system_suspend_request();
+            return;
+        }
+        /* Light sleep with no wake source we model: don't hang the guest. */
         esp32c3_rtc_wake(s, 0);
         return;
     }
@@ -179,6 +190,7 @@ static void esp32c3_reset_request(void *opaque, int n, int level)
 
     if (level) {
         s->reason = n;
+        s->guest_reset = true;
         qemu_irq_raise(s->cpu_reset);
     }
 }
@@ -315,17 +327,25 @@ static const MemoryRegionOps esp_rtc_cntl_ops = {
 
 static void esp32c3_rtc_cntl_reset_hold(Object *obj, ResetType type)
 {
-    static bool first_boot = true;
     ESP32C3RtcCntlState *s = ESP32C3_RTC_CNTL(obj);
     s->options0 = 0;
 
-    if (first_boot) {
+    if (!s->guest_reset) {
+        /* QEMU start or an external reset: a power cycle. */
         s->reason = ESP32C3_POWERON_RESET;
         s->wakeup_cause = 0;
         s->gpio_wakeup = 0;
-        s->pad_level = 0x3f;
-        first_boot = false;
+        s->boot_signal = ESP32C3_RTC_BOOT_POWER_ON;
+        if (runstate_check(RUN_STATE_SUSPENDED)) {
+            /* a device that was off comes back on */
+            qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
+        }
+    } else if (s->reason == ESP32C3_DEEPSLEEP_RESET && (s->wakeup_cause & WAKE_GPIO)) {
+        s->boot_signal = ESP32C3_RTC_BOOT_PAD_WAKE;
+    } else {
+        s->boot_signal = -1;
     }
+    s->guest_reset = false;
     /* the wake cause and pad status survive a deep-sleep reset */
     s->sleeping = false;
     s->gpio_wake = false;
@@ -341,6 +361,16 @@ static void esp32c3_rtc_cntl_reset_hold(Object *obj, ResetType type)
     qemu_irq_lower(s->cpu_reset);
 }
 
+
+/* After every device's hold phase: tell the board how this boot started. */
+static void esp32c3_rtc_cntl_reset_exit(Object *obj, ResetType type)
+{
+    ESP32C3RtcCntlState *s = ESP32C3_RTC_CNTL(obj);
+
+    if (s->boot_signal >= 0) {
+        qemu_irq_pulse(s->boot[s->boot_signal]);
+    }
+}
 
 static void esp32c3_rtc_cntl_realize(DeviceState *dev, Error **errp)
 {
@@ -366,8 +396,11 @@ static void esp32c3_rtc_cntl_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
     qdev_init_gpio_in_named(DEVICE(s), esp32c3_rtc_set_gpio_wake, ESP32C3_RTC_GPIO_WAKE, 1);
     qdev_init_gpio_in_named(DEVICE(s), esp32c3_rtc_set_pad, ESP32C3_RTC_PAD, ESP32C3_RTC_PAD_COUNT);
+    qdev_init_gpio_out_named(DEVICE(s), s->boot, ESP32C3_RTC_BOOT, 2);
     timer_init_ns(&s->sleep_timer, QEMU_CLOCK_VIRTUAL, esp32c3_rtc_sleep_timer_cb, s);
     qemu_system_wakeup_enable(QEMU_WAKEUP_REASON_OTHER, true);
+    s->pad_level = 0x3f;    /* pulled up until the board drives them */
+    s->boot_signal = -1;
 }
 
 
@@ -377,6 +410,7 @@ static void esp32c3_rtc_cntl_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     rc->phases.hold = esp32c3_rtc_cntl_reset_hold;
+    rc->phases.exit = esp32c3_rtc_cntl_reset_exit;
     dc->realize = esp32c3_rtc_cntl_realize;
 }
 

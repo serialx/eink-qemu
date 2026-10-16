@@ -4,8 +4,10 @@
  * Models OUT/ENABLE (and W1TS/W1TC), IN, per-pin interrupt type/enable and
  * STATUS for GPIO0..48. Pins that are neither driven from outside ("pin-in"
  * lines) nor enabled as outputs read as 1, as if pulled up. Outputs are
- * reported on "pin-out" lines (1 while not enabled). The GPIO matrix and IO_MUX are not modeled:
- * the board wiring connects pins directly.
+ * reported on "pin-out" lines (1 while not enabled), and the levels of the
+ * RTC pads GPIO0..21 on "rtc-pad" lines for the RTC controller's deep-sleep
+ * wake. The GPIO matrix and IO_MUX are not modeled: the board wiring
+ * connects pins directly.
  *
  * Copyright (c) 2023 Espressif Systems (Shanghai) Co. Ltd.
  *
@@ -105,6 +107,15 @@ static void gpio_update(ESP32S3GPIOState *s)
         }
     }
     qemu_set_irq(s->irq, (s->status & gpio_int_pins(s)) != 0);
+
+    uint32_t pads = in & ((1u << ESP32S3_GPIO_RTC_PAD_COUNT) - 1);
+    uint32_t pads_changed = pads ^ s->last_pad;
+    s->last_pad = pads;
+    for (int i = 0; pads_changed; i++, pads_changed >>= 1) {
+        if (pads_changed & 1) {
+            qemu_set_irq(s->rtc_pad[i], (pads >> i) & 1);
+        }
+    }
 
     /* Light-sleep GPIO wakeup only supports level triggers (4 low, 5 high). */
     bool wake = false;
@@ -211,6 +222,7 @@ static void esp32s3_gpio_reset_exit(Object *obj, ResetType type)
      * cached released outputs. Publish every pull-up after all devices reset.
      */
     s->last_out = 0;
+    s->last_pad = ~(uint32_t)gpio_in(s);
     gpio_update(s);
 }
 
@@ -225,6 +237,8 @@ static void esp32s3_gpio_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), gpio_set_in, ESP32S3_GPIO_IN, ESP32S3_GPIO_COUNT);
     qdev_init_gpio_out_named(DEVICE(obj), s->out, ESP32S3_GPIO_OUT, ESP32S3_GPIO_COUNT);
     qdev_init_gpio_out_named(DEVICE(obj), &s->wake, ESP32S3_GPIO_WAKE, 1);
+    qdev_init_gpio_out_named(DEVICE(obj), s->rtc_pad, ESP32S3_GPIO_RTC_PAD,
+                             ESP32S3_GPIO_RTC_PAD_COUNT);
 }
 
 static const Property esp32s3_gpio_properties[] = {

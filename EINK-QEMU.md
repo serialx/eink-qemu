@@ -6,6 +6,10 @@ unmodified X4 Pro firmware**: the stock firmware, CrossInk, CrossDink, or a bare
 ESP-IDF/Arduino app. It also simulates the **Xteink X3** (ESP32-C3; see the X3
 section) for the CrossPoint X3/X4 binary. The goal is firmware development without the physical device:
 the screen, SD card, keys, touch, clock and battery behave like the board.
+The tools assume ESP-IDF and nothing else about the firmware; what they know
+about particular firmware (CrossPoint's boot milestones, render times and X3
+NVS entry, the stock firmware's boot gate) is data in
+[eink-qemu/profiles](eink-qemu/profiles/README.md), read by every front end.
 
 Rule zero: **never change a firmware to make it boot in QEMU.** Model the hardware
 instead, from the datasheets and the board, not from one firmware's driver: another
@@ -57,9 +61,10 @@ macOS: `brew install glib pixman ninja pkg-config python3 libgcrypt libpng libsl
 
 ### Firmware image
 
-The easiest route is an official CrossPoint release app `.bin`. Use the
-`crosspoint-<version>-x3-x4.bin` asset for X3 (ESP32-C3), or
-`crosspoint-<version>-x4pro.bin` for X4 Pro (ESP32-S3):
+Any app `.bin`, merged image, build directory or flash dump works. An official
+CrossPoint release app is an easy start: the `crosspoint-<version>-x3-x4.bin`
+asset for X3 (ESP32-C3), or `crosspoint-<version>-x4pro.bin` for X4 Pro
+(ESP32-S3):
 
 ```sh
 python3 eink-qemu/mkflash.py crosspoint-1.6.5-x3-x4.bin flash.bin
@@ -67,15 +72,22 @@ python3 eink-qemu/mkflash.py crosspoint-1.6.5-x4pro.bin flash-x4pro.bin
 ```
 
 This needs only Python 3, detects the chip, adds the bundled bootloader and
-CrossPoint partition table, and preserves the app bytes. Bootloader provenance,
-licenses and regeneration commands are in [eink-qemu/boot/](eink-qemu/boot/README.md).
-C3 images include the cached X3 device type in NVS; S3 NVS stays erased.
-`--machine x3|x4pro` checks that the image matches the requested machine.
+Arduino-ESP32's 16 MB partition table (`boot/partitions.csv` is its
+`default_16MB.csv`, which CrossPoint uses), and preserves the app bytes. Firmware
+with another layout passes its own table: `--partitions partitions.csv` (or the
+binary table), read like `gen_esp32part.py` reads it. The app goes where
+`idf.py flash` puts it, the factory partition or else ota_0. Bootloader
+provenance, licenses and regeneration commands are in
+[eink-qemu/boot/](eink-qemu/boot/README.md). CrossPoint X3 images (those that
+carry its `cphw`/`dev_det` strings) get its cached device type in NVS; every
+other image keeps NVS erased. `--machine x3|x4pro` checks that the image matches
+the requested machine.
 
 Other inputs:
 - A PlatformIO or ESP-IDF build: `python3 eink-qemu/mkflash.py <build dir> flash.bin`
   merges its `bootloader.bin`, `partition*.bin` and app (`firmware.bin`, or the
-  only other `.bin`) at 0x0/0x8000/0x10000. Nested IDF boot/table directories work.
+  only other `.bin`) at 0x0, 0x8000 and the app's partition. Nested IDF
+  boot/table directories work.
 - A complete 16 MiB flash image passes through unchanged:
   `python3 eink-qemu/mkflash.py dump.bin flash.bin`.
 - A real-device dump: `esptool.py --chip esp32s3 read_flash 0 0x1000000 flash.bin`
@@ -227,12 +239,12 @@ the boot assets. `pnpm dev:browser` serves the page from source against a
 packaged `web-dist` for development; see
 [eink-qemu/desktop/README.md](eink-qemu/desktop/README.md#the-browser-page).
 
-Open `http://127.0.0.1:8000`, choose an official CrossPoint release app `.bin`
-or a 16 MiB flash dump and optionally an SD image. Use
+Open `http://127.0.0.1:8000`, choose a release app `.bin`, a merged image or a
+16 MiB flash dump and optionally an SD image; for example
 `crosspoint-<ver>-x3-x4.bin` for X3 or `crosspoint-<ver>-x4pro.bin` for X4 Pro
 from the [CrossPoint releases](https://github.com/crosspoint-reader/crosspoint-reader/releases).
-The browser adds the bundled bootloader, partition table and C3 NVS seed;
-app bytes stay unchanged. No esptool or PlatformIO is needed.
+The browser adds the bundled bootloader and partition table, and CrossPoint's
+NVS entry for a CrossPoint X3 app; app bytes stay unchanged. No esptool or PlatformIO is needed.
 `?flash=flash.bin&sd=sd.img` accepts either input kind from a URL; for example,
 `?flash=crosspoint-1.6.5-x3-x4.bin&sd=sd.img` with copies in the served directory.
 App header chip IDs 5 and 9 select X3 and X4 Pro; unsupported IDs are rejected.
@@ -424,7 +436,10 @@ The same screens work with `testdata/sdcard` copied onto the card; that fixture
 contains battery history but no books. Power draws the sleep screen, but a
 second Power press did not resume in this October 10 check. The October 13
 [calibration](eink-qemu/x4cal/README.md) adds timer-based deep-sleep wake and
-retention; ext0/ext1 wake remains open.
+retention. Since October 16 the RTC controller models ext0/ext1 wake: holding
+Power puts the 1.6.5 X4 Pro build into deep sleep (the VM suspends, the guest
+clock stops) and a Power press wakes it through EXT1 (`rst:0x5 (DSLEEP)`) back
+to Home.
 
 The same composed image reaches Home and the following `[MEM]` checkpoint
 under Node in default accurate mode and `TURBO=1`, and in Chrome with either mode.
@@ -482,14 +497,23 @@ Done in `eink-qemu`:
 - `hw/misc/esp32s3_sens.c`: SAR ADC oneshot always "done" (IDF calibration at boot).
 - `hw/gpio/esp32s3_gpio.c`: real GPIO model: OUT/ENABLE/IN, edge/level
   interrupts, named lines `pin-in` (drive a pin from outside), `pin-out` (pin level
-  to a device), `wake` (light-sleep GPIO wakeup). Undriven inputs read 1 (pull-up).
+  to a device), `wake` (light-sleep GPIO wakeup), `rtc-pad` (levels of GPIO0-21,
+  the RTC pads, for deep-sleep ext0/ext1 wake). Undriven inputs read 1 (pull-up).
 - `hw/ssi/esp32s3_gpspi.c`: GPSPI2 CPU-mode master (W0..W15 buffer, USR, TRANS_DONE).
 - `hw/display/uc8179.c`: the X4 Pro's UC8179 panel on GPSPI2 with CS/DC/RST and
   BUSY_N on GPIO, plus the bit-banged SDA reads the firmware uses for its panel
   probe and OTP. Answers like the real panel (VER, FLG, OTP), so the firmware logs
   `controller=UC8179 ... promoted=1`. Graphic console shown portrait like the
-  device (`portrait=false` for raw). `hw/display/ssd1677.c` is an unused SSD1677
-  model kept for reference.
+  device (`portrait=false` for raw). `hw/display/ssd1677.c` is the SSD1677 of
+  the X4 (C3) and the Picco.
+- Every panel model (`uc8179`, `uc8279`, `ssd1677`, at
+  `/machine/peripheral/panel`) has read-only QOM properties for scripts and
+  firmware-neutral metrics: `busy` (BUSY asserted now), `refreshes` (refreshes
+  completed since QEMU started: DRF 0x12 on the UltraChip panels, master
+  activation 0x20 on the SSD1677; power on/off and resets don't count) and
+  `refresh-ns` (their summed BUSY time in guest ns). The counts survive guest
+  and external resets. A refresh that RST cuts short is not counted (the
+  UC8253/UC8279 model keeps BUSY through RST, so its refresh completes).
 - UC8179 ink and ghosting (helper agent; full notes, data and tests in
   `eink-qemu/ghosting/README.md`): each refresh (0x12) is simulated frame by frame
   instead of showing the planes, and plays on screen one frame per `frame-us`
@@ -539,10 +563,32 @@ Done in `eink-qemu`:
 - `eink-qemu/testdata/`: real device logs, the panel OTP dump, battery history to
   seed the SD card, estimated power numbers. See its README.
 - `hw/input/x4pro_keys.c`: Up/Down/Power keys (arrow keys + P, or
-  `qom-set /machine/x4pro-keys down true`).
-- `hw/misc/esp32s3_rtc_cntl.c`: light sleep waits for an RTC timer or GPIO wake.
-  RTC continues while SYSTIMER is suspended, including periodic-alarm phase.
-  Deep timer wake retains RTC memory and restarts both cores.
+  `qom-set /machine/x4pro-keys down true`; the Picco's are `picco-keys`).
+  `power-boot-ms` (default 1500, 0 = off) holds Power that long after a cold
+  power-on, and after a deep-sleep wake by a pad while Power is pressed or was
+  pressed in the last 2 s of guest time: the hand that turns the device on is
+  still on the button when the firmware checks. A software or watchdog reset,
+  a timer wake or a wake by another key boots with Power released. The stock
+  X4 Pro firmware (7.5.11) wants Power held 600 ms when its app starts (about
+  2.5 s after power-on): `-global x4pro-keys.power-boot-ms=3000` boots it with
+  no press.
+- `hw/misc/esp32s3_rtc_cntl.c`: light sleep waits for an RTC timer, GPIO, ext0
+  or ext1 wake. RTC continues while SYSTIMER is suspended, including
+  periodic-alarm phase. Deep sleep ends in a DEEPSLEEP reset that retains RTC
+  memory and restarts both cores, with the cause in `SLP_WAKEUP_CAUSE`.
+  - ext0 (`RTC_IO_EXT_WAKEUP0` pad, `EXT_WAKEUP0_LV` level) and ext1
+    (`EXT_WAKEUP1` pad mask, any high or all low, the pads that fired in
+    `EXT_WAKEUP1_STATUS`) watch the RTC pads, GPIO0-21, through the GPIO
+    block's `rtc-pad` lines. The RTC IO block at 0x60008400 is a plain
+    register file with `EXT_WAKEUP0` and `RTC_GPIO_IN` (pad levels) live.
+  - Deep sleep that only a pad can end suspends the VM (the guest clock stops);
+    the wake resumes it. Deep sleep with no wake source modelled (or none
+    armed) is the chip off: the VM stays suspended until a reset. Light sleep
+    with no wake source returns at once, as before.
+  - The SoC resets the RTC domain itself: an external reset (QEMU start, QMP
+    `system_reset`, also of a suspended VM) is a power cycle with reset reason
+    POWERON and the last wake forgotten; guest resets keep theirs (SW_SYS,
+    SW_CPU, DEEPSLEEP). The C3's `esp32c3_rtc_cntl.c` follows the same rules.
 - SD card: `eink-qemu/mksd.py` makes an MBR + FAT32 image (SdFat needs the MBR);
   the existing `dwc_sdmmc` model mounts it.
 - `eink-qemu/drive.py`: headless runner with steps (`wait:S`, `press:down[:ms]`,
@@ -568,7 +614,7 @@ Done in `eink-qemu`:
 
 Still missing: LEDC frontlight, charger STAT (GPIO21 reads 1 = charging), real Wi-Fi
 (WPA, signal, other APs),
-deep sleep with ext0/ext1 wake, USB OTG.
+USB OTG.
 
 Gaps another firmware is likely to hit (CrossDink doesn't need them yet):
 - GPSPI: hardware CS,
@@ -601,7 +647,7 @@ the gauge and the SD card readable and writable. Hardware (freeink-sdk
 | Fuel gauge | BQ27220 at 0x55: Voltage, Current, SOC, DesignCapacity, CFGUPDATE flow | I2C0 SDA 20, SCL 0 | `hw/misc/bq27220.c`: `-global bq27220.soc=80,voltage-mv=3900,current-ma=-80` (Current > 0 = USB power: the firmware goes back to sleep at boot) |
 | RTC | DS3231 at 0x68 | I2C0 | `hw/rtc/ds3231.c`, host clock (UTC) |
 | IMU | QMI8658 at 0x6B (WHO_AM_I 0x05) | I2C0 | `hw/misc/qmi8658.c`, lying flat, at rest |
-| Sleep | no light sleep in CrossPoint; deep sleep with GPIO3 wake, RTC timer | RTC_CNTL | `esp32c3_rtc_cntl.c`: RTC timer, light sleep (timer/GPIO), deep sleep = reset with reason DEEPSLEEP and the wake cause |
+| Sleep | light and deep sleep; deep-sleep wake on GPIO0-5 or the RTC timer | RTC_CNTL | `esp32c3_rtc_cntl.c`: RTC timer, light sleep (timer/GPIO), deep sleep = reset with reason DEEPSLEEP and the wake cause; deep sleep with no wake source = off until a reset; an external reset is POWERON |
 | Wi-Fi | MAC + fake open AP bridged to `-nic user` | n/a | the S3 models at the same bases (`esp32s3_wifi.c`, `esp32s3_ana.c`, `esp32_fe.c`) |
 
 Notes:
@@ -692,14 +738,18 @@ Notes:
   Trace per-row totals with `-d trace:uc8279_refresh -D panel.trace`.
   See [panel calibration](eink-qemu/sdcal/panel.md) for the fit, measured waits,
   LUT repeat semantics, and limitations.
-- A cold boot needs the power button held (the firmware re-sleeps otherwise):
-  `x3-keys.power-boot-ms` (default 1500) holds it from reset.
+- A power-button boot needs the button still held when the firmware checks it
+  (CrossPoint re-sleeps otherwise): `x3-keys.power-boot-ms` (default 1500, 0 =
+  off) holds Power after a cold power-on (QEMU start, an external reset) and
+  after a deep-sleep wake by a pad while Power is pressed or was pressed in the
+  last 2 s. Software and watchdog resets and timer wakes boot with it released.
 - CrossPoint up to 1.6.5 deadlocks on a first boot whose NVS has no cached device
   type: the X3 fingerprint probe runs `Wire.begin/end`, then `getWakeupReason`
   reads the gauge through raw `Wire` calls with the bus down, and the failed
   `endTransmission` keeps the Wire lock, so the IMU init blocks forever. A device
   that has booted once has `cphw/dev_det` in NVS and skips the probe, which is why
-  nobody sees it. `mkflash.py` seeds exactly that key (`mknvs.py`) on C3 images.
+  nobody sees it. `mkflash.py` seeds exactly that key (`mknvs.py`, from
+  `profiles/crosspoint.json`) into C3 images that carry CrossPoint's strings.
 - `mksd.py` needs `mkfs.vfat` and `mcopy` (`brew install dosfstools mtools`; the
   build needs `brew install libslirp` too).
 - Serial control (CrossPoint's `scripts/debugging_monitor.py` / `device_control.py`
@@ -733,8 +783,8 @@ X4MACHINE=x4 eink-qemu/wasm/run-node.sh flash-x4.bin sd.img
 ```
 
 Merged images preserve their bootloader, partition table, NVS and app bytes.
-App-only X4 images use the bundled bootloader and CrossPoint partitions without
-forcing X3 detection in NVS.
+App-only X4 images use the bundled bootloader and Arduino-ESP32 partition table
+without forcing X3 detection in NVS.
 
 The X4 SSD1677 model supports framebuffer writes, RAM windows and active-high
 BUSY. Refresh timing is simplified and ghosting is not modeled. The console
@@ -785,7 +835,7 @@ the Turbo settings. `?sleep=off` permits unpaced benchmarks.
 | Frontlight | LEDC PWM 25 kHz 10-bit, cool GPIO8 (ch4), warm GPIO9 (ch5) | LEDC | open |
 | Charger | STAT GPIO21, active-HIGH = charging | GPIO | open |
 | Wi-Fi | MAC + fake open AP bridged to a QEMU NIC: NAT (`-nic user`, hostfwd) or LAN (`X4BR=br0`) | n/a | done |
-| Sleep | deep sleep + ext0/ext1 GPIO wake, RTC_NOINIT/RTC_DATA memory | RTC_CNTL | open (later) |
+| Sleep | deep sleep + ext0/ext1 GPIO wake, RTC_NOINIT/RTC_DATA memory | RTC_CNTL | done: ext0/ext1 and timer wake, RTC memory kept (`esp32s3_rtc_cntl.c`) |
 
 ## Helper agent task: GPSPI2 DMA + hardware CS (current)
 

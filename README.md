@@ -10,7 +10,10 @@ firmware without the device. It runs **unmodified firmware**: the stock
 firmware, CrossPoint, CrossInk, CrossDink, TRMNL, or your own ESP-IDF or
 Arduino app. The screen, SD card, keys, touch, clock, battery gauge and Wi-Fi
 behave like the real board. No firmware is ever patched to boot here; the
-hardware is modeled from datasheets and measurements of real devices.
+hardware is modeled from datasheets and measurements of real devices. The
+tools assume ESP-IDF and nothing more about the firmware; what they know
+about particular firmware (CrossPoint's boot milestones and render times,
+the stock firmware's boot gate) is data in [eink-qemu/profiles](eink-qemu/profiles/README.md).
 
 **Try it now in your browser:** https://serialx.github.io/eink-qemu/
 
@@ -41,8 +44,9 @@ selected explicitly**, because their chips match the other boards.
 
 1. Open https://serialx.github.io/eink-qemu/ in Chrome. Firefox and Safari are
    untested.
-2. Choose the **Firmware**: an official CrossPoint release `.bin`, a merged
-   firmware `.bin`, an X4 Pro `.xota` update, or a 16 MiB flash dump. The
+2. Choose the **Firmware**: a release app `.bin` (a CrossPoint release, for
+   example), a merged firmware `.bin`, an X4 Pro `.xota` update, or a 16 MiB
+   flash dump. The
    emulator starts as soon as the file loads.
 3. The device follows from the firmware's chip: ESP32-S3 firmware runs on the
    X4 Pro. For the X3 or the X4, and for the BOOX Picco, pick the device in the
@@ -103,8 +107,10 @@ ninja qemu-system-xtensa qemu-system-riscv32 && cd ..
 
 Compose a 16 MiB flash image, then start the emulator. `mkflash.py` accepts an
 app `.bin`, a merged `.bin`, a PlatformIO or ESP-IDF build directory, or a flash
-dump. A merged image keeps its own bootloader, partitions and data; an app gets
-the bundled bootloader and the board's partition table.
+dump. A merged image keeps its own bootloader, partitions and data; a build
+directory brings its own bootloader and partition table; an app gets the bundled
+bootloader and Arduino-ESP32's 16 MB partition table (the Picco's stock layout
+with `--machine picco`), or the firmware's own with `--partitions partitions.csv`.
 
 ```sh
 python3 eink-qemu/mkflash.py crosspoint-1.6.5-x3-x4.bin flash.bin
@@ -148,15 +154,19 @@ directory or a release `.bin` directly, and keeps everything a run saw in a
 run directory with a report:
 
 ```sh
+eink-qemu/cli run build/ ready shot:boot press:down wait-screen shot:next heap:next
 eink-qemu/cli run .pio/build/default --put book.epub \
   ready press:confirm wait-screen press:confirm 'wait-log:Page render' \
-  shot:page1 heap:page1
+  shot:page1 heap:page1                    # CrossPoint: open a book
 eink-qemu/cli compare base/.pio/build/default pr/.pio/build/default \
   --put book.epub --script reading.txt
 ```
 
-`compare` runs two builds side by side and writes a table of render times,
-heaps and screenshot differences for a pull request. `start`, `do` and
+`ready` waits for a quiet screen (for CrossPoint, its Home and memory
+report). `compare` runs two builds side by side and writes a table for a
+pull request: boot time, panel refreshes and guest time per marked window,
+heaps and screenshot differences, and CrossPoint's render times when it logs
+them. `start`, `do` and
 `stop` drive a long-lived session step by step, and `--gui` shows a run in
 the desktop app's window. The tool needs Rust to build; the guide is
 [eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md). The older
@@ -170,16 +180,16 @@ The X4 Pro:
 | Part | Model | Status |
 | --- | --- | --- |
 | CPU, flash, PSRAM | ESP32-S3 dual core, 16 MB flash, 8 MB octal PSRAM | done |
-| Display | UC8179 800x480 e-ink: identity/OTP probe, register LUTs, animated refreshes, physical ghosting fitted to device photos | done |
+| Display | UC8279 (revision 0x68, the default) or UC8179 800x480 e-ink: identity/OTP probe, register LUTs, animated refreshes, physical ghosting fitted to device photos | done |
 | SD card | SDMMC, FAT32 image, measured command/DMA/card delays | done |
-| Keys | Up, Down, Power (GPIO, wake from light sleep) | done |
+| Keys | Up, Down, Power (GPIO, wake from light and deep sleep) | done |
 | Touch | GT911 on I2C | done |
 | Clock | BM8563 RTC on I2C | done |
 | Battery | CW2017 fuel gauge on I2C | done |
 | Wi-Fi | emulated MAC + a fake open AP (`PICSimLabWifi`), bridged to the host network | done |
 | Light sleep | RTC timer and GPIO wake | done |
-| Deep sleep | RTC timer wake, retained memory, both-core restart; boot latency approximate | timer wake |
-| Frontlight, charger STAT, ext0/ext1 deep-sleep wake, USB OTG | | not yet |
+| Deep sleep | RTC timer and ext0/ext1 pad wake (the VM suspends until a pad wakes it), retained memory, both-core restart; no wake source means off until a reset; boot latency approximate | done |
+| Frontlight, charger STAT, USB OTG | | not yet |
 
 **The X3** has a UC8279d or UC8253 792x528 panel, an SD card in SPI mode, six
 keys on an ADC ladder plus Power, a BQ27220 gauge, a DS3231 clock, a QMI8658

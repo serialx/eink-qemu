@@ -16,6 +16,9 @@
 #define ESP32S3_GPIO_OUT "pin-out"
 /* Named GPIO out to the RTC controller for light-sleep GPIO wakeup. */
 #define ESP32S3_GPIO_WAKE "wake"
+/* Named GPIO out: levels of GPIO0-21, the RTC pads (deep-sleep EXT0/EXT1 wake). */
+#define ESP32S3_GPIO_RTC_PAD "rtc-pad"
+#define ESP32S3_GPIO_RTC_PAD_COUNT 22
 
 typedef struct ESP32S3State {
     SysBusDevice parent_obj;
@@ -23,6 +26,8 @@ typedef struct ESP32S3State {
     qemu_irq irq;
     qemu_irq out[ESP32S3_GPIO_COUNT];
     qemu_irq wake;          /* a pin with wakeup enabled is at its trigger level */
+    qemu_irq rtc_pad[ESP32S3_GPIO_RTC_PAD_COUNT];
+    uint32_t last_pad;      /* last level sent on rtc-pad lines */
     uint32_t strap_mode;
     uint64_t out_reg;
     uint64_t enable;

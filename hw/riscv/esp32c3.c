@@ -925,6 +925,10 @@ static void x3_board_init(Esp32C3MachineState *ms)
     qdev_connect_gpio_out_named(keys, "adc", 1, qdev_get_gpio_in_named(ms->saradc, "adc1", 2));
     qdev_connect_gpio_out_named(keys, "power", 0, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 3));
     qdev_connect_gpio_out_named(keys, "power", 1, qdev_get_gpio_in_named(rtc, ESP32C3_RTC_PAD, 3));
+    /* Power is held after a cold power-on, or after a wake by the Power pad. */
+    for (int i = 0; i < 2; i++) {
+        qdev_connect_gpio_out_named(rtc, ESP32C3_RTC_BOOT, i, qdev_get_gpio_in_named(keys, "boot", i));
+    }
     sysbus_realize_and_unref(SYS_BUS_DEVICE(keys), &error_fatal);
 
     if (x4) {

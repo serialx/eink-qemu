@@ -61,6 +61,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -127,6 +128,10 @@ struct Uc8179State {
     bool in_reset;
     bool asleep;
     bool busy;
+    bool refreshing;        /* BUSY belongs to a DRF */
+    int64_t refresh_start_ns;
+    uint64_t refreshes;     /* completed DRFs, and their BUSY time, since start */
+    uint64_t refresh_ns;
     uint8_t cmd;
     uint32_t pos;           /* byte index into the plane or LUT being written, or read index */
     uint8_t psr;            /* PSR byte 0 */
@@ -195,6 +200,7 @@ static void uc8179_set_busy_us(Uc8179State *s, uint64_t us)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
+    s->refreshing = false;
     s->busy = true;
     qemu_set_irq(s->busy_n, 0);
     timer_mod(&s->busy_timer, now + MIN(us, (INT64_MAX - now) / 1000) * 1000);
@@ -208,6 +214,11 @@ static void uc8179_set_busy(Uc8179State *s, uint32_t ms)
 static void uc8179_busy_done(void *opaque)
 {
     Uc8179State *s = opaque;
+    if (s->refreshing) {
+        s->refreshing = false;
+        s->refreshes++;
+        s->refresh_ns += qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->refresh_start_ns;
+    }
     s->busy = false;
     qemu_set_irq(s->busy_n, 1);
 }
@@ -639,6 +650,8 @@ static void uc8179_command(Uc8179State *s, uint8_t c)
     case 0x12: {    /* DRF */
         uint64_t us = uc8179_refresh(s);
         uc8179_set_busy_us(s, us);
+        s->refreshing = true;
+        s->refresh_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         break;
     }
     case 0x20 ... 0x24:
@@ -870,6 +883,7 @@ static void uc8179_set_rst(void *opaque, int n, int level)
     if (!level) {
         s->in_reset = true;
         timer_del(&s->busy_timer);
+        s->refreshing = false;  /* cut short: not a completed refresh */
         uc8179_busy_done(s);
         qemu_set_irq(s->sda_out, 1);
         /* The panel stops being driven mid-refresh; idle drift resumes. */
@@ -1016,6 +1030,20 @@ static bool uc8179_get_busy(Object *obj, Error **errp)
     return UC8179(obj)->busy;
 }
 
+static void uc8179_get_refreshes(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    uint64_t n = UC8179(obj)->refreshes;
+    visit_type_uint64(v, name, &n, errp);
+}
+
+static void uc8179_get_refresh_ns(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    uint64_t ns = UC8179(obj)->refresh_ns;
+    visit_type_uint64(v, name, &ns, errp);
+}
+
 static void uc8179_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1028,6 +1056,11 @@ static void uc8179_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, uc8179_properties);
     /* Read-only BUSY state, for test drivers waiting for a refresh to end. */
     object_class_property_add_bool(klass, "busy", uc8179_get_busy, NULL);
+    /* Completed refreshes and their total BUSY time, for firmware-neutral metrics. */
+    object_class_property_add(klass, "refreshes", "uint64",
+                              uc8179_get_refreshes, NULL, NULL, NULL);
+    object_class_property_add(klass, "refresh-ns", "uint64",
+                              uc8179_get_refresh_ns, NULL, NULL, NULL);
 }
 
 static const TypeInfo uc8179_info = {
