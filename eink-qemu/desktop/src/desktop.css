@@ -31,7 +31,8 @@ button.file-chip:hover:enabled { background: var(--surface-2); }
 
 /* The device screen is a canvas fed by QEMU's eink display backend. */
 #screen canvas { display: block; image-rendering: pixelated; filter: var(--screen-filter); }
-#screen:not(:has(canvas)) { width: min(380px, calc(100vw - 72px)); aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; }
+.bezel:not(:has(canvas)) { width: min(400px, 100%); min-width: 0; flex-shrink: 0; }
+#screen:not(:has(canvas)) { width: 100%; aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; overflow-wrap: anywhere; }
 
 /* The card is a file on disk: show its path on one line, full path on hover. */
 .sd-file { display: flex; align-items: center; gap: 4px; min-width: 0; }

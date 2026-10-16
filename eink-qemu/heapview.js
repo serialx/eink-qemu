@@ -95,7 +95,9 @@ export function mount(root, api) {
     at = null;
     pastCache.n = -1;
   }
-  resetTrace(-1);
+  // The desktop bridge uses unsigned generations. Zero also works with
+  // heapview.py's initial generation: the empty cursor starts at event zero.
+  resetTrace(0);
 
   function ingest(ev) {
     if (ev.gen !== tr.gen) resetTrace(ev.gen);

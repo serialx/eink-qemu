@@ -136,7 +136,10 @@ pub struct Card {
 }
 
 const TURBO_ARGS: &str = include_str!("../resources/turbo-args.json");
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+// A fresh x64 executable on Windows ARM can spend tens of seconds in the
+// Windows loader before reaching main. Leave room for that cold start and
+// QEMU initialization; cancellation and process exits still resolve early.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 90 } else { 30 });
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_INTERVAL: Duration = Duration::from_millis(30);
 /// Console lines waiting for the WebView; beyond this, lines are dropped.
@@ -742,7 +745,7 @@ impl Session {
         let outcome = tokio::select! {
             result = tokio::time::timeout(CONNECT_TIMEOUT, connect) => match result {
                 Ok(result) => result.map_err(failed),
-                Err(_) => Err(failed(AppError::new("EQEMU", "QEMU did not connect within 30 seconds."))),
+                Err(_) => Err(failed(AppError::new("EQEMU", format!("QEMU did not connect within {} seconds.", CONNECT_TIMEOUT.as_secs())))),
             },
             _ = exit_watch.wait_for(|status| status.is_some()) => {
                 let status = exited.borrow().clone().unwrap_or_default();
