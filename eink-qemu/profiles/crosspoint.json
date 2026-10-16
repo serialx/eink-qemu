@@ -1,0 +1,29 @@
+{
+  "name": "crosspoint",
+  "title": "CrossPoint Reader",
+  "about": "What eink-qemu knows about CrossPoint Reader and its forks: the log lines that mark its boot and its measurements, and the NVS entry its X3 build needs. Read by the Rust core (CLI, desktop app) and the web front end; nothing here applies to other firmware.",
+  "detect": {
+    "image_strings": ["cphw", "dev_det"],
+    "log": "Wait complete:\\s+(?:(?:8179|8279|8279x4|X3)_DRF|refresh)\\b"
+  },
+  "ready": {
+    "refresh_done": "Wait complete:\\s+(?:(?:8179|8279|8279x4|X3)_DRF|refresh)\\b",
+    "milestones": 3,
+    "report": "\\[MEM\\]",
+    "quiet_after_draw_s": 3,
+    "sd_failed": "SD card initialization failed"
+  },
+  "metrics": {
+    "timestamp": "^\\[(\\d+)\\] ",
+    "page_render": "\\[(\\d+)\\] \\[DBG\\] \\[ERS\\] Page render( \\(tiled\\))?: .*?bw_render=(\\d+)ms .*?total=(\\d+)ms",
+    "cold_start": "\\[(\\d+)\\] \\[DBG\\] \\[ERS\\] Cache not found, building",
+    "mem": "\\[(\\d+)\\] \\[INF\\] \\[MEM\\] Free: (\\d+) bytes, Total: (\\d+) bytes, Min Free: (\\d+) bytes, MaxAlloc: (\\d+) bytes",
+    "rendered": "\\[(\\d+)\\] \\[\\w+\\] \\[ERS\\] Rendered page in (\\d+)\\s*ms"
+  },
+  "nvs_seed": {
+    "machines": ["x3"],
+    "why": "CrossPoint caches whether a C3 board is an X3 or an X4 in NVS; without the entry its first boot probes the panel, which the emulated X3 cannot answer the way it expects.",
+    "namespace": "cphw",
+    "u8": { "dev_det": 2 }
+  }
+}

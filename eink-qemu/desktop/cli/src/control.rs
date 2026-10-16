@@ -502,7 +502,7 @@ pub async fn start(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 
     }
     // Check the steps against the board here, so a wrong key is bad usage
     // (exit 2) rather than a background run that failed.
-    match eink_core::flash::make_flash(&firmware, args.machine.as_deref()) {
+    match eink_core::flash::make_flash_with(&firmware, args.machine.as_deref(), args.partitions.as_deref()) {
         Ok(flash) => {
             if let Err(e) = eink_core::script::validate(&parsed, &flash.machine, args.trace) {
                 return crate::run::usage(&printer, &e);

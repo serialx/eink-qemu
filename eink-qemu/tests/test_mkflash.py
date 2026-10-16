@@ -26,6 +26,10 @@ class MkflashTest(unittest.TestCase):
         struct.pack_into('<H', data, 12, chip)
         return bytes(data) + b'app payload'
 
+    def crosspoint_app(self):
+        # CrossPoint's X3 build holds its NVS namespace and key as C strings.
+        return self.app(5) + b'cphw\0dev_det\0'
+
     def write(self, name, data):
         path = self.root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,7 +37,8 @@ class MkflashTest(unittest.TestCase):
         return path
 
     def test_partition_reference(self):
-        # SHA256 of CrossPoint 1.6.5 .pio/build/default/partitions.bin.
+        # SHA256 of CrossPoint 1.6.5 .pio/build/default/partitions.bin, which
+        # is Arduino-ESP32's default_16MB.csv.
         self.assertEqual(hashlib.sha256(self.table).hexdigest(),
                          'bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce')
         self.assertEqual(len(self.table), 0xC00)
@@ -58,17 +63,19 @@ class MkflashTest(unittest.TestCase):
             self.assertEqual(flash[:len(boot)], boot)
             self.assertEqual(flash[len(boot):0x8000], b'\xff' * (0x8000 - len(boot)))
             self.assertEqual(flash[0x8000:0x8C00], self.table)
-            seed = mknvs.image(0x5000, 'cphw', {'dev_det': 2}) if chip == 5 else b'\xff' * 0x5000
-            self.assertEqual(flash[0x9000:0xE000], seed)
+            # Not CrossPoint: NVS stays erased on both chips.
+            self.assertEqual(flash[0x9000:0xE000], b'\xff' * 0x5000)
             self.assertEqual(flash[0xE000:0x10000], b'\xff' * 0x2000)
             self.assertEqual(flash[0x10000:0x10000 + len(app)], app)
             self.assertEqual(flash[0x10000 + len(app):], b'\xff' * (mkflash.FLASH_SIZE - 0x10000 - len(app)))
 
-    def test_x4_composition_does_not_force_x3_detection(self):
-        app = self.app(5)
-        flash = mkflash.make_flash(self.write('app.bin', app), 'x4')
-        self.assertEqual(flash[0x9000:0xe000], b'\xff' * 0x5000)
+    def test_crosspoint_x3_gets_its_cached_detection_only(self):
+        app = self.crosspoint_app()
+        flash = mkflash.make_flash(self.write('cp.bin', app))
+        self.assertEqual(flash[0x9000:0xE000], mknvs.image(0x5000, 'cphw', {'dev_det': 2}))
         self.assertEqual(flash[0x10000:0x10000 + len(app)], app)
+        x4 = mkflash.make_flash(self.write('cp.bin', app), 'x4')
+        self.assertEqual(x4[0x9000:0xe000], b'\xff' * 0x5000)
         with self.assertRaisesRegex(ValueError, 'conflicts'):
             mkflash.detect_chip(self.app(9), 'x4')
 
@@ -98,10 +105,11 @@ class MkflashTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'conflicts'):
             mkflash.make_flash(self.write('c3.bin', self.app()), 'picco')
         table = mkflash.partition_table(mkflash.BOOT_DIR / 'partitions-picco.csv')
-        with self.assertRaisesRegex(ValueError, 'partition size'):
+        with self.assertRaisesRegex(ValueError, 'exceeds its partition'):
             mkflash.compose(self.app(9) + bytes(0xe70000), self.app(9), table, 'picco')
-        with self.assertRaisesRegex(ValueError, '0xe0000'):
-            mkflash.compose(self.app(9), self.app(9), self.table, 'picco')
+        no_ota = mkflash.partition_table(text='nvs,data,nvs,0x9000,0x5000\nfactory,app,factory,0x10000,1M\n')
+        with self.assertRaisesRegex(ValueError, 'ota_0'):
+            mkflash.compose(self.app(9), self.app(9), no_ota, 'picco')
 
     def test_picco_merged_dump_keeps_boot_selection_and_all_data(self):
         app = self.app(9)
@@ -157,8 +165,42 @@ class MkflashTest(unittest.TestCase):
                 flash = mkflash.make_flash(self.root / str(nested))
                 self.assertEqual(flash, mkflash.compose(self.app(), self.app(), self.table))
 
+    def test_partition_csvs_like_gen_esp32part(self):
+        table = mkflash.partition_table(text=(
+            '# Name, Type, SubType, Offset, Size, Flags\n'
+            'nvs, data, nvs, , 24K,\n'
+            'phy_init, data, phy, , 4K\n'
+            'factory, app, factory, , 1M\n'
+            'storage, data, littlefs, , 0x100000, readonly\n'
+            'custom, 0x40, 0x7, , 4K, encrypted:readonly\n'))
+        self.assertEqual(mkflash.read_partitions(table), [
+            (1, 2, 0x9000, 0x6000), (1, 1, 0xF000, 0x1000), (0, 0, 0x10000, 0x100000),
+            (1, 0x83, 0x110000, 0x100000), (0x40, 7, 0x210000, 0x1000)])
+        self.assertEqual(mkflash.ENTRY.unpack_from(table, 3 * 32)[6], 2)
+        with self.assertRaises((ValueError, KeyError)):
+            mkflash.partition_table(text='x, app, ota_16, , 1M\n')
+        with self.assertRaisesRegex(ValueError, 'flag'):
+            mkflash.partition_table(text='x, data, nvs, 0x9000, 4K, sticky\n')
+
+    def test_given_partitions_place_the_app_like_idf(self):
+        csv = self.write('factory.csv', (
+            'nvs,data,nvs,0x9000,0x4000\notadata,data,ota,0xd000,0x2000\n'
+            'phy_init,data,phy,0xf000,0x1000\nfactory,app,factory,0x10000,1M\n'
+            'ota_0,app,ota_0,0x110000,1M\n').encode())
+        app = self.app(9)
+        flash = mkflash.make_flash(self.write('app.bin', app), partitions=csv)
+        self.assertEqual(flash[0x10000:0x10000 + len(app)], app)
+        self.assertEqual(flash[0xd000:0xf000], b'\xff' * 0x2000)
+        big = self.app(9) + bytes(0x700000)
+        with self.assertRaisesRegex(ValueError, '--partitions'):
+            mkflash.make_flash(self.write('big.bin', big))
+        roomy = self.write('roomy.bin', mkflash.partition_table(text='nvs,data,nvs,0x9000,0x5000\napp0,app,ota_0,0x10000,0x800000\n'))
+        self.assertEqual(mkflash.make_flash(self.write('big.bin', big), partitions=roomy)[0x10000:0x10000 + len(big)], big)
+        with self.assertRaisesRegex(ValueError, 'own table'):
+            mkflash.make_flash(self.write('dump.bin', bytes(mkflash.FLASH_SIZE)), partitions=roomy)
+
     def test_invalid_inputs(self):
-        with self.assertRaisesRegex(ValueError, 'app0'):
+        with self.assertRaisesRegex(ValueError, 'exceeds its partition'):
             mkflash.compose(self.app() + bytes(0x640000), self.app(), self.table)
         with self.assertRaisesRegex(ValueError, 'chips differ'):
             mkflash.compose(self.app(), self.app(9), self.table)

@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
@@ -104,6 +104,15 @@ pub struct StartOptions {
     /// QEMU's default, which animates.
     #[serde(default)]
     pub animate: Option<bool>,
+    /// How long the board holds Power pressed at a cold boot, in guest ms
+    /// (firmware that turns itself off unless Power is held); None keeps
+    /// the board's default (1500).
+    #[serde(default)]
+    pub power_hold_ms: Option<u32>,
+    /// Where the firmware log comes from: "usb" (USB Serial/JTAG, the
+    /// default; ESP-IDF mirrors its console there by default) or "uart0".
+    #[serde(default)]
+    pub console: Option<String>,
     /// More QEMU arguments, appended as given.
     #[serde(default)]
     pub extra: Vec<String>,
@@ -225,6 +234,9 @@ pub struct Session {
     log_file: Arc<StdMutex<Option<std::fs::File>>>,
     screen: StdMutex<Option<Framebuffer>>,
     card: StdMutex<Option<Card>>,
+    /// Deep sleep (the VM suspended, from QMP's SUSPEND and WAKEUP events):
+    /// since when, and the time asleep before that in this run.
+    asleep: StdMutex<(Option<Instant>, Duration)>,
 }
 
 fn escape(value: &str) -> String {
@@ -380,7 +392,29 @@ impl Session {
             log_file,
             screen: StdMutex::new(None),
             card: StdMutex::new(card),
+            asleep: StdMutex::new((None, Duration::ZERO)),
         })
+    }
+
+    /// Whether the guest is in deep sleep: QEMU suspended the VM, and its
+    /// clock stands still until a wake source (or a reset) resumes it.
+    pub fn asleep(&self) -> bool {
+        self.asleep.lock().unwrap().0.is_some()
+    }
+
+    /// Host time the guest has spent in deep sleep in this run.
+    pub fn asleep_for(&self) -> Duration {
+        let asleep = self.asleep.lock().unwrap();
+        asleep.1 + asleep.0.map(|t| t.elapsed()).unwrap_or_default()
+    }
+
+    fn set_asleep(&self, now: bool) {
+        let mut asleep = self.asleep.lock().unwrap();
+        match (asleep.0, now) {
+            (None, true) => asleep.0 = Some(Instant::now()),
+            (Some(since), false) => *asleep = (None, asleep.1 + since.elapsed()),
+            _ => {}
+        }
     }
 
     pub fn log(&self, line: impl Into<String>) {
@@ -540,6 +574,7 @@ impl Session {
                 return Err(AppError::busy());
             }
             id = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            *self.asleep.lock().unwrap() = (None, Duration::ZERO);
             shared.cancel = Some(cancel_tx);
             shared.info = SessionInfo {
                 state: "starting",
@@ -606,12 +641,24 @@ impl Session {
                 args.extend(["-global".into(), format!("{panel}.animate={}", if animate { "on" } else { "off" })]);
             }
         }
+        if let Some(ms) = options.power_hold_ms {
+            let keys = if machine == "x3" || machine == "x4" { "x3-keys" } else { "x4pro-keys" };
+            args.extend(["-global".into(), format!("{keys}.power-boot-ms={ms}")]);
+        }
         args.extend([
             "-drive".into(), format!("file={},if=mtd,format=raw", escape(&flash.to_string_lossy())),
             "-drive".into(), format!("file={},if=sd,format=raw", escape(&card.to_string_lossy())),
             "-chardev".into(), "stdio,id=cdc,mux=off".into(),
-            "-serial".into(), "null".into(),
-            "-global".into(), "driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc".into(),
+        ]);
+        match options.console.as_deref().unwrap_or("usb") {
+            "usb" => args.extend([
+                "-serial".into(), "null".into(),
+                "-global".into(), "driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc".into(),
+            ]),
+            "uart0" => args.extend(["-serial".into(), "chardev:cdc".into()]),
+            other => return Err(AppError::new("EQEMU", format!("Unknown console {other}; use usb or uart0."))),
+        }
+        args.extend([
             "-chardev".into(), format!("socket,id=qmp,{qmp}"),
             "-object".into(), "monitor-qmp,id=qmp-monitor,chardev=qmp".into(),
             "-display".into(), format!("eink,addr={}", escape(display)),
@@ -750,8 +797,11 @@ impl Session {
                 let session = self.clone();
                 tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
-                        if event["event"] == "SHUTDOWN" {
-                            session.log("Guest shut down.");
+                        match event["event"].as_str() {
+                            Some("SHUTDOWN") => session.log("Guest shut down."),
+                            Some("SUSPEND") => session.set_asleep(true),
+                            Some("WAKEUP" | "RESET") => session.set_asleep(false),
+                            _ => {}
                         }
                     }
                 });

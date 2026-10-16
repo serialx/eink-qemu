@@ -68,12 +68,16 @@ impl GuestClock {
         GuestClock { session, enabled }
     }
 
+    /// The device's time: the guest's virtual clock, plus the time it spent
+    /// in deep sleep (when QEMU suspends the VM its clock stands still, but
+    /// on a device time passes), so guest-time waits go on while it sleeps.
     pub async fn now_ns(&self) -> Option<i64> {
         if !self.enabled {
             return None;
         }
         let path = format!("/objects/{GUEST_CLOCK_ID}");
-        self.session.qmp("qom-get", Some(json!({"path": path, "property": "ns"}))).await.ok()?.as_i64()
+        let ns = self.session.qmp("qom-get", Some(json!({"path": path, "property": "ns"}))).await.ok()?.as_i64()?;
+        Some(ns.saturating_add(self.session.asleep_for().as_nanos() as i64))
     }
 
     pub async fn now_ms(&self) -> Option<i64> {
@@ -151,7 +155,8 @@ impl Recorder {
                     idle_from = None;
                 }
                 let mut guest_now = None;
-                if me.busy_known.load(Ordering::Relaxed) {
+                // Asleep, the panel cannot finish a refresh: do not wait on BUSY.
+                if me.busy_known.load(Ordering::Relaxed) && !session.asleep() {
                     match session.qmp("qom-get", Some(json!({"path": PANEL, "property": "busy"}))).await {
                         Ok(Value::Bool(true)) => {
                             idle_from = None;
@@ -248,6 +253,10 @@ pub struct RunOptions {
     pub crash_patterns: Vec<Regex>,
     /// Keep every settled screen in frames/.
     pub frames: bool,
+    /// Whether the log carries the ROM's boot banner (the USB console does;
+    /// the emulated boards' ROM prints nothing on UART0). Without it a boot
+    /// after `reset` shows itself by drawing.
+    pub rom_banner: bool,
 }
 
 impl RunOptions {
@@ -263,6 +272,7 @@ impl RunOptions {
             elf: None,
             crash_patterns: CRASH_PATTERNS.iter().map(|p| Regex::new(p).unwrap()).collect(),
             frames: true,
+            rom_banner: true,
         }
     }
 }
@@ -574,16 +584,34 @@ impl Runner {
     }
 
     async fn panel_busy(&mut self) -> Option<bool> {
-        if !self.frames.busy_known.load(Ordering::Relaxed) {
+        // Asleep, the panel cannot finish a refresh; a press may wake the device.
+        if !self.frames.busy_known.load(Ordering::Relaxed) || self.session.asleep() {
             return None;
         }
         self.session.qmp("qom-get", Some(json!({"path": PANEL, "property": "busy"}))).await.ok()?.as_bool()
+    }
+
+    /// Firmware-neutral counters so far: display updates the guest sent,
+    /// and the panel model's completed refreshes and their guest time (null
+    /// on QEMU builds without them).
+    pub async fn counters(&mut self) -> Value {
+        let prop = async |name: &str| self.session.qmp("qom-get", Some(json!({"path": PANEL, "property": name}))).await.ok().and_then(|v| v.as_u64());
+        let refreshes = prop("refreshes").await;
+        let refresh_ns = prop("refresh-ns").await;
+        json!({
+            "screen_updates": self.events.screen().updates,
+            "panel_refreshes": refreshes,
+            "panel_refresh_ms": refresh_ns.map(|ns| (ns as f64 / 1e5).round() / 10.0),
+        })
     }
 
     /// A new boot is starting (reset): readiness waits for it.
     async fn begin_reset(&mut self) {
         self.session.log_barrier(LOG_BARRIER).await;
         self.readiness = Readiness::after_reset(&self.readiness);
+        if !self.opts.rom_banner {
+            self.readiness.skip_rom_wait();
+        }
         self.readiness_pos = self.events.line_count();
         self.readiness_screen_base = self.events.screen().updates;
         self.boot_started = self.events.now();
@@ -652,7 +680,13 @@ impl Runner {
                     self.readiness_pos = end;
                     let now = self.events.now();
                     let screen = self.events.screen();
-                    let quiet = (screen.updates > self.readiness_screen_base).then(|| screen.last_update.map(|t| t.elapsed().as_secs_f64())).flatten();
+                    // A blank panel (all one gray: before the firmware draws,
+                    // or mid-flash) is not a boot that finished drawing.
+                    let drawn = self.session.screen().is_some_and(|fb| fb.pixels.first().is_some_and(|&p| fb.pixels.iter().any(|&q| q != p)));
+                    // A device in deep sleep is quiet because it is off, not ready.
+                    let quiet = (drawn && !self.session.asleep() && screen.updates > self.readiness_screen_base)
+                        .then(|| screen.last_update.map(|t| t.elapsed().as_secs_f64()))
+                        .flatten();
                     match self.readiness.verdict(quiet, self.opts.ready_quiet, now) {
                         Verdict::Ready(how) => {
                             self.check_alive()?;
@@ -676,7 +710,13 @@ impl Runner {
                     }
                     self.check_alive()?;
                     if started.elapsed().as_secs_f64() > limit {
-                        let mut failure = Failure::new(format!("not ready after {limit} s: {}", self.readiness.waiting_for()));
+                        let why = if self.session.asleep() && !self.readiness.power_wait {
+                            "the device went into deep sleep (QEMU suspended it) before its boot finished; a key that wakes it \
+                             (press:power) resumes it".to_string()
+                        } else {
+                            self.readiness.waiting_for()
+                        };
+                        let mut failure = Failure::new(format!("not ready after {limit} s: {why}"));
                         failure.fields.insert("last_lines".into(), json!(self.tail(8)));
                         return Err(failure);
                     }
@@ -897,6 +937,10 @@ impl Runner {
             }
             Kind::Mark { name } => {
                 f.insert("name".into(), json!(expand(name, iters)));
+                // Counters at the mark, so a comparison can measure the window after it.
+                if let Value::Object(counters) = self.counters().await {
+                    f.extend(counters);
+                }
             }
             Kind::ExpectLog { pattern } => {
                 self.session.log_barrier(LOG_BARRIER).await;

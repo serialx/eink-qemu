@@ -1,18 +1,16 @@
-//! When a boot is finished, from the firmware log: the rules of the desktop
-//! page's readiness.ts (CrossPoint's completed refreshes, then its memory
-//! report; a reboot starts the count again; a card it cannot mount; the
-//! stock X4 Pro firmware's wait for Power). Firmware that logs none of
-//! CrossPoint's refresh lines is ready once its screen has been quiet, as
-//! long as the ROM is not rebooting it in a loop. ROM messages about an
-//! image it cannot boot fail the wait at once.
+//! When a boot is finished. Any firmware is ready once its screen has been
+//! quiet for a while (5 s by default), as long as the ROM is not rebooting
+//! it in a loop; ROM messages about an image it cannot boot fail the wait
+//! at once. Firmware with a profile (eink-qemu/profiles) is read more
+//! closely, with the same rules as the desktop page's readiness.ts:
+//! CrossPoint is ready after its boot refreshes and then its memory report
+//! (a reboot starts the count again, a card it cannot mount fails), and the
+//! stock Xteink firmware's boot gate explains a wait for Power.
 
+use crate::profiles::{CROSSPOINT, XTEINK_STOCK};
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// Panel refresh completions: UC8179/UC8279 boards log their DRF command,
-/// the X4 (SSD1677) a plain refresh.
-static REFRESH_DONE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Wait complete:\s+(?:(?:8179|8279|8279x4|X3)_DRF|refresh)\b").unwrap());
 /// The ESP ROM or second-stage bootloader refusing the image.
 static BOOT_FAILURE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"No bootable app partitions|invalid segment length|Image hash failed|Failed to verify app image|invalid magic byte|Checksum failure|ota data partition invalid and no factory").unwrap()
@@ -39,7 +37,7 @@ pub struct Readiness {
     /// The firmware's own timestamp (ms since its boot) of that refresh.
     pub home_fw_ms: Option<u64>,
     sd_failed: bool,
-    /// Seen any CrossPoint-style refresh line (kept across resets).
+    /// Seen any of CrossPoint's refresh lines (kept across resets).
     pub crosspoint: bool,
     pub restarts: u32,
     /// Host seconds of the last ROM banner (a boot starting).
@@ -57,9 +55,15 @@ impl Readiness {
     }
 
     /// A fresh count after a reset that keeps what was learned about the
-    /// firmware (whether it logs CrossPoint's refresh lines).
+    /// firmware (whether it is CrossPoint).
     pub fn after_reset(previous: &Readiness) -> Self {
         Readiness { crosspoint: previous.crosspoint, await_rom: true, ..Self::default() }
+    }
+
+    /// For a console without the ROM's banner: a boot after a reset counts
+    /// from the reset, and shows itself by drawing.
+    pub fn skip_rom_wait(&mut self) {
+        self.await_rom = false;
     }
 
     /// Feed one line, logged `now` host seconds after the run started.
@@ -80,35 +84,37 @@ impl Readiness {
             self.home_at = None;
             self.home_fw_ms = None;
             self.sd_failed = false;
+            self.power_wait = false;
             self.verdict = None;
             self.last_rom = Some(now);
         }
         if let Some(m) = BOOT_FAILURE.find(line) {
             self.boot_failure.get_or_insert_with(|| format!("the ROM cannot boot the image: {} ({})", m.as_str(), line.trim()));
         }
-        if line.contains("SD card initialization failed") {
+        let crosspoint = &*CROSSPOINT;
+        if crosspoint.sd_failed.is_match(line) {
             self.sd_failed = true;
         }
-        if line.contains("reject physical boot before init") || line.contains("POWERON without key") {
+        if XTEINK_STOCK.power_wait.is_match(line) {
             self.power_wait = true;
         }
-        if REFRESH_DONE.is_match(line) {
+        if crosspoint.refresh_done.is_match(line) {
             self.crosspoint = true;
             self.last_draw = Some(now);
             self.milestones += 1;
-            if self.milestones == 3 {
+            if self.milestones == crosspoint.milestones {
                 self.home_at = Some(now);
                 self.home_fw_ms = super::metrics::firmware_ms(line.trim_start());
             }
         }
-        if line.contains("[MEM]") && self.verdict.is_none() {
+        if crosspoint.report.is_match(line) && self.verdict.is_none() {
             if self.sd_failed {
                 self.verdict = Some(Verdict::Failed(
                     "the firmware could not mount the SD card (\"SD card initialization failed\"); check the card image".into(),
                 ));
             } else if self.home_at.is_some() {
                 self.verdict = Some(Verdict::Ready("home"));
-            } else if self.last_draw.is_some_and(|t| now - t > 3.0) {
+            } else if self.last_draw.is_some_and(|t| now - t > crosspoint.quiet_after_draw_s) {
                 // Firmware that resumes a book or an app draws fewer full
                 // refreshes than a boot to Home; quiet and reporting is ready.
                 self.verdict = Some(Verdict::Ready("quiet"));
@@ -128,7 +134,9 @@ impl Readiness {
         }
         let rom_quiet = self.last_rom.is_none_or(|t| now - t >= quiet_needed);
         // After a reset, nothing counts until the new boot's ROM banner.
-        if !self.crosspoint && !self.await_rom && rom_quiet && screen_quiet.is_some_and(|q| q >= quiet_needed) {
+        // The stock firmware's power gate turned the device off: its quiet
+        // screen is not a finished boot.
+        if !self.crosspoint && !self.await_rom && !self.power_wait && rom_quiet && screen_quiet.is_some_and(|q| q >= quiet_needed) {
             return Verdict::Ready("screen-quiet");
         }
         Verdict::Waiting
@@ -137,15 +145,18 @@ impl Readiness {
     /// What it is waiting for, for a timeout message.
     pub fn waiting_for(&self) -> String {
         if self.power_wait {
-            return "the firmware is waiting for Power at boot (stock X4 Pro firmware): put press:power:2000 before ready".into();
+            return "the firmware turned itself off because Power was not held long enough at boot (stock Xteink firmware): \
+                    run with --power-hold 3000, or put press:power:4000 before ready"
+                .into();
         }
         if self.restarts > 2 {
             return format!("the guest rebooted {} times (a boot loop?); see log.txt", self.restarts);
         }
         if self.crosspoint {
-            format!("{} of 3 boot refreshes seen, then a [MEM] report; restarts: {}", self.milestones.min(3), self.restarts)
+            let needed = CROSSPOINT.milestones;
+            format!("CrossPoint: {} of {needed} boot refreshes seen, then a [MEM] report; restarts: {}", self.milestones.min(needed), self.restarts)
         } else {
-            "no CrossPoint refresh lines, and the screen did not stay quiet for 5 s".into()
+            "the screen never showed a drawn (not blank) image that stayed unchanged long enough (see --ready-quiet)".into()
         }
     }
 }
@@ -205,6 +216,37 @@ mod tests {
     fn other_firmware_after_a_reset_waits_for_the_rom_banner() {
         let after = Readiness::after_reset(&Readiness::new());
         assert_eq!(after.verdict(Some(6.0), 5.0, 100.0), Verdict::Waiting);
+    }
+
+    #[test]
+    fn without_the_rom_banner_a_reset_boot_counts_from_the_reset() {
+        let mut after = Readiness::after_reset(&Readiness::new());
+        after.skip_rom_wait();
+        assert_eq!(after.verdict(Some(6.0), 5.0, 100.0), Verdict::Ready("screen-quiet"));
+        assert_eq!(after.verdict(None, 5.0, 100.0), Verdict::Waiting);
+    }
+
+    #[test]
+    fn stock_xteink_power_gate_explains_the_wait() {
+        let mut r = Readiness::new();
+        r.feed("ESP-ROM:esp32s3-20210327", 0.0);
+        r.feed("I (2277) boot-preflight: source=1 validation=2 gate=0 key=1 charge=1 configured=1000ms effective=600ms hold=336ms decision=2 reason=3 auth=0", 1.0);
+        r.feed("W (2277) boot-preflight: reject physical boot before init: reason=3", 1.0);
+        assert!(!r.crosspoint);
+        assert!(r.waiting_for().contains("--power-hold 3000"), "{}", r.waiting_for());
+        // The device is off: its quiet screen is not ready, until a new boot.
+        assert_eq!(r.verdict(Some(30.0), 5.0, 30.0), Verdict::Waiting);
+        r.feed("ESP-ROM:esp32s3-20210327", 31.0);
+        assert_eq!(r.verdict(Some(6.0), 5.0, 37.0), Verdict::Ready("screen-quiet"));
+    }
+
+    #[test]
+    fn esp_idf_firmware_is_ready_on_a_quiet_screen() {
+        let mut r = Readiness::new();
+        r.feed("ESP-ROM:esp32s3-20210327", 0.0);
+        r.feed("I (1930) main_task: Calling app_main()", 2.0);
+        assert_eq!(r.verdict(Some(4.0), 5.0, 6.0), Verdict::Waiting);
+        assert_eq!(r.verdict(Some(5.0), 5.0, 7.0), Verdict::Ready("screen-quiet"));
     }
 
     #[test]

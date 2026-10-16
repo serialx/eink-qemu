@@ -339,7 +339,8 @@ pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared
     if !firmware.exists() {
         return Err(format!("{} does not exist", firmware.display()));
     }
-    let flash = flash::make_flash(firmware, args.machine.as_deref()).map_err(|e| format!("{}: {e}", firmware.display()))?;
+    let flash = flash::make_flash_with(firmware, args.machine.as_deref(), args.partitions.as_deref())
+        .map_err(|e| format!("{}: {e}", firmware.display()))?;
     let (elf, elf_note) = choose_elf(args, firmware, &flash)?;
     let qemu = find_qemu(args.qemu.as_deref(), &flash.machine)?;
     let trace: TracePlan = if args.trace {
@@ -382,6 +383,8 @@ pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared
         turbo: args.turbo,
         ghosting: args.ghosting,
         animate: Some(args.animate),
+        power_hold_ms: args.power_hold,
+        console: Some(args.console.clone()),
         extra,
     };
     Ok(Prepared { dir, firmware: firmware.to_path_buf(), flash, elf, elf_note, trace, card, card_info, qemu, guest_clock, options, card_lock })
@@ -440,7 +443,12 @@ pub fn start_record(p: &Prepared, session: &Session, side: Option<&str>) -> Valu
         "run_dir": p.dir,
         "firmware": p.firmware,
         "machine": p.flash.machine,
-        "flash": {"kind": p.flash.kind, "sha256": flash::sha256_hex(&p.flash.image), "app": p.flash.app},
+        "flash": {
+            "kind": p.flash.kind, "sha256": flash::sha256_hex(&p.flash.image), "app": p.flash.app,
+            "partitions": p.flash.partitions, "nvs_seed": p.flash.nvs_seed,
+        },
+        "console": p.options.console,
+        "power_hold_ms": p.options.power_hold_ms,
         "elf": p.elf,
         "elf_note": p.elf_note,
         "trace": p.trace.as_ref().ok().map(|(plugin, _)| plugin.clone()),

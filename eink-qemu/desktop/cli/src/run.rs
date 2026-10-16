@@ -79,11 +79,13 @@ fn options(args: &RunArgs, p: &Prepared) -> Result<RunOptions, String> {
     let mut opts = RunOptions::new(p.dir.clone());
     opts.timeout = args.timeout;
     opts.ready_timeout = args.ready_timeout;
+    opts.ready_quiet = args.ready_quiet;
     opts.settle = Duration::from_millis(args.settle.max(20));
     opts.panel_idle = Duration::from_millis(args.panel_idle);
     opts.input_quiet = Duration::from_millis(args.input_quiet);
     opts.elf = p.elf.clone();
     opts.frames = !args.no_frames;
+    opts.rom_banner = args.console != "uart0";
     if args.no_crash_check {
         opts.crash_patterns.clear();
     }
@@ -223,8 +225,12 @@ pub async fn finish(runner: &mut Runner, session: &Arc<eink_core::session::Sessi
     if let Some(Ok(log)) = session.trace_log() {
         let _ = std::fs::copy(&log, dir.join("trace.bin"));
     }
+    let counters = runner.counters().await;
     let _ = session.stop().await;
-    let summary = runner.events.with_lines(0, |lines| metrics::summarize(lines.iter().map(|l| l.text.as_str())));
+    let mut summary = runner.events.with_lines(0, |lines| metrics::summarize(lines.iter().map(|l| l.text.as_str())));
+    if let (Value::Object(summary), Value::Object(counters)) = (&mut summary, counters) {
+        summary.extend(counters);
+    }
     let _ = std::fs::write(dir.join("metrics.json"), serde_json::to_string_pretty(&summary).unwrap_or_default());
     let frames = runner.frames.frames();
     let _ = std::fs::write(dir.join("frames.json"), serde_json::to_string_pretty(&frames).unwrap_or_default());
@@ -238,18 +244,35 @@ pub async fn finish(runner: &mut Runner, session: &Arc<eink_core::session::Sessi
         "error": failed.as_ref().map(|f| f["error"].clone()),
         "duration_s": (started.elapsed().as_secs_f64() * 10.0).round() / 10.0,
         "frames": frames.len(),
-        "metrics": {
-            "page_renders": summary["page_renders"],
-            "bw_render_ms_median": summary["bw_render_ms"]["median"],
-            "total_render_ms_median": summary["total_render_ms"]["median"],
-            "mem_min_free": summary["mem_min_free"],
-        },
+        "metrics": end_metrics(&summary),
         "run_dir": dir,
         "report": dir.join("report.html"),
     });
     runner.emit(&end);
     let _ = crate::report::write(&dir);
     end
+}
+
+/// The end record's measurements: the emulator's counters and ESP-IDF's
+/// log counts for any firmware, CrossPoint's own when it logged them.
+pub fn end_metrics(summary: &Value) -> Value {
+    let mut m = json!({
+        "screen_updates": summary["screen_updates"],
+        "panel_refreshes": summary["panel_refreshes"],
+        "panel_refresh_ms": summary["panel_refresh_ms"],
+        "log_errors": summary["log_errors"],
+        "log_warnings": summary["log_warnings"],
+    });
+    let c = &summary["crosspoint"];
+    if c.is_object() {
+        m["crosspoint"] = json!({
+            "page_renders": c["page_renders"],
+            "bw_render_ms_median": c["bw_render_ms"]["median"],
+            "total_render_ms_median": c["total_render_ms"]["median"],
+            "mem_min_free": c["mem_min_free"],
+        });
+    }
+    m
 }
 
 /// The setup-failure code a background run reported, for `start`.

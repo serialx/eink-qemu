@@ -39,7 +39,7 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
     }
     // Both boards must take the steps before either run starts.
     for firmware in [&base, &candidate] {
-        if let Ok(flash) = eink_core::flash::make_flash(firmware, args.machine.as_deref()) {
+        if let Ok(flash) = eink_core::flash::make_flash_with(firmware, args.machine.as_deref(), args.partitions.as_deref()) {
             if let Err(e) = eink_core::script::validate(&steps, &flash.machine, args.trace) {
                 return usage(&printer, &format!("{}: {e}", firmware.display()));
             }
@@ -224,15 +224,67 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
     }
 
     let m = |v: &Value, path: &[&str]| path.iter().fold(v.clone(), |acc, k| acc[*k].clone());
-    let metric_rows = vec![
-        json!({"metric": "page renders in the whole run", "a": ma["page_renders"], "b": mb["page_renders"]}),
-        json!({"metric": "page drawing (bw_render) median ms, whole run", "a": m(&ma, &["bw_render_ms", "median"]), "b": m(&mb, &["bw_render_ms", "median"])}),
-        json!({"metric": "total rendering median ms, whole run", "a": m(&ma, &["total_render_ms", "median"]), "b": m(&mb, &["total_render_ms", "median"])}),
-        json!({"metric": "cold layout ms", "a": ma["cold_layout_ms"], "b": mb["cold_layout_ms"]}),
-        json!({"metric": "lowest Min Free since boot (bytes, [MEM])", "a": ma["mem_min_free"], "b": mb["mem_min_free"]}),
-        json!({"metric": "last periodic [MEM] Free (bytes; every 10 s, not at a step)", "a": m(&ma, &["mem_last", "free"]), "b": m(&mb, &["mem_last", "free"])}),
-        json!({"metric": "last periodic [MEM] MaxAlloc (bytes)", "a": m(&ma, &["mem_last", "max_alloc"]), "b": m(&mb, &["mem_last", "max_alloc"])}),
+    // The emulator's counters for any firmware, then CrossPoint's own measurements.
+    let mut metric_rows = vec![
+        json!({"metric": "display updates sent, whole run", "a": ma["screen_updates"], "b": mb["screen_updates"]}),
+        json!({"metric": "panel refreshes, whole run", "a": ma["panel_refreshes"], "b": mb["panel_refreshes"]}),
+        json!({"metric": "panel refresh time, whole run (guest ms)", "a": ma["panel_refresh_ms"], "b": mb["panel_refresh_ms"]}),
+        json!({"metric": "ESP-IDF error lines in the log", "a": ma["log_errors"], "b": mb["log_errors"]}),
     ];
+    let (ca, cb) = (&ma["crosspoint"], &mb["crosspoint"]);
+    if ca.is_object() || cb.is_object() {
+        metric_rows.extend([
+            json!({"metric": "CrossPoint page renders in the whole run", "a": ca["page_renders"], "b": cb["page_renders"]}),
+            json!({"metric": "CrossPoint page drawing (bw_render) median ms, whole run", "a": m(ca, &["bw_render_ms", "median"]), "b": m(cb, &["bw_render_ms", "median"])}),
+            json!({"metric": "CrossPoint total rendering median ms, whole run", "a": m(ca, &["total_render_ms", "median"]), "b": m(cb, &["total_render_ms", "median"])}),
+            json!({"metric": "CrossPoint cold layout ms", "a": ca["cold_layout_ms"], "b": cb["cold_layout_ms"]}),
+            json!({"metric": "lowest Min Free since boot (bytes, CrossPoint's [MEM])", "a": ca["mem_min_free"], "b": cb["mem_min_free"]}),
+            json!({"metric": "last periodic [MEM] Free (bytes; every 10 s, not at a step)", "a": m(ca, &["mem_last", "free"]), "b": m(cb, &["mem_last", "free"])}),
+            json!({"metric": "last periodic [MEM] MaxAlloc (bytes)", "a": m(ca, &["mem_last", "max_alloc"]), "b": m(cb, &["mem_last", "max_alloc"])}),
+        ]);
+    }
+
+    // Marked windows: from each `mark` to the next (or the end), the guest
+    // time the steps took and the emulator's counters, for any firmware.
+    let windows = |r: &[Value]| {
+        let mut out: BTreeMap<String, Value> = BTreeMap::new();
+        let end = r.iter().rev().find(|x| x["type"] == "end");
+        let marks: Vec<&Value> = r.iter().filter(|x| x["type"] == "step" && x["step"] == "mark").collect();
+        let steps: Vec<&Value> = r.iter().filter(|x| x["type"] == "step").collect();
+        let last = steps.last().copied();
+        for (i, mark) in marks.iter().enumerate() {
+            let next = marks.get(i + 1).copied().or(last);
+            let Some(next) = next else { continue };
+            let diff = |k: &str| match (mark[k].as_f64(), next[k].as_f64()) {
+                (Some(x), Some(y)) if !std::ptr::eq(*mark, next) => json!(((y - x) * 10.0).round() / 10.0),
+                _ => Value::Null,
+            };
+            let mut w = json!({
+                "guest_ms": diff("guest_ms"),
+                "screen_updates": diff("screen_updates"),
+                "panel_refreshes": diff("panel_refreshes"),
+                "panel_refresh_ms": diff("panel_refresh_ms"),
+            });
+            // The last window runs to the last step; its counters come from the end of the run.
+            if marks.get(i + 1).is_none() && next["screen_updates"].is_null() {
+                let totals = end.map(|e| &e["metrics"]);
+                if let Some(t) = totals {
+                    for k in ["screen_updates", "panel_refreshes", "panel_refresh_ms"] {
+                        if let (Some(x), Some(y)) = (mark[k].as_f64(), t[k].as_f64()) {
+                            w[k] = json!(((y - x) * 10.0).round() / 10.0);
+                        }
+                    }
+                }
+            }
+            out.insert(mark["name"].as_str().unwrap_or_default().to_string(), w);
+        }
+        out
+    };
+    let (wa, wb) = (windows(&ra), windows(&rb));
+    let window_rows: Vec<Value> = wa
+        .iter()
+        .map(|(name, a)| json!({"name": name, "a": a, "b": wb.get(name).cloned().unwrap_or(Value::Null)}))
+        .collect();
     let start = |r: &[Value]| r.iter().find(|x| x["type"] == "start").cloned().unwrap_or(Value::Null);
     let (sa, sb) = (start(&ra), start(&rb));
     json!({
@@ -246,6 +298,7 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         "outcome": [outcome(&ra, a.2), outcome(&rb, b.2)],
         "ready": [ready(&ra), ready(&rb)],
         "metrics": metric_rows,
+        "windows": window_rows,
         "values": value_rows,
         "heaps": heap_rows,
         "traces": trace_rows,
@@ -298,7 +351,20 @@ pub fn markdown(s: &Value) -> String {
     out += &format!("| Result | {} | {} | |\n", result(&s["outcome"][0]), result(&s["outcome"][1]));
     let (ha, hb) = (&s["ready"][0]["home_fw_ms"], &s["ready"][1]["home_fw_ms"]);
     if !ha.is_null() || !hb.is_null() {
-        out += &format!("| Home drawn (firmware ms) | {} | {} | {} |\n", cell(ha), cell(hb), delta(ha, hb));
+        out += &format!("| CrossPoint Home drawn (firmware ms) | {} | {} | {} |\n", cell(ha), cell(hb), delta(ha, hb));
+    }
+    let (ba, bb) = (&s["ready"][0]["boot_s"], &s["ready"][1]["boot_s"]);
+    if !ba.is_null() || !bb.is_null() {
+        out += &format!("| Boot to ready (s) | {} | {} | {} |\n", cell(ba), cell(bb), delta(ba, bb));
+    }
+    for w in s["windows"].as_array().into_iter().flatten() {
+        let name = cell(&w["name"]);
+        for (key, label) in [("guest_ms", "guest ms"), ("panel_refreshes", "panel refreshes"), ("screen_updates", "display updates")] {
+            let (x, y) = (&w["a"][key], &w["b"][key]);
+            if !x.is_null() || !y.is_null() {
+                out += &format!("| `mark:{name}` window: {label} | {} | {} | {} |\n", cell(x), cell(y), delta(x, y));
+            }
+        }
     }
     // Marked windows (`mark:NAME` before the steps) first: they are what a
     // script chose to measure; values outside any mark come after them.

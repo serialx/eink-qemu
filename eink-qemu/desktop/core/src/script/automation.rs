@@ -30,6 +30,8 @@ pub struct Automation {
     pub guest_clock: bool,
     pub timeout: f64,
     pub ready_timeout: f64,
+    #[serde(default = "default_ready_quiet")]
+    pub ready_quiet: f64,
     pub settle_ms: u64,
     pub panel_idle_ms: u64,
     #[serde(default = "default_input_quiet")]
@@ -43,6 +45,10 @@ pub struct Automation {
 
 fn default_input_quiet() -> u64 {
     200
+}
+
+fn default_ready_quiet() -> f64 {
+    5.0
 }
 
 /// What the app does when its window closes after a scripted run: the
@@ -81,6 +87,8 @@ impl Automation {
         let mut opts = RunOptions::new(self.dir.clone());
         opts.timeout = self.timeout;
         opts.ready_timeout = self.ready_timeout;
+        opts.ready_quiet = self.ready_quiet;
+        opts.rom_banner = self.options.console.as_deref() != Some("uart0");
         opts.settle = Duration::from_millis(self.settle_ms);
         opts.panel_idle = Duration::from_millis(self.panel_idle_ms);
         opts.input_quiet = Duration::from_millis(self.input_quiet_ms);
@@ -138,7 +146,8 @@ pub async fn run(session: Arc<Session>, events: Arc<RunEvents>, spec: Automation
     let frames = runner.frames.frames();
     let _ = std::fs::write(spec.dir.join("frames.json"), serde_json::to_string_pretty(&frames).unwrap_or_default());
     runner.events.flush();
-    print(&json!({"type": "steps-done", "ok": ok, "steps": runner.index, "failed": runner.failed, "screen": runner.latest_frame().map(|f| spec.dir.join(f.file))}));
+    let counters = runner.counters().await;
+    print(&json!({"type": "steps-done", "ok": ok, "steps": runner.index, "failed": runner.failed, "screen": runner.latest_frame().map(|f| spec.dir.join(f.file)), "counters": counters}));
     // Dropping the runner leaves its frame recorder running while the window stays open.
     ok
 }

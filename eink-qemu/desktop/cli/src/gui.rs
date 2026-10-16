@@ -83,7 +83,12 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         "run_dir": dir,
         "firmware": prepared.firmware,
         "machine": prepared.flash.machine,
-        "flash": {"kind": prepared.flash.kind, "sha256": eink_core::flash::sha256_hex(&prepared.flash.image), "app": prepared.flash.app},
+        "flash": {
+            "kind": prepared.flash.kind, "sha256": eink_core::flash::sha256_hex(&prepared.flash.image), "app": prepared.flash.app,
+            "partitions": prepared.flash.partitions, "nvs_seed": prepared.flash.nvs_seed,
+        },
+        "console": prepared.options.console,
+        "power_hold_ms": prepared.options.power_hold_ms,
         "elf": prepared.elf,
         "elf_note": prepared.elf_note,
         "card": prepared.card_info,
@@ -107,6 +112,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         guest_clock: prepared.guest_clock,
         timeout: args.timeout,
         ready_timeout: args.ready_timeout,
+        ready_quiet: args.ready_quiet,
         settle_ms: args.settle.max(20),
         panel_idle_ms: args.panel_idle,
         input_quiet_ms: args.input_quiet,
@@ -140,6 +146,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     let mut ok = false;
     let mut steps_done = false;
     let mut setup_failed = false;
+    let mut counters = Value::Null;
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -148,6 +155,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
                 ok = record["ok"] == true;
                 steps_done = true;
                 setup_failed = record["setup_failed"] == true;
+                counters = record["counters"].clone();
                 printer.note(&format!("eink-qemu: steps {}; the window stays open, close it to finish", if ok { "passed" } else { "failed" }));
             }
             // steps-done goes out too: a script can close the window on it.
@@ -166,7 +174,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         let tail: Vec<&str> = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();
         printer.record(&json!({"type": "error", "stage": "gui", "error": "the desktop app exited before the steps finished", "log_tail": tail, "run_dir": dir}));
     }
-    finish(&dir, ok && steps_done, started, &printer);
+    finish(&dir, ok && steps_done, started, &printer, counters);
     if ok && steps_done { 0 } else if steps_done && !setup_failed { EXIT_FAIL } else { EXIT_SETUP }
 }
 
@@ -176,9 +184,13 @@ fn spec_qemu_bin(args: &RunArgs, spec: &Automation) -> PathBuf {
 }
 
 /// The summary files and end record, from what the app wrote.
-fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer) {
+fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer, counters: Value) {
     let log = std::fs::read_to_string(dir.join("log.txt")).unwrap_or_default();
-    let summary = metrics::summarize(log.lines());
+    let mut summary = metrics::summarize(log.lines());
+    // The counters when the steps ended (the window may have run on after).
+    if let (Value::Object(summary), Value::Object(counters)) = (&mut summary, counters) {
+        summary.extend(counters);
+    }
     let _ = std::fs::write(dir.join("metrics.json"), serde_json::to_string_pretty(&summary).unwrap_or_default());
     let records: Vec<Value> = std::fs::read_to_string(dir.join("run.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     let steps = records.iter().filter(|r| r["type"] == "step").count();
@@ -192,12 +204,7 @@ fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer) {
         "error": failed.map(|f| f["error"].clone()),
         "duration_s": (started.elapsed().as_secs_f64() * 10.0).round() / 10.0,
         "frames": frames,
-        "metrics": {
-            "page_renders": summary["page_renders"],
-            "bw_render_ms_median": summary["bw_render_ms"]["median"],
-            "total_render_ms_median": summary["total_render_ms"]["median"],
-            "mem_min_free": summary["mem_min_free"],
-        },
+        "metrics": crate::run::end_metrics(&summary),
         "run_dir": dir,
         "gui": true,
     });

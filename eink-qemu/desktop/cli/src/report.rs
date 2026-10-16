@@ -59,7 +59,10 @@ fn page(title: &str, body: &str) -> String {
 fn step_detail(r: &Value) -> String {
     let kind = r["step"].as_str().unwrap_or_default();
     match kind {
-        "ready" => format!("{} · Home at firmware {} ms · restarts {}", text(&r["how"]), text(&r["home_fw_ms"]), text(&r["restarts"])),
+        "ready" => {
+            let home = if r["home_fw_ms"].is_null() { String::new() } else { format!(" · Home at firmware {} ms", text(&r["home_fw_ms"])) };
+            format!("{} at {} s{home} · restarts {}", text(&r["how"]), text(&r["boot_s"]), text(&r["restarts"]))
+        }
         "wait-log" => format!("<code>{}</code>", esc(&text(&r["line"]))),
         "shot" => format!("<a href=\"{0}\"><img src=\"{0}\" alt=\"{1}\"></a>", esc(&text(&r["file"])), esc(&text(&r["name"]))),
         "heap" => format!(
@@ -126,17 +129,26 @@ fn run_page(dir: &Path) -> Result<String, String> {
         b += "</div>";
     }
     let metrics: Value = std::fs::read_to_string(dir.join("metrics.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-    if metrics["page_renders"].as_u64().unwrap_or(0) > 0 || metrics["mem_samples"].as_u64().unwrap_or(0) > 0 {
-        b += "<h2>From the log</h2><table>";
-        let row = |b: &mut String, k: &str, v: String| {
-            let _ = write!(b, "<tr><th>{k}</th><td>{}</td></tr>", esc(&v));
-        };
-        row(&mut b, "Page renders", text(&metrics["page_renders"]));
-        row(&mut b, "Page drawing (bw_render) median ms", text(&metrics["bw_render_ms"]["median"]));
-        row(&mut b, "Total rendering median ms", text(&metrics["total_render_ms"]["median"]));
-        row(&mut b, "Cold layout ms", text(&metrics["cold_layout_ms"]));
-        row(&mut b, "Lowest Min Free (bytes)", text(&metrics["mem_min_free"]));
-        row(&mut b, "Last memory report", text(&metrics["mem_last"]));
+    let row = |b: &mut String, k: &str, v: String| {
+        let _ = write!(b, "<tr><th>{k}</th><td>{}</td></tr>", esc(&v));
+    };
+    if metrics.is_object() {
+        b += "<h2>Measurements</h2><table>";
+        row(&mut b, "Display updates sent", text(&metrics["screen_updates"]));
+        row(&mut b, "Panel refreshes", text(&metrics["panel_refreshes"]));
+        row(&mut b, "Panel refresh time, total ms", text(&metrics["panel_refresh_ms"]));
+        row(&mut b, "Log lines (ESP-IDF errors / warnings)", format!("{} ({} / {})", text(&metrics["log_lines"]), text(&metrics["log_errors"]), text(&metrics["log_warnings"])));
+        b += "</table>";
+    }
+    let cp = &metrics["crosspoint"];
+    if cp.is_object() {
+        b += "<h2>CrossPoint, from its log</h2><table>";
+        row(&mut b, "Page renders", text(&cp["page_renders"]));
+        row(&mut b, "Page drawing (bw_render) median ms", text(&cp["bw_render_ms"]["median"]));
+        row(&mut b, "Total rendering median ms", text(&cp["total_render_ms"]["median"]));
+        row(&mut b, "Cold layout ms", text(&cp["cold_layout_ms"]));
+        row(&mut b, "Lowest Min Free (bytes)", text(&cp["mem_min_free"]));
+        row(&mut b, "Last memory report", text(&cp["mem_last"]));
         b += "</table>";
     }
     let log = std::fs::read_to_string(dir.join("log.txt")).unwrap_or_default();

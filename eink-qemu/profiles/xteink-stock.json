@@ -1,0 +1,8 @@
+{
+  "name": "xteink-stock",
+  "title": "Stock Xteink firmware",
+  "about": "What eink-qemu knows about Xteink's own firmware: the log lines of its boot gate, which powers the device off again unless Power is still held when its app starts.",
+  "ready": {
+    "power_wait": "reject physical boot before init|POWERON without key"
+  }
+}

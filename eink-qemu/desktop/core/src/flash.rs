@@ -1,10 +1,13 @@
 //! 16 MiB flash images for the emulator, as eink-qemu/mkflash.py composes
-//! them: a release app gets the bundled bootloader and the board's partition
-//! table (and, on the X3, CrossPoint's cached device type in NVS); a
-//! PlatformIO or ESP-IDF build directory is merged from its own bootloader,
-//! table and app; a merged image keeps its own layout; a 16 MiB dump passes
-//! through. App bytes are never modified. X4 Pro .xota updates are composed
-//! by the desktop app and the browser page only.
+//! them: a release app gets the bundled bootloader and a partition table
+//! (Arduino-ESP32's 16 MB default, the Picco's stock layout, or the one
+//! given with --partitions); a PlatformIO or ESP-IDF build directory is
+//! merged from its own bootloader, table and app; a merged image keeps its
+//! own layout; a 16 MiB dump passes through. App bytes are never modified.
+//! The only firmware-specific step is CrossPoint's: its X3 build expects a
+//! cached device type in NVS, written only into images that are
+//! CrossPoint's (eink-qemu/profiles/crosspoint.json). X4 Pro .xota updates
+//! are composed by the desktop app and the browser page only.
 
 use sha2::Digest;
 use std::path::{Path, PathBuf};
@@ -12,8 +15,6 @@ use std::path::{Path, PathBuf};
 pub const FLASH_SIZE: usize = 0x100_0000;
 const TABLE_OFFSET: usize = 0x8000;
 const TABLE_SIZE: usize = 0xC00;
-const APP_OFFSET: u32 = 0x10000;
-const PICCO_APP_OFFSET: u32 = 0xE0000;
 const ENTRY_SIZE: usize = 32;
 
 const BOOT_C3: &[u8] = include_bytes!("../../../boot/bootloader-esp32c3.bin");
@@ -32,6 +33,10 @@ pub struct Flash {
     pub app: Option<PathBuf>,
     /// How the input was read: "app", "build", "merged" or "dump".
     pub kind: &'static str,
+    /// Which partition table the image has.
+    pub partitions: String,
+    /// The NVS entries written for the firmware, when any.
+    pub nvs_seed: Option<String>,
 }
 
 /// The boards that take a chip, default first.
@@ -71,43 +76,92 @@ pub fn detect_chip(data: &[u8], machine: Option<&str>) -> Result<u16, String> {
 /// One partition-table entry: type, subtype, offset, size.
 type Entry = (u8, u8, u32, u32);
 
-/// Encode an explicit-offset partition CSV in ESP-IDF's binary format.
+/// Encode a partition CSV in ESP-IDF's binary format, as gen_esp32part.py
+/// reads it: named or numeric types and subtypes, sizes and offsets with
+/// K/M suffixes, offsets left empty placed after the previous partition
+/// (apps on 64 KiB boundaries), and the encrypted/readonly flags.
 pub fn partition_table(csv: &str) -> Result<Vec<u8>, String> {
+    let number = |text: &str| -> Result<u32, String> {
+        let bad = || format!("bad number {text:?} in partition CSV");
+        let (digits, scale) = match text.chars().last() {
+            Some('K' | 'k') => (&text[..text.len() - 1], 1024),
+            Some('M' | 'm') => (&text[..text.len() - 1], 1024 * 1024),
+            _ => (text, 1),
+        };
+        let value = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+            Some(hex) => u32::from_str_radix(hex, 16),
+            None => digits.parse(),
+        }
+        .map_err(|_| bad())?;
+        value.checked_mul(scale).ok_or_else(bad)
+    };
     let mut table = Vec::new();
+    let mut next = (TABLE_OFFSET + 0x1000) as u32;
     for line in csv.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        let mut fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        if fields.len() == 5 {
+            fields.push("");
+        }
         let [name, kind, subtype, offset, size, flags] = fields[..] else {
             return Err(format!("bad partition CSV line: {line}"));
         };
-        if !flags.is_empty() {
-            return Err("partition CSV flags are not supported".into());
-        }
-        let kind: u8 = match kind { "app" => 0, "data" => 1, _ => return Err(format!("unknown partition type {kind}")) };
-        let subtype: u8 = match subtype {
-            "factory" => 0, "ota_0" => 0x10, "ota_1" => 0x11, "nvs" => 2, "ota" => 0, "spiffs" => 0x82, "coredump" => 3,
-            _ => return Err(format!("unknown partition subtype {subtype}")),
+        let kind: u8 = match kind {
+            "app" => 0,
+            "data" => 1,
+            other => u8::try_from(number(other).map_err(|_| format!("unknown partition type {other}"))?)
+                .map_err(|_| format!("partition type {other} out of range"))?,
         };
-        let number = |text: &str| -> Result<u32, String> {
-            let parsed = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-                Some(hex) => u32::from_str_radix(hex, 16),
-                None => text.parse(),
+        let subtype: u8 = match (kind, subtype) {
+            (0, "factory") => 0,
+            (0, "test") => 0x20,
+            (0, ota) if ota.starts_with("ota_") => match ota[4..].parse::<u8>() {
+                Ok(n) if n < 16 => 0x10 + n,
+                _ => return Err(format!("unknown partition subtype {ota}")),
+            },
+            (1, "ota") => 0,
+            (1, "phy") => 1,
+            (1, "nvs") => 2,
+            (1, "coredump") => 3,
+            (1, "nvs_keys") => 4,
+            (1, "efuse") => 5,
+            (1, "undefined") => 6,
+            (1, "esphttpd") => 0x80,
+            (1, "fat") => 0x81,
+            (1, "spiffs") => 0x82,
+            (1, "littlefs") => 0x83,
+            (_, other) => u8::try_from(number(other).map_err(|_| format!("unknown partition subtype {other}"))?)
+                .map_err(|_| format!("partition subtype {other} out of range"))?,
+        };
+        let size = number(size)?;
+        let offset = if offset.is_empty() {
+            let align = if kind == 0 { 0x10000 } else { 0x1000 };
+            next.div_ceil(align) * align
+        } else {
+            number(offset)?
+        };
+        next = offset.checked_add(size).ok_or("partition beyond 4 GiB")?;
+        let mut bits = 0u32;
+        for flag in flags.split(':').map(str::trim).filter(|f| !f.is_empty()) {
+            bits |= match flag {
+                "encrypted" => 1,
+                "readonly" => 2,
+                other => return Err(format!("unknown partition flag {other}")),
             };
-            parsed.map_err(|_| format!("bad number {text} in partition CSV"))
-        };
+        }
         if name.len() > 16 {
             return Err("partition label exceeds 16 bytes".into());
         }
         table.extend_from_slice(&[0xAA, 0x50, kind, subtype]);
-        table.extend_from_slice(&number(offset)?.to_le_bytes());
-        table.extend_from_slice(&number(size)?.to_le_bytes());
+        table.extend_from_slice(&offset.to_le_bytes());
+        table.extend_from_slice(&size.to_le_bytes());
         let mut label = [0u8; 16];
         label[..name.len()].copy_from_slice(name.as_bytes());
         table.extend_from_slice(&label);
-        table.extend_from_slice(&0u32.to_le_bytes());
+        table.extend_from_slice(&bits.to_le_bytes());
     }
     let digest = md5::Md5::digest(&table);
     table.extend_from_slice(&[0xEB, 0xEB]);
@@ -117,6 +171,24 @@ pub fn partition_table(csv: &str) -> Result<Vec<u8>, String> {
         return Err("partition table exceeds 0xC00 bytes".into());
     }
     table.resize(TABLE_SIZE, 0xFF);
+    read_partitions(&table)?;
+    Ok(table)
+}
+
+/// A partition table file: a CSV, or ESP-IDF's binary table (0xC00 bytes,
+/// or a whole sector as some builds write it).
+pub fn read_partition_file(path: &Path) -> Result<Vec<u8>, String> {
+    let data = std::fs::read(path).map_err(|e| format!("--partitions {}: {e}", path.display()))?;
+    let table = if data.starts_with(&[0xAA, 0x50]) {
+        let mut table = data;
+        table.truncate(TABLE_SIZE);
+        table.resize(TABLE_SIZE, 0xFF);
+        table
+    } else {
+        let text = String::from_utf8(data).map_err(|_| format!("--partitions {}: neither a partition CSV nor a binary table", path.display()))?;
+        partition_table(&text)?
+    };
+    read_partitions(&table).map_err(|e| format!("--partitions {}: {e}", path.display()))?;
     Ok(table)
 }
 
@@ -203,8 +275,20 @@ pub fn nvs_image(size: usize, namespace: &str, values: &[(&str, u8)]) -> Vec<u8>
     page
 }
 
-/// Merge a bootloader, a partition table and an app into 16 MiB.
-fn compose(app: &[u8], boot: &[u8], table: &[u8], machine: Option<&str>) -> Result<(Vec<u8>, u16), String> {
+/// The partition an app goes to, as `idf.py flash` picks it: the factory
+/// app, else ota_0, else the first app. The Picco's stock layout keeps its
+/// factory slot for recovery, so its app goes to ota_0.
+fn app_partition(entries: &[Entry], picco: bool) -> Option<Entry> {
+    let find = |subtype: u8| entries.iter().copied().find(|e| e.0 == 0 && e.1 == subtype);
+    if picco {
+        return find(0x10);
+    }
+    find(0x00).or_else(|| find(0x10)).or_else(|| entries.iter().copied().find(|e| e.0 == 0))
+}
+
+/// Merge a bootloader, a partition table and an app into 16 MiB, with the
+/// NVS entries a CrossPoint X3 build expects when the app is one.
+fn compose(app: &[u8], boot: &[u8], table: &[u8], machine: Option<&str>) -> Result<(Vec<u8>, u16, Option<String>), String> {
     let chip = detect_chip(app, machine)?;
     if detect_chip(boot, None)? != chip {
         return Err("the bootloader and the app are for different chips".into());
@@ -214,35 +298,46 @@ fn compose(app: &[u8], boot: &[u8], table: &[u8], machine: Option<&str>) -> Resu
     }
     let entries = read_partitions(table)?;
     let picco = machine == Some("picco");
-    let app_offset = if picco { PICCO_APP_OFFSET } else { APP_OFFSET };
-    let apps: Vec<&Entry> = entries.iter().filter(|e| e.0 == 0 && e.2 == app_offset).collect();
-    let [app_part] = apps[..] else {
-        return Err(format!("the partition table must have one app partition at {app_offset:#x}"));
+    let Some((_, subtype, app_offset, app_size)) = app_partition(&entries, picco) else {
+        return Err(format!("the partition table has no {} partition", if picco { "ota_0 app" } else { "app" }));
     };
-    if app.len() > app_part.3 as usize {
-        return Err(format!("the app ({} bytes) exceeds its partition ({:#x} bytes)", app.len(), app_part.3));
+    if app.len() > app_size as usize {
+        return Err(format!(
+            "the app ({} bytes) exceeds its partition ({app_size:#x} bytes at {app_offset:#x}); give the firmware's own table with --partitions",
+            app.len()
+        ));
     }
     let mut flash = vec![0xFFu8; FLASH_SIZE];
     flash[..boot.len()].copy_from_slice(boot);
     flash[TABLE_OFFSET..TABLE_OFFSET + table.len()].copy_from_slice(table);
     flash[app_offset as usize..app_offset as usize + app.len()].copy_from_slice(app);
-    if picco {
-        if app_part.1 != 0x10 || !entries.contains(&(1, 0, 0x15000, 0x2000)) {
-            return Err("the Picco needs an ota_0 app and OTA data at 0x15000".into());
-        }
-        // Select ota_0: sequence 1, erased label, VALID state, sequence CRC.
-        flash[0x15000..0x15004].copy_from_slice(&1u32.to_le_bytes());
-        flash[0x15018..0x1501C].copy_from_slice(&2u32.to_le_bytes());
-        flash[0x1501C..0x15020].copy_from_slice(&0x4743_989Au32.to_le_bytes());
+    let factory = entries.iter().any(|e| e.0 == 0 && e.1 == 0);
+    if (0x10..0x20).contains(&subtype) && factory {
+        // Boot the OTA slot rather than the factory app: OTA data selecting
+        // it (sequence n+1, erased label, VALID state, sequence CRC).
+        let Some(&(_, _, ota_data, _)) = entries.iter().find(|e| e.0 == 1 && e.1 == 0) else {
+            return Err("the app goes to an OTA slot beside a factory app, but the table has no OTA data partition".into());
+        };
+        let at = ota_data as usize;
+        let sequence = u32::from(subtype - 0x10) + 1;
+        flash[at..at + 4].copy_from_slice(&sequence.to_le_bytes());
+        flash[at + 24..at + 28].copy_from_slice(&2u32.to_le_bytes());
+        let crc = crc32(0xFFFF_FFFF, &sequence.to_le_bytes());
+        flash[at + 28..at + 32].copy_from_slice(&crc.to_le_bytes());
     }
-    if chip == 5 && machine != Some("x4") {
-        // CrossPoint's cached device detection, so an X3 does not probe.
-        if !entries.contains(&(1, 2, 0x9000, 0x5000)) {
-            return Err("an ESP32-C3 image needs NVS at 0x9000 with size 0x5000".into());
+    let profile = &*crate::profiles::CROSSPOINT;
+    let board = machine.unwrap_or(machines(chip)[0]);
+    let mut seeded = None;
+    if profile.nvs_seed.machines.iter().any(|m| m == board) && profile.is_image(app) {
+        if let Some(&(_, _, offset, size)) = entries.iter().find(|e| e.0 == 1 && e.1 == 2) {
+            let values: Vec<(&str, u8)> = profile.nvs_seed.values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            let nvs = nvs_image(size as usize, &profile.nvs_seed.namespace, &values);
+            flash[offset as usize..(offset + size) as usize].copy_from_slice(&nvs);
+            let entries: Vec<String> = values.iter().map(|(k, v)| format!("{}/{k}={v}", profile.nvs_seed.namespace)).collect();
+            seeded = Some(format!("CrossPoint's {}", entries.join(", ")));
         }
-        flash[0x9000..0xE000].copy_from_slice(&nvs_image(0x5000, "cphw", &[("dev_det", 2)]));
     }
-    Ok((flash, chip))
+    Ok((flash, chip, seeded))
 }
 
 /// A build directory's bootloader, partition table and app (firmware.bin,
@@ -284,17 +379,33 @@ fn build_files(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
 /// build directory, or a 16 MiB image. `machine` picks the board (needed
 /// for the X4 and the Picco, whose chips the X3 and X4 Pro share).
 pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String> {
+    make_flash_with(source, machine, None)
+}
+
+/// `make_flash` with a partition table (CSV or binary) for an app or build
+/// directory instead of the bundled or the build's own.
+pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<&Path>) -> Result<Flash, String> {
     let pick = |chip: u16| machine.map(str::to_string).unwrap_or_else(|| machines(chip)[0].to_string());
+    let given = partitions.map(read_partition_file).transpose()?;
+    let given_name = || partitions.map(|p| format!("from {}", p.display())).unwrap_or_default();
     if source.is_dir() {
-        let (app_path, boot, table) = build_files(source)?;
+        let (app_path, boot, table_path) = build_files(source)?;
         let read = |p: &Path| std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()));
-        let (app, boot, table) = (read(&app_path)?, read(&boot)?, read(&table)?);
-        let (image, chip) = compose(&app, &boot, &table, machine)?;
-        return Ok(Flash { image, chip, machine: pick(chip), app: Some(app_path), kind: "build" });
+        let (app, boot) = (read(&app_path)?, read(&boot)?);
+        let (table, partitions) = match given {
+            Some(table) => (table, given_name()),
+            None => (read(&table_path)?, format!("the build's {}", table_path.file_name().unwrap_or_default().to_string_lossy())),
+        };
+        let (image, chip, nvs_seed) = compose(&app, &boot, &table, machine)?;
+        return Ok(Flash { image, chip, machine: pick(chip), app: Some(app_path), kind: "build", partitions, nvs_seed });
     }
     let data = std::fs::read(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
     if data.starts_with(b"XOTA") {
         return Err("X4 Pro .xota updates are not read here; use the release's .bin, or open the .xota in the desktop app".into());
+    }
+    let whole = data.len() == FLASH_SIZE || (data.len() > TABLE_OFFSET + 2 && data[TABLE_OFFSET..TABLE_OFFSET + 2] == [0xAA, 0x50]);
+    if whole && given.is_some() {
+        return Err("--partitions is for an app .bin or a build directory; a merged image or flash dump has its own table".into());
     }
     if data.len() == FLASH_SIZE {
         // Dumps may be encrypted or lack a boot header: every byte is kept.
@@ -303,7 +414,7 @@ pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String>
             Some(_) => detect_chip(&data, machine)?,
             None => detect_chip(&data, None).unwrap_or(9),
         };
-        return Ok(Flash { image: data, chip, machine: pick(chip), app: None, kind: "dump" });
+        return Ok(Flash { image: data, chip, machine: pick(chip), app: None, kind: "dump", partitions: "the dump's own".into(), nvs_seed: None });
     }
     let chip = detect_chip(&data, machine)?;
     if data.len() > TABLE_OFFSET + 2 && data[TABLE_OFFSET..TABLE_OFFSET + 2] == [0xAA, 0x50] {
@@ -323,13 +434,17 @@ pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String>
         }
         let mut image = data;
         image.resize(FLASH_SIZE, 0xFF);
-        return Ok(Flash { image, chip, machine: pick(chip), app: None, kind: "merged" });
+        return Ok(Flash { image, chip, machine: pick(chip), app: None, kind: "merged", partitions: "the image's own".into(), nvs_seed: None });
     }
     validate_app(&data)?;
     let boot = if chip == 5 { BOOT_C3 } else { BOOT_S3 };
-    let table = partition_table(if machine == Some("picco") { PARTITIONS_PICCO } else { PARTITIONS })?;
-    let (image, chip) = compose(&data, boot, &table, machine)?;
-    Ok(Flash { image, chip, machine: pick(chip), app: Some(source.to_path_buf()), kind: "app" })
+    let (table, partitions) = match given {
+        Some(table) => (table, given_name()),
+        None if machine == Some("picco") => (partition_table(PARTITIONS_PICCO)?, "the Picco's stock layout (bundled)".into()),
+        None => (partition_table(PARTITIONS)?, "Arduino-ESP32's 16 MB default (bundled)".into()),
+    };
+    let (image, chip, nvs_seed) = compose(&data, boot, &table, machine)?;
+    Ok(Flash { image, chip, machine: pick(chip), app: Some(source.to_path_buf()), kind: "app", partitions, nvs_seed })
 }
 
 /// Check an ESP application image the way the ROM loader would: every
@@ -447,9 +562,94 @@ mod tests {
         assert_eq!(flash.image.len(), FLASH_SIZE);
         assert_eq!(&flash.image[..BOOT_C3.len()], BOOT_C3);
         assert_eq!(&flash.image[0x10000..0x10000 + app.len()], &app[..]);
-        assert_eq!(&flash.image[0x9000..0x9004], &0xFFFF_FFFEu32.to_le_bytes());
+        assert!(flash.partitions.contains("Arduino"));
+        // Not CrossPoint: its NVS stays erased.
+        assert_eq!(flash.nvs_seed, None);
+        assert!(flash.image[0x9000..0xE000].iter().all(|&b| b == 0xFF));
         assert!(make_flash(&path, Some("x4pro")).is_err());
+    }
+
+    /// An app image whose data holds CrossPoint's NVS strings.
+    fn crosspoint_app() -> Vec<u8> {
+        let mut app = vec![0u8; 24];
+        app[0] = 0xE9;
+        app[1] = 1;
+        app[12..14].copy_from_slice(&5u16.to_le_bytes());
+        let data = b"cphw\0dev_det\0\0\0\0";
+        app.extend_from_slice(&0x3FC8_0000u32.to_le_bytes());
+        app.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        app.extend_from_slice(data);
+        let checksum = data.iter().fold(0xEFu8, |c, b| c ^ b);
+        app.resize(63, 0);
+        app.push(checksum);
+        app
+    }
+
+    #[test]
+    fn seeds_nvs_only_for_crosspoint_on_the_x3() {
+        let app = crosspoint_app();
+        assert!(validate_app(&app).is_ok());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crosspoint.bin");
+        std::fs::write(&path, &app).unwrap();
+        let x3 = make_flash(&path, None).unwrap();
+        assert_eq!(&x3.image[0x9000..0x9004], &0xFFFF_FFFEu32.to_le_bytes());
+        assert!(x3.nvs_seed.unwrap().contains("cphw/dev_det=2"));
         let x4 = make_flash(&path, Some("x4")).unwrap();
         assert!(x4.image[0x9000..0xE000].iter().all(|&b| b == 0xFF));
+        assert_eq!(x4.nvs_seed, None);
+    }
+
+    #[test]
+    fn reads_partition_csvs_like_gen_esp32part() {
+        let csv = "# Name, Type, SubType, Offset, Size, Flags\n\
+                   nvs, data, nvs, , 24K,\n\
+                   phy_init, data, phy, , 4K\n\
+                   factory, app, factory, , 1M\n\
+                   storage, data, littlefs, , 0x100000, readonly\n\
+                   custom, 0x40, 0x7, , 4K, encrypted:readonly\n";
+        let table = partition_table(csv).unwrap();
+        assert_eq!(
+            read_partitions(&table).unwrap(),
+            [(1, 2, 0x9000, 0x6000), (1, 1, 0xF000, 0x1000), (0, 0, 0x10000, 0x100000), (1, 0x83, 0x110000, 0x100000), (0x40, 7, 0x210000, 0x1000)]
+        );
+        assert_eq!(u32::from_le_bytes(table[3 * 32 + 28..3 * 32 + 32].try_into().unwrap()), 2);
+        assert!(partition_table("x, app, ota_16, , 1M\n").is_err());
+        assert!(partition_table("x, data, nvs, 0x9000, 4K, sticky\n").is_err());
+    }
+
+    #[test]
+    fn places_the_app_where_idf_flashes_it() {
+        let app = test_app(9);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.bin");
+        std::fs::write(&path, &app).unwrap();
+        // A factory app beside OTA slots: the app goes to factory, OTA data stays erased.
+        let csv = dir.path().join("factory.csv");
+        std::fs::write(&csv, "nvs,data,nvs,0x9000,0x4000\notadata,data,ota,0xd000,0x2000\nphy_init,data,phy,0xf000,0x1000\nfactory,app,factory,0x10000,1M\nota_0,app,ota_0,0x110000,1M\n").unwrap();
+        let flash = make_flash_with(&path, None, Some(&csv)).unwrap();
+        assert_eq!(&flash.image[0x10000..0x10000 + app.len()], &app[..]);
+        assert!(flash.image[0xD000..0xF000].iter().all(|&b| b == 0xFF));
+        assert!(flash.partitions.contains("factory.csv"));
+        // The Picco keeps its factory slot for recovery: ota_0, selected in OTA data.
+        let picco = make_flash(&path, Some("picco")).unwrap();
+        assert_eq!(&picco.image[0xE0000..0xE0000 + app.len()], &app[..]);
+        assert_eq!(&picco.image[0x15000..0x15004], &1u32.to_le_bytes());
+        assert_eq!(&picco.image[0x1501C..0x15020], &0x4743_989Au32.to_le_bytes());
+        // An app bigger than the bundled table's slot fits a table that has room.
+        let mut big = vec![0u8; 0x700000];
+        big[..app.len()].copy_from_slice(&app);
+        let big_path = dir.path().join("big.bin");
+        std::fs::write(&big_path, &big).unwrap();
+        let roomy = dir.path().join("roomy.bin");
+        std::fs::write(&roomy, partition_table("nvs,data,nvs,0x9000,0x5000\napp0,app,ota_0,0x10000,0x800000\n").unwrap()).unwrap();
+        let err = compose(&big, BOOT_S3, &partition_table(PARTITIONS).unwrap(), None).unwrap_err();
+        assert!(err.contains("--partitions"), "{err}");
+        let table = read_partition_file(&roomy).unwrap();
+        assert!(compose(&big, BOOT_S3, &table, None).is_ok());
+        // A dump has its own table.
+        let dump = dir.path().join("dump.bin");
+        std::fs::write(&dump, vec![0xFFu8; FLASH_SIZE]).unwrap();
+        assert!(make_flash_with(&dump, None, Some(&roomy)).err().unwrap().contains("own table"));
     }
 }

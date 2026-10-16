@@ -1,7 +1,10 @@
-# CrossPoint boot assets
+# Boot assets
 
-`mkflash.py` uses these assets to compose official CrossPoint release apps into
-16 MiB emulator flash images. No firmware app is included. Composition needs
+`mkflash.py` (and the CLI, the desktop app and the browser page) use these
+assets to compose release app `.bin`s into 16 MiB emulator flash images. They
+were taken from CrossPoint's build, which uses the stock Arduino-ESP32
+bootloaders and partition table, so they suit any app built for that layout.
+No firmware app is included. Composition needs
 only Python 3; PlatformIO and esptool are needed only to regenerate bootloaders.
 
 ## Bootloaders
@@ -56,18 +59,22 @@ compared byte for byte with CrossPoint's `.pio/build/default/bootloader.bin`.
 comment added. It is MIT-licensed ([license text](LICENSE.partitions)). All
 CrossPoint environments share this table. The generated 3072-byte binary has
 SHA256 `bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce`,
-matching `.pio/build/default/partitions.bin` byte for byte.
+matching `.pio/build/default/partitions.bin` byte for byte. It is, entry for
+entry, Arduino-ESP32's `tools/partitions/default_16MB.csv`; firmware with
+another layout passes its own table with `--partitions`.
 
 The composer adds the ESP-IDF MD5 record and erased padding itself. It preserves
 the app bytes and leaves OTA metadata erased so the bootloader selects app0.
-For C3, `mknvs.py` seeds `cphw/dev_det=2` at 0x9000, as `mkflash.sh` did: this
-represents an X3 whose hardware type is already cached and avoids CrossPoint
-1.6.5's first-boot Wire lock deadlock. S3 NVS stays erased, matching the existing
-X4 Pro behavior; the official S3 app reaches hardware and panel initialization
-without a seed.
+For a CrossPoint X3 app (one that carries its `cphw` and `dev_det` strings,
+per `eink-qemu/profiles/crosspoint.json`), `mknvs.py` seeds `cphw/dev_det=2`
+into the NVS partition: this represents an X3 whose hardware type is already
+cached and avoids CrossPoint 1.6.5's first-boot Wire lock deadlock. Every other
+app, and every S3 app, keeps NVS erased; the official S3 app reaches hardware
+and panel initialization without a seed.
 
-Build directories supply their own bootloader/table. The app remains at 0x10000;
-its table entry bounds the app size. C3 builds require the same NVS layout.
+Build directories supply their own bootloader and table. The app goes where
+`idf.py flash` puts it (the factory partition, else ota_0); its table entry
+bounds the app size.
 `--machine x3|x4pro` checks the detected chip and rejects a mismatch. A file of
 exactly 16 MiB passes through unchanged; with `--machine`, its boot header is
 also checked. These helpers target emulator images, not encrypted/secure-boot

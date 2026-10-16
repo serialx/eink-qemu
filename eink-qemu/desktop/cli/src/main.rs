@@ -52,14 +52,21 @@ fn rtc(text: &str) -> Result<String, String> {
 }
 
 const AFTER_HELP: &str = "\
-Steps run in order; `eink-qemu steps` lists them. A typical run:
+Steps run in order; `eink-qemu steps` lists them. Any ESP-IDF firmware:
+
+  eink-qemu run build/ ready shot:boot press:down wait-screen shot:next heap:next
+
+`ready` passes once the screen has been quiet for 5 s (--ready-quiet). For
+CrossPoint Reader, which eink-qemu knows (eink-qemu/profiles), `ready` waits
+for its Home and memory report; opening a book on a blank card:
 
   eink-qemu run .pio/build/default --put book.epub ready press:confirm \\
       wait-screen press:confirm 'wait-log:Page render' shot:opened heap:opened
 
-On a blank card Home has Browse Files selected: the first confirm opens the
-file list, the second opens its first book. Each step prints one JSON record
-on stdout; the run directory (printed in the first record, default
+(Home has Browse Files selected: the first confirm opens the file list, the
+second its first book.) Stock Xteink firmware turns itself off unless Power
+is held at boot: add --power-hold 3000. Each step prints one JSON record on
+stdout; the run directory (printed in the first record, default
 eink-qemu-out/<time>-<name>, linked from eink-qemu-out/latest) keeps
 run.jsonl, log.txt, frames/, shots/, heaps/ and report.html. Exit codes:
 0 passed, 1 a step failed, 2 bad usage, 3 the run could not start,
@@ -79,7 +86,7 @@ enum Command {
     Run {
         /// Firmware: an app or merged .bin, a PlatformIO/ESP-IDF build directory, or a 16 MiB flash image.
         firmware: PathBuf,
-        /// Steps, e.g. ready press:down 'wait-log:Page render' shot:page2 (see `eink-qemu steps`).
+        /// Steps, e.g. ready press:down wait-screen shot:page2 (see `eink-qemu steps`).
         steps: Vec<String>,
         #[command(flatten)]
         run: RunArgs,
@@ -142,8 +149,11 @@ enum Command {
     Flash {
         firmware: PathBuf,
         output: PathBuf,
-        #[arg(long)]
+        #[arg(long, value_parser = ["x3", "x4", "x4pro", "picco"])]
         machine: Option<String>,
+        /// Partition table for an app .bin or a build directory (CSV or binary; default: Arduino-ESP32's 16 MB table).
+        #[arg(long, value_name = "CSV|BIN")]
+        partitions: Option<PathBuf>,
     },
     /// Make, list and edit SD card images.
     Sd {
@@ -179,6 +189,17 @@ pub struct RunArgs {
     /// X4 Pro display panel: uc8279-68 or uc8179.
     #[arg(long, default_value = "uc8279-68", value_parser = ["uc8279-68", "uc8179"])]
     pub panel: String,
+    /// Partition table for an app .bin or a build directory: the firmware's partitions.csv or its binary table.
+    /// Default for an app: Arduino-ESP32's 16 MB table (the Picco's stock layout on --machine picco).
+    #[arg(long, value_name = "CSV|BIN")]
+    pub partitions: Option<PathBuf>,
+    /// Hold Power pressed this long at a cold boot, in guest ms (board default 1500). Firmware that turns itself
+    /// off unless Power is still held when its app starts needs more (stock Xteink firmware: 3000).
+    #[arg(long, value_name = "MS", value_parser = clap::value_parser!(u32).range(0..=60_000))]
+    pub power_hold: Option<u32>,
+    /// Where the firmware log comes from: usb (USB Serial/JTAG; ESP-IDF mirrors its console there by default) or uart0.
+    #[arg(long, default_value = "usb", value_parser = ["usb", "uart0"])]
+    pub console: String,
     /// The firmware's ELF for heap sites and --trace: auto (beside the firmware), none, or a path.
     #[arg(long, value_name = "auto|none|PATH")]
     pub elf: Option<String>,
@@ -191,6 +212,10 @@ pub struct RunArgs {
     /// Time limit of `ready`, in host seconds.
     #[arg(long, default_value_t = 180.0, value_name = "SECONDS", value_parser = seconds)]
     pub ready_timeout: f64,
+    /// How long the screen must stay unchanged for `ready` to pass, in host seconds, on firmware without a
+    /// profile (CrossPoint has its own boot milestones).
+    #[arg(long, default_value_t = 5.0, value_name = "SECONDS", value_parser = seconds)]
+    pub ready_quiet: f64,
     /// How long the display must stay unchanged to count as settled (shots, wait-screen, frames), in host ms.
     /// The panel must also have been idle (not BUSY) for --panel-idle.
     #[arg(long, default_value_t = 200, value_name = "MS", value_parser = millis)]
@@ -290,10 +315,14 @@ fn main() -> ExitCode {
                 print!("{}", eink_core::script::steps::STEP_HELP);
                 0
             }
-            Command::Flash { firmware, output, machine } => match eink_core::flash::make_flash(&firmware, machine.as_deref()) {
+            Command::Flash { firmware, output, machine, partitions } => match eink_core::flash::make_flash_with(&firmware, machine.as_deref(), partitions.as_deref()) {
                 Ok(flash) => match std::fs::write(&output, &flash.image) {
                     Ok(()) => {
-                        println!("wrote {} ({} bytes, {} for {}, from {})", output.display(), flash.image.len(), flash.kind, flash.machine, firmware.display());
+                        println!(
+                            "wrote {} ({} bytes, {} for {}, from {}; partitions: {}{})",
+                            output.display(), flash.image.len(), flash.kind, flash.machine, firmware.display(), flash.partitions,
+                            flash.nvs_seed.map(|s| format!("; NVS: {s}")).unwrap_or_default()
+                        );
                         0
                     }
                     Err(e) => {

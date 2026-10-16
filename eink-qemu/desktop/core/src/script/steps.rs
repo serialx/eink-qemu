@@ -10,8 +10,8 @@ use std::path::PathBuf;
 /// steps` and in error messages.
 pub const STEP_HELP: &str = "\
 Waiting
-  ready[:SECONDS]            boot finished: Home drawn and the firmware reporting
-                             (CrossPoint), or the screen quiet for 5 s (others)
+  ready[:SECONDS]            boot finished: the screen quiet for 5 s (--ready-quiet),
+                             or for CrossPoint its Home drawn and its memory report
   wait-log:REGEX             a log line matching REGEX, after the last action
   wait-screen[:SECONDS]      the screen changed after the last action and settled
                              (a transient screen such as a loading screen counts)
@@ -34,8 +34,9 @@ Capture
   heap[:NAME]                walk every heap; heaps/NAME.json with blocks
   trace-start:NAME           mark the start of an allocation window (--trace)
   trace-stop:NAME            allocations, frees and bytes kept since trace-start
-  mark:NAME                  a labelled record; compare groups wait-log values
-                             by the mark before them
+  mark:NAME                  a labelled record with the display and panel counters;
+                             compare measures each mark's window (guest time,
+                             refreshes) and groups wait-log values by it
   In NAME, {i} is the iteration of the innermost repeat (shot:page{i}); a name
   used again gets -2, -3, ...
 Checks
