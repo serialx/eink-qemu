@@ -57,6 +57,8 @@ pub struct Finalizer {
 impl Finalizer {
     pub fn finalize(&self) {
         self.frames.stop();
+        // Let a recorder pass already under way finish its frame.
+        std::thread::sleep(std::time::Duration::from_millis(60));
         let frames = self.frames.frames();
         let _ = std::fs::write(self.dir.join("frames.json"), serde_json::to_string_pretty(&frames).unwrap_or_default());
         if let Some(Ok(log)) = self.session.trace_log() {

@@ -154,7 +154,13 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
             printer.record(&record);
         }
     }
-    let _ = child.wait().await;
+    // The app crashing after the steps (while the window stayed open) fails the run too.
+    let exit = child.wait().await.ok();
+    let app_failed = exit.as_ref().is_some_and(|s| !s.success());
+    if app_failed && steps_done {
+        printer.record(&json!({"type": "error", "stage": "gui", "error": format!("the desktop app exited with {:?} after the steps", exit.and_then(|s| s.code()))}));
+        ok = false;
+    }
     if !steps_done {
         let log = std::fs::read_to_string(dir.join("desktop.log")).unwrap_or_default();
         let tail: Vec<&str> = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();

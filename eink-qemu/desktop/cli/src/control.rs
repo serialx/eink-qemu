@@ -172,24 +172,29 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
         tokio::spawn(async move {
             loop {
                 let Ok(mut stream) = listener.accept().await else { continue };
-                let mut line = String::new();
-                {
-                    let mut reader = BufReader::new(&mut stream);
-                    match tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line)).await {
-                        Ok(Ok(n)) if n > 0 => {}
-                        _ => continue,
+                // Each connection is read on its own task: a silent one
+                // cannot hold up the next.
+                let (status, stop_tx, req_tx) = (status.clone(), stop_tx.clone(), req_tx.clone());
+                tokio::spawn(async move {
+                    let mut line = String::new();
+                    {
+                        let mut reader = BufReader::new(tokio::io::AsyncReadExt::take(&mut stream, 1 << 20));
+                        match tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line)).await {
+                            Ok(Ok(n)) if n > 0 => {}
+                            _ => return,
+                        }
                     }
-                }
-                let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-                if request["stop"] == true {
-                    let _ = reply(&mut stream, &json!({"type": "done", "ok": true, "code": 0, "stopping": true})).await;
-                    let _ = stop_tx.send(true);
-                } else if request["status"] == true {
-                    let value = status.lock().unwrap().clone();
-                    let _ = reply(&mut stream, &value).await;
-                } else if req_tx.send((request, stream)).is_err() {
-                    break;
-                }
+                    let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                    if request["stop"] == true {
+                        let _ = reply(&mut stream, &json!({"type": "done", "ok": true, "code": 0, "stopping": true})).await;
+                        let _ = stop_tx.send(true);
+                    } else if request["status"] == true {
+                        let value = status.lock().unwrap().clone();
+                        let _ = reply(&mut stream, &value).await;
+                    } else {
+                        let _ = req_tx.send((request, stream));
+                    }
+                });
             }
         })
     };
@@ -272,9 +277,14 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
         if outcome.is_none() {
             done["stopped"] = json!(true);
         }
-        if let Ok(mut write_half) = forward.await {
-            let _ = reply(&mut write_half, &done).await;
-            let _ = write_half.shutdown().await;
+        // A client that stopped reading cannot hold the session.
+        let abort = forward.abort_handle();
+        match tokio::time::timeout(Duration::from_secs(5), forward).await {
+            Ok(Ok(mut write_half)) => {
+                let _ = tokio::time::timeout(Duration::from_secs(5), reply(&mut write_half, &done)).await;
+                let _ = write_half.shutdown().await;
+            }
+            _ => abort.abort(),
         }
         *status.lock().unwrap() = status_value(runner, false);
         last_activity = Instant::now();
@@ -440,14 +450,17 @@ pub async fn status(session: Option<PathBuf>) -> u8 {
         Ok(mut stream) => {
             let _ = reply(&mut stream, &json!({"status": true})).await;
             let mut lines = BufReader::new(stream).lines();
-            if let Ok(Ok(Some(line))) = tokio::time::timeout(Duration::from_secs(5), lines.next_line()).await {
-                if let Ok(Value::Object(live)) = serde_json::from_str::<Value>(&line) {
-                    for (k, v) in live {
-                        if k != "type" {
-                            info[k] = v;
+            match tokio::time::timeout(Duration::from_secs(5), lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    if let Ok(Value::Object(live)) = serde_json::from_str::<Value>(&line) {
+                        for (k, v) in live {
+                            if k != "type" {
+                                info[k] = v;
+                            }
                         }
                     }
                 }
+                _ => info["error"] = json!("the session accepted the connection but did not answer the status request within 5 s"),
             }
             info["alive"] = json!(true);
             printer.record(&info);
@@ -493,6 +506,8 @@ pub async fn start(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 
         Ok(d) => d,
         Err(e) => return crate::run::usage(&printer, &e),
     };
+    // The background run proves the directory is its own with this token.
+    let claim = std::fs::read_to_string(dir.join(launch::CLAIM_FILE)).unwrap_or_default();
     let ready = dir.join("ready.json");
     let steps_file = dir.join("steps.txt");
     if let Err(e) = std::fs::write(&steps_file, all.join("\n") + "\n") {
@@ -513,11 +528,11 @@ pub async fn start(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 
         if matches!(arg.as_str(), "--quiet" | "-q" | "--hold" | "--progress") {
             continue;
         }
-        if matches!(arg.as_str(), "--ready-file" | "--steps-file") {
+        if matches!(arg.as_str(), "--ready-file" | "--steps-file" | "--claim") {
             skip_value = true;
             continue;
         }
-        if arg.starts_with("--ready-file=") || arg.starts_with("--steps-file=") {
+        if arg.starts_with("--ready-file=") || arg.starts_with("--steps-file=") || arg.starts_with("--claim=") {
             continue;
         }
         argv.push(arg);
@@ -532,6 +547,8 @@ pub async fn start(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 
         ready.to_string_lossy().into_owned(),
         "--steps-file".into(),
         steps_file.to_string_lossy().into_owned(),
+        "--claim".into(),
+        claim.trim().to_string(),
     ]);
     let log = match std::fs::File::create(dir.join("session.log")) {
         Ok(f) => f,

@@ -28,7 +28,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     if let Err(e) = launch::check_args(&args) {
         return usage(&printer, &e);
     }
-    let dir = match launch::run_dir_in(args.out.as_deref(), &firmware, "", args.ready_file.is_some()) {
+    let dir = match launch::run_dir_in(args.out.as_deref(), &firmware, "", args.claim.as_deref()) {
         Ok(dir) => dir,
         Err(e) => return usage(&printer, &e),
     };

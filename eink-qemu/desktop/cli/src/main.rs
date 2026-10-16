@@ -258,6 +258,9 @@ pub struct RunArgs {
     /// The complete step list, one per line (start passes it to its background run).
     #[arg(long, hide = true)]
     pub steps_file: Option<PathBuf>,
+    /// The token of the run directory `start` claimed for its background run.
+    #[arg(long, hide = true)]
+    pub claim: Option<String>,
 }
 
 fn main() -> ExitCode {

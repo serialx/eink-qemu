@@ -35,12 +35,23 @@ pub struct Prepared {
 /// A run directory: --out, else eink-qemu-out/<time>-<firmware> beside the
 /// working directory, with eink-qemu-out/latest pointing at it.
 pub fn run_dir(out: Option<&Path>, firmware: &Path, suffix: &str) -> Result<PathBuf, String> {
-    run_dir_in(out, firmware, suffix, false)
+    run_dir_in(out, firmware, suffix, None)
 }
 
-/// As `run_dir`; with `reuse`, an existing --out is taken as it is (the
-/// background run that `start` prepared the directory for).
-pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool) -> Result<PathBuf, String> {
+/// The file that claims a run directory for one run; it holds a token.
+pub const CLAIM_FILE: &str = ".eink-qemu-run";
+
+/// As `run_dir`; with `claim`, the --out that `start` claimed for its
+/// background run is taken as it is, once its claim file holds that token.
+pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, claim: Option<&str>) -> Result<PathBuf, String> {
+    if let (Some(token), Some(out)) = (claim, out) {
+        let held = std::fs::read_to_string(out.join(CLAIM_FILE)).unwrap_or_default();
+        if held.trim().is_empty() || held.trim() != token.trim() {
+            return Err(format!("{} is not claimed for this run", out.display()));
+        }
+        return Ok(dunce::canonicalize(out).unwrap_or_else(|_| out.to_path_buf()));
+    }
+    let reuse = false;
     let dir = match out {
         Some(out) => {
             if !reuse && out.exists() && std::fs::read_dir(out).map(|mut d| d.next().is_some()).unwrap_or(false) && !clear_failed_setup(out) {
@@ -76,14 +87,17 @@ pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool
     let dir = dunce::canonicalize(&dir).unwrap_or(dir);
     if !reuse {
         // Claims the directory: a second run given the same --out stops here.
-        let marker = dir.join(".eink-qemu-run");
-        std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).map_err(|e| {
+        use std::io::Write;
+        let marker = dir.join(CLAIM_FILE);
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
                 format!("another run is using {}; choose another --out", dir.display())
             } else {
                 format!("cannot write in {}: {e}", dir.display())
             }
         })?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let _ = write!(file, "{:x}-{:x}", std::process::id(), nanos);
     }
     if out.is_none() {
         point_latest(&dir);
@@ -375,11 +389,28 @@ pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared
 
 /// Start QEMU for a prepared run; the session reports to `events`.
 pub async fn launch(p: &mut Prepared, events: Arc<RunEvents>) -> Result<Arc<Session>, String> {
-    // The run's own copy is known to this run alone: its lock lives beside it.
-    let locks = p.dir.join(".locks");
+    // The run's card is locked where the desktop app and `sd` look, so
+    // nothing writes it while QEMU runs. Where that directory is off limits
+    // (a sandbox), the lock goes beside the card, and the start record says so.
     let card = match p.card_lock.take() {
         Some(card) => card,
-        None => cards::open_card(&locks, &p.card).map_err(|e| lock_error(&format!("SD card {}", p.card.display()), &e.message, &locks))?,
+        None => {
+            let shared = shared_locks();
+            match cards::open_card(&shared, &p.card) {
+                Ok(card) => card,
+                Err(e) if e.code != "EBUSY" && lock_error("", &e.message, &shared).contains("EINK_QEMU_LOCKS") => {
+                    let local = p.dir.join(".locks");
+                    p.card_info["lock_note"] = json!(format!(
+                        "the shared card lock directory {} is not writable here, so the card is locked in {} only; \
+                         the desktop app and `eink-qemu sd` cannot see that lock",
+                        shared.display(),
+                        local.display()
+                    ));
+                    cards::open_card(&local, &p.card).map_err(|e| lock_error(&format!("SD card {}", p.card.display()), &e.message, &local))?
+                }
+                Err(e) => return Err(lock_error(&format!("SD card {}", p.card.display()), &e.message, &shared)),
+            }
+        }
     };
     let session = Session::new(events.clone(), p.qemu.clone(), Some(card));
     let trace = p.trace.clone();
