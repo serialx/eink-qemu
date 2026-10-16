@@ -1,5 +1,6 @@
 /* Typed wrappers over the Rust commands (src-tauri/src/lib.rs). */
 import { Channel, invoke } from '@tauri-apps/api/core';
+import type { HeapEvents } from './heap-log';
 
 export interface Exit { kind: 'stopped' | 'failed' | 'crashed'; reason: string | null }
 export interface SessionInfo {
@@ -62,12 +63,13 @@ export interface SdEntry { name: string; size: number; isDir: boolean; mtime: nu
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
 export interface UploadPlan { files: number; bytes: number; conflicts: string[] }
 /** One heap (src-tauri/src/heap.rs). `blocks` is flat: offset, length, flags,
-    requested size; with an allocation log, each block's site and stack id. */
+    requested size; with an allocation log, each block's site, stack id and
+    the event that allocated it (-1 where the log has none). */
 export interface Heap {
   name: string; caps: string[]; start: number; end: number; pool: number; tail: number;
   free: number; used: number; largest: number; count: number; nfree: number;
   infoFree: number; infoMinFree: number; corrupt: number; blocks: number[];
-  sites?: number[]; stk?: number[];
+  sites?: number[]; stk?: number[]; ev?: number[];
 }
 /** heapview.py's /snapshot shape (src-tauri/src/heapview.rs): time in seconds. */
 export interface HeapSnapshot {
@@ -80,6 +82,10 @@ export interface HeapSnapshot {
   elf?: string | null;
   /** Why the chosen ELF was not used (not the running firmware's, unreadable). */
   elfNote?: string | null;
+  /** The run it was read from. */
+  run?: number;
+  /** The allocation log's generation and length, and false when an older plugin wrote it. */
+  traceGen?: number; traceEvents?: number; traceFormat?: boolean;
 }
 /** A kept snapshot from the run's history and the one before it. */
 export interface HeapPast { snapshot: HeapSnapshot; prev: HeapSnapshot | null }
@@ -152,6 +158,8 @@ export const api = {
   heapStack: (id: number) => call<HeapStack | null>('heap_stack', { id }),
   heapSites: (from: number) => call<HeapSite[]>('heap_sites', { from }),
   heapHistory: () => call<HeapHistoryPoint[]>('heap_history'),
+  heapEvents: (gen: number, start: number, stacks: number, sites: number) =>
+    call<HeapEvents | null>('heap_events', { gen, start, stacks, sites }),
   heapWindow: () => call<void>('heap_window'),
   saveScreenshot: (png: Uint8Array, name: string) =>
     call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),

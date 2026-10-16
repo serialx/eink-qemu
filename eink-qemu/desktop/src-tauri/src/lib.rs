@@ -874,8 +874,8 @@ async fn heap_window(handle: tauri::AppHandle) -> Result<(), AppError> {
     }
     tauri::WebviewWindowBuilder::new(&handle, "heap", tauri::WebviewUrl::App("heap.html".into()))
         .title("Heap view")
-        .inner_size(1180.0, 860.0)
-        .min_inner_size(640.0, 480.0)
+        .inner_size(1280.0, 860.0)
+        .min_inner_size(960.0, 600.0)
         .build()
         .map_err(|e| AppError::new("EIO", format!("Could not open the heap window: {e}")))?;
     Ok(())

@@ -309,7 +309,7 @@ jobs:
 
       - name: Test
         run: |
-          node --test ../tests/test_heapview_client.mjs
+          node --test ../tests/test_heapview_client.mjs ../tests/test_heap_log.mjs
           pnpm exec tsc --noEmit
           cargo test --manifest-path src-tauri/Cargo.toml
 

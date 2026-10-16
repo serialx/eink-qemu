@@ -46,7 +46,8 @@ the Rust core.
   through a save dialog ("Save to computer"); Turbo keeps idle time in real
   time (see the README).
 - Without the Tauri runtime (`pnpm dev` in a browser) the page shows mock
-  content from `src/demo.ts`, for layout work.
+  content from `src/demo.ts`, for layout work; `heap.html` shows mock heaps
+  with an allocation log from `src/heap-mock.ts` (`?untraced`: without one).
 
 ## Processes
 
@@ -204,10 +205,23 @@ tab, which colours blocks by site id and fetches the names it has not seen.
 The tab updates its cards in place and moves one only when the order
 changes: re-appending them each second re-anchored the pane's scroll.
 
-The heap window (`heap.html`) mounts `eink-qemu/heapview.js`, the module
-heapview.py's page is built from, with the Rust commands in place of HTTP and
-the page's palette in place of heapview.css's (`heap-window.css`). The Heap
-tab (`heap.ts`) stays a compact view of the same snapshots.
+The heap window (`heap.html`, `heap-window.ts`) is a workbench over the same
+commands: allocation sites, the maps, an inspector and a timeline. It and the
+tab share the map painter, hit-testing, names and stack markup
+(`heap-core.ts`) and their styles (`heap.css`); the tab stays the compact
+view. With the log, the window keeps every event (`heap-log.ts`: typed-array
+columns, the live set checkpointed every 2048 events) and rebuilds block
+lists at any event from the live set and the latest walk: an allocation still
+alive keeps its walked size, others get the TLSF size for their request,
+blocks the walk found but the log never saw stay where they are, and the gaps
+are free. Without the log, its moments are the kept snapshots. Comparing keeps
+A's heaps; a block is the same at A and B when the log names the same
+allocating event, else when it has the same place and size. Site colours go
+to the eight sites holding the most memory in the latest snapshot and stay
+while they remain among them, so they can differ from the tab's, which
+follow the site id. Snapshots carry their run, and the window also listens
+for the session event, so a new run starts it afresh. heapview.py keeps the
+earlier page, `eink-qemu/heapview.js`.
 
 ## Firmware
 

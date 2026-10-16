@@ -24,7 +24,7 @@ import argparse, bisect, glob, json, os, re, shutil, socket, struct, subprocess,
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# The page, and the module and stylesheet it shares with the desktop app's heap window.
+# The page, its module and its stylesheet.
 FILES = {"/": ("heapview.html", "text/html; charset=utf-8"),
          "/heapview.js": ("heapview.js", "text/javascript; charset=utf-8"),
          "/heapview.css": ("heapview.css", "text/css; charset=utf-8")}

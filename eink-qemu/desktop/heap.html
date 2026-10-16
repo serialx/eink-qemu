@@ -7,5 +7,100 @@
   <script src="/theme.js"></script>
   <script type="module" src="/src/heap-window.ts"></script>
 </head>
-<body></body>
+<body>
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  </svg>
+
+  <div class="hw">
+    <header class="hw-head">
+      <h1>Heap view</h1>
+      <span id="hw-elf" class="hw-elf"></span>
+      <span id="hw-live" class="hw-live"><span class="hw-dot" aria-hidden="true"></span><span id="hw-state">Connecting…</span></span>
+      <span class="hw-spacer"></span>
+      <div class="hw-control">
+        <span id="hw-colorby-label">Colour by</span>
+        <div id="hw-colorby" class="hw-seg" role="radiogroup" aria-labelledby="hw-colorby-label">
+          <button type="button" role="radio" data-color="state" aria-checked="false" title="Allocated, free and heap overhead">State</button>
+          <button type="button" role="radio" data-color="site" aria-checked="false" title="The function that allocated each block">Site</button>
+          <button type="button" role="radio" data-color="change" aria-checked="false" title="What is new and what was freed between A and B">Change A→B</button>
+        </div>
+      </div>
+      <div class="zoom" role="group" aria-label="Map scale">
+        <button id="hw-scale-out" type="button" aria-label="Smaller maps: more bytes per row" title="Smaller maps: more bytes per row">−</button>
+        <select id="hw-scale" aria-label="Bytes per map row" title="Bytes per map row"></select>
+        <button id="hw-scale-in" type="button" aria-label="Larger maps: fewer bytes per row" title="Larger maps: fewer bytes per row">+</button>
+      </div>
+      <button id="hw-pause" class="hw-button" type="button" aria-pressed="false" title="Stop reading the heaps: the emulator is no longer paused each second">Pause</button>
+    </header>
+    <p id="hw-note" class="hw-note" hidden></p>
+
+    <div class="hw-body">
+      <aside class="hw-sites" aria-labelledby="hw-sites-title">
+        <div class="hw-sites-head">
+          <h2 id="hw-sites-title">Sites</h2>
+          <span id="hw-sites-count" class="hw-faint num"></span>
+          <label class="filter">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="hw-filter" type="search" placeholder="Filter" aria-label="Filter allocation sites">
+          </label>
+        </div>
+        <div id="hw-table" class="hw-table" tabindex="0" aria-label="Allocation sites: arrow keys move the selection">
+          <table>
+            <thead id="hw-thead"></thead>
+            <tbody id="hw-tbody"></tbody>
+          </table>
+        </div>
+        <p id="hw-sites-empty" class="hw-empty" hidden></p>
+        <p id="hw-sites-foot" class="hw-sites-foot num"></p>
+      </aside>
+
+      <main id="hw-maps" class="hw-maps" aria-label="Heap maps">
+        <div id="hw-message" class="heap-message" hidden>
+          <strong id="hw-message-title"></strong>
+          <p id="hw-message-text"></p>
+        </div>
+        <p id="hw-summary" class="hw-summary num"></p>
+        <p id="hw-legend" class="hw-legend"></p>
+        <div id="hw-list" class="hw-list"></div>
+      </main>
+
+      <aside id="hw-inspector" class="hw-inspector" aria-label="Inspector" tabindex="-1"></aside>
+    </div>
+
+    <footer class="hw-time" aria-label="Timeline">
+      <div class="hw-time-bar">
+        <button id="hw-play" class="hw-icon" type="button" aria-label="Play from the cursor (Space)" title="Play from the cursor (Space)"><svg class="icon"><use href="#i-play"/></svg></button>
+        <div id="hw-speed" class="hw-seg" role="radiogroup" aria-label="Replay speed">
+          <button type="button" role="radio" data-speed="1" aria-checked="false">1×</button>
+          <button type="button" role="radio" data-speed="10" aria-checked="false">10×</button>
+        </div>
+        <button id="hw-prev" class="hw-icon" type="button" aria-label="Back one step (←; Shift: one second)" title="Back one step (←; Shift: one second)"><svg class="icon"><use href="#i-back"/></svg></button>
+        <button id="hw-next" class="hw-icon" type="button" aria-label="Forward one step (→; Shift: one second)" title="Forward one step (→; Shift: one second)"><svg class="icon"><use href="#i-forward"/></svg></button>
+        <span id="hw-time-label" class="hw-time-label num"></span>
+        <span class="hw-spacer"></span>
+        <button id="hw-mark" class="hw-button" type="button" title="Compare from the cursor: it becomes A, and the cursor B (Shift-click the timeline to mark another moment)">Mark A</button>
+        <span id="hw-mark-set" class="hw-mark-set" hidden>
+          <span class="hw-tag">A</span><span id="hw-mark-time" class="num"></span>
+          <button id="hw-mark-clear" class="hw-icon" type="button" aria-label="Stop comparing" title="Stop comparing"><svg class="icon"><use href="#i-x"/></svg></button>
+        </span>
+        <div id="hw-range" class="hw-seg" role="radiogroup" aria-label="Timeline span">
+          <button type="button" role="radio" data-range="30000" aria-checked="false">30 s</button>
+          <button type="button" role="radio" data-range="180000" aria-checked="false">3 min</button>
+          <button type="button" role="radio" data-range="0" aria-checked="false">All</button>
+        </div>
+        <button id="hw-golive" class="hw-button" type="button" title="Back to the live heaps (Esc)"><svg class="icon small"><use href="#i-play"/></svg>Live</button>
+      </div>
+      <canvas id="hw-timeline" tabindex="0" aria-label="The run over time: internal RAM free, and allocations and frees. Click, drag or use the arrow keys to see the heaps at an earlier moment; Shift-click marks A; Escape returns to live."></canvas>
+      <div class="hw-axis num"><span id="hw-from"></span><span id="hw-hint"></span><span id="hw-to"></span></div>
+    </footer>
+  </div>
+  <div id="hw-tip" class="heap-tip" hidden></div>
+</body>
 </html>
