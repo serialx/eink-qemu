@@ -1,5 +1,7 @@
 /*! coi-serviceworker v0.1.7 - Guido Zuidhof and contributors, licensed under MIT */
 // Vendored from gzuidhof/coi-serviceworker@7b1d2a092d0d2dd2b7270b6f12f13605de26f214.
+// eink-qemu: the page reloads once the worker is active, not on updatefound,
+// and retries a few times instead of giving up after one self reload.
 let coepCredentialless = false;
 if (typeof window === 'undefined') {
     self.addEventListener("install", () => self.skipWaiting());
@@ -64,14 +66,20 @@ if (typeof window === 'undefined') {
         const reloadedBySelf = window.sessionStorage.getItem("coiReloadedBySelf");
         window.sessionStorage.removeItem("coiReloadedBySelf");
         const coepDegrading = (reloadedBySelf == "coepdegrade");
+        // Self reloads in a row; isolation ends the run.
+        const reloads = Number(window.sessionStorage.getItem("coiReloads")) || 0;
+        if (window.crossOriginIsolated) window.sessionStorage.removeItem("coiReloads");
 
         // You can customize the behavior of this script through a global `coi` variable.
         const coi = {
-            shouldRegister: () => !reloadedBySelf,
+            shouldRegister: () => reloads < 3,
             shouldDeregister: () => false,
             coepCredentialless: () => true,
             coepDegrade: () => true,
-            doReload: () => window.location.reload(),
+            doReload: () => {
+                window.sessionStorage.setItem("coiReloads", String(reloads + 1));
+                window.location.reload();
+            },
             quiet: false,
             ...window.coi
         };
@@ -122,24 +130,26 @@ if (typeof window === 'undefined') {
             return;
         }
 
+        // The page tells its scripts a reload is coming (eink-qemu waits
+        // with its storage: a connection this page opens can stall the next's).
+        if (!controlling) window.coiReloading = true;
         n.serviceWorker.register(window.document.currentScript.src).then(
             (registration) => {
                 !coi.quiet && console.log("COOP/COEP Service Worker registered", registration.scope);
 
-                registration.addEventListener("updatefound", () => {
-                    !coi.quiet && console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
-                    window.sessionStorage.setItem("coiReloadedBySelf", "updatefound");
-                    coi.doReload();
-                });
-
-                // If the registration is active, but it's not controlling the page
-                if (registration.active && !n.serviceWorker.controller) {
+                // A controlled page that is still not isolated was handled above.
+                if (controlling) return;
+                // Only an active worker controls a navigation: reloading while
+                // it still installs (upstream reloads on updatefound) can leave
+                // the new page uncontrolled. `ready` waits for activation.
+                n.serviceWorker.ready.then(() => {
                     !coi.quiet && console.log("Reloading page to make use of COOP/COEP Service Worker.");
                     window.sessionStorage.setItem("coiReloadedBySelf", "notcontrolling");
                     coi.doReload();
-                }
+                });
             },
             (err) => {
+                window.coiReloading = false;
                 !coi.quiet && console.error("COOP/COEP Service Worker failed to register:", err);
             }
         );

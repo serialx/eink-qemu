@@ -8,6 +8,7 @@
    runtime iframe owns it (MEMFS /sd.img) from boot until the stop snapshot
    returns it. Explorer operations go to whichever owns it. */
 import type { AttachHandlers, Backend, DropHandlers, FileRef, Screen } from './backend';
+import { firmwareStore, type KeptFirmware } from './firmware-store';
 import {
   AppError, type CardInfo, type FirmwareInfo, type MadeCard, type SdListing, type SessionInfo,
   type Settings, type Setup, type StartOptions, type UploadPlan,
@@ -20,6 +21,16 @@ const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro
 const MiB = 1024 ** 2;
 const notSupported = (what: string) => Promise.reject(new AppError('ENOTSUP', `${what} is not available in the browser.`));
 const errorMessage = (error: unknown) => (error as Error)?.message ?? String(error);
+/* Missing page files: what a visitor can do, and on a local server what a
+   developer forgot. */
+const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+const missing = (what: string) => `${what} Reload the page to try again.` + (local ? ' Serving a checkout? Run package-web.sh first.' : '');
+/** Why the page is not cross-origin isolated, which SharedArrayBuffer needs. */
+function notIsolated() {
+  if (!isSecureContext) return 'The emulator needs a cross-origin isolated page: open it over HTTPS or on localhost.';
+  if (!navigator.serviceWorker) return 'The emulator needs a cross-origin isolated page, and this browser blocked the service worker that sets it up (private browsing?).';
+  return 'The page is not cross-origin isolated yet, which the emulator needs. Reload the page and start again.';
+}
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
   const response = await fetch(url);
@@ -150,15 +161,29 @@ function describeFirmware(name: string, size: number, head: Uint8Array, modified
   }
   return { path: name, name, size, folder: '', parent: '', modified, chip, version, project };
 }
-async function useFile(file: File): Promise<Setup> {
+/* Recent firmware (firmware-store.ts): picked files are kept in this browser,
+   named by an id from the file's name, size and date. */
+let recent: KeptFirmware[] = [];
+const keptId = (file: File) => `${file.name} · ${file.size} bytes · ${new Date(file.lastModified).toISOString().slice(0, 16).replace('T', ' ')}`;
+async function useFile(file: File, keep = true): Promise<Setup> {
   const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
-  firmware = { source: { kind: 'file', file }, info: describeFirmware(file.name, file.size, head, file.lastModified || null), bytes: null };
+  const info = { ...describeFirmware(file.name, file.size, head, file.lastModified || null), path: keptId(file) };
+  firmware = { source: { kind: 'file', file }, info, bytes: null };
+  if (keep) {
+    // The list changes now; the copy is kept in the background.
+    const entry: KeptFirmware = { id: info.path, name: file.name, size: file.size, modified: info.modified, device: settings.device, used: Date.now() };
+    recent = [entry, ...recent.filter((r) => r.id !== entry.id)].slice(0, 6);
+    firmwareStore.keep(file, info.path, settings.device).catch(() => {});
+  }
   return setupOf();
 }
 const setupOf = (): Setup => ({
   settings: { ...settings, firmware: firmware?.info.name ?? null, card: card?.name ?? null },
-  firmware: firmware?.info ?? null, elf: null, elfMatches: null, elfSkipped: null, recent: [],
+  firmware: firmware?.info ?? null, elf: null, elfMatches: null, elfSkipped: null,
+  recent: recent.map((r) => ({ path: r.id, name: r.name, parent: '', device: r.device, elf: false })),
 });
+/** The devices a chip can be. */
+const devicesOf = (chip: FirmwareInfo['chip']): Machine[] => chip === 'ESP32-C3' ? ['x3', 'x4'] : chip === 'ESP32-S3' ? ['x4pro', 'picco'] : [];
 
 /* The screen: the runtime iframe, which keeps the panel's resolution and is
    scaled as a whole. SDL inside it takes the pointer and the keyboard. */
@@ -195,8 +220,11 @@ let handlers: AttachHandlers | null = null;
 let frame: FrameScreen | null = null;
 let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null, run: 0, seq: 0 };
 function setSession(patch: Partial<SessionInfo>) {
+  const was = session.state;
   session = { ...session, ...patch, seq: session.seq + 1 };
   handlers?.session(session);
+  // The saved-card note says what saves next, which depends on the run.
+  if (session.state !== was && noteSaved) cardNote(savedNote(), false, false, true);
 }
 const post = (data: unknown, transfer: Transferable[] = []) => frame?.el.contentWindow?.postMessage(data, location.origin, transfer);
 let bootData: Record<string, unknown> | null = null;
@@ -211,62 +239,114 @@ function log(line: string) {
   logTimer ||= window.setTimeout(() => { logTimer = 0; handlers?.log(pendingLog.splice(0)); }, 16);
 }
 
-/* The card. */
+/* The card. Saves go one at a time, each over the card number (revision)
+   this tab last loaded or saved: sd-store.js refuses a save over a newer card
+   from another tab, and the tab is then stale until it takes a card again. */
 let image: Uint8Array | null = null;
 let card: CardInfo | null = null;
 let loading: Promise<void> | null = null;
 let saving = 0, snapshotPending = false;
+let revision = 0, stale = false, noteSaved = false;
+let saves: Promise<unknown> = Promise.resolve();
 const calls = new Map<number, { resolve(result: unknown): void; reject(error: Error): void }>();
 let sequence = 0;
 let copyWanted: ((name: string) => void) | null = null;
+/** The largest card the page takes: the whole card lives in memory, in the
+    page or the runtime, and is copied for every save. */
+const MAX_CARD = 2 * 1024 * MiB;
+const STALE_NOTE = 'Another tab of this page saved a newer SD card, so changes here are not saved. Download this card to keep them, or reload to use the newer card.';
 
-function cardNote(note: string, error = false, changed = false) {
+function cardNote(note: string, error = false, changed = false, saved = false) {
+  noteSaved = saved;
   if (!card) return;
   card = { ...card, note, error };
   handlers?.card(card, changed);
 }
-async function saveSD(bytes: Uint8Array) {
-  const revision = ++saving;
-  cardNote('Saving SD card in this browser…');
-  try {
-    await sdStore.save(bytes);
-    if (revision === saving) cardNote('SD card saved in this browser.' + (session.state === 'running' ? ' Device changes save every 10 seconds; Stop saves now.' : ' Safe to refresh.'));
-  } catch (error) {
-    if (revision === saving) cardNote(`Could not save SD card: ${errorMessage(error)} Download the SD image to keep changes.`, true);
+const savedNote = () => 'SD card saved in this browser.' +
+  (session.state === 'running' ? ' Device changes save every 10 seconds; Stop saves now.' : ' Safe to refresh.');
+/** Saves `bytes` as the card; `force` replaces whatever is saved (a card the
+    user chose). Resolves when this save is done or has failed. */
+function saveSD(bytes: Uint8Array, force = false): Promise<void> {
+  const attempt = ++saving;
+  if (!force && stale) {
+    cardNote(STALE_NOTE, true);
+    return Promise.resolve();
   }
+  cardNote('Saving SD card in this browser…');
+  const save = saves.then(async () => {
+    try {
+      revision = await sdStore.save(bytes, revision, force);
+      if (force) stale = false;
+      if (attempt === saving) cardNote(savedNote(), false, false, true);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ESTALE') {
+        stale = true;
+        cardNote(STALE_NOTE, true);
+      } else if (attempt === saving) cardNote(`Could not save SD card: ${errorMessage(error)} Download the SD image to keep changes.`, true);
+    }
+  });
+  saves = save;
+  return save;
+}
+/** A card file's bytes. Read in pieces: a browser refuses to read a very
+    large file in one go. */
+async function readCard(file: File): Promise<Uint8Array> {
+  if (file.size > MAX_CARD) {
+    throw new AppError('EFBIG', `${file.name} is ${Math.round(file.size / MiB)} MiB. The browser keeps the whole card in memory, so it takes SD images up to 2 GiB; use a smaller image, or the desktop app.`);
+  }
+  let bytes: Uint8Array;
+  try { bytes = new Uint8Array(file.size); } catch {
+    throw new AppError('ENOMEM', `This browser could not set aside ${Math.round(file.size / MiB)} MiB for ${file.name}; use a smaller SD image.`);
+  }
+  try {
+    for (let at = 0; at < file.size; at += 64 * MiB) bytes.set(new Uint8Array(await file.slice(at, at + 64 * MiB).arrayBuffer()), at);
+  } catch (error) {
+    throw new AppError('EIO', `The browser could not read ${file.name} (${(error as Error)?.name ?? 'error'}). Choose it again.`);
+  }
+  return bytes;
 }
 /** Take up a card: a picked file or a same-origin URL, or the saved card
     when `restore` and there is one. The page hears of the card busy while
-    it loads (the explorer waits), then of the card as another image. */
+    it loads (the explorer waits), then of the card as another image. The
+    card in use stays if the new one cannot be read. */
 function loadCard(source: File | string, restore: boolean) {
-  image = null;
   const name = source instanceof File ? source.name : source.split('/').pop() || 'sd.img';
+  const previous = image && card ? { image, card } : null;
   card = { path: '', name, size: 0, note: 'Loading SD image…', busy: true };
+  noteSaved = false;
   handlers?.card(card, false);
   loading = (async () => {
-    let kept: Uint8Array | null = null, restoreFailed: string | null = null;
+    let kept: { bytes: Uint8Array; revision: number } | null = null, restoreFailed: string | null = null;
     if (restore) {
       try { kept = await sdStore.load(); } catch (error) { restoreFailed = `Could not restore the saved SD card: ${errorMessage(error)} Using a temporary card.`; }
     }
-    const bytes = kept ?? new Uint8Array(source instanceof File ? await source.arrayBuffer() : await fetchBytes(source));
+    const bytes = kept?.bytes ?? (source instanceof File ? await readCard(source) : await fetchBytes(source));
     if (!bytes.byteLength || bytes.byteLength % 512) throw new AppError('EINVAL', 'SD image must contain a whole number of 512-byte sectors.');
     image = bytes;
     card = { path: '', name: kept ? 'sd.img' : name, size: bytes.byteLength, busy: true };
-    if (kept) cardNote('Saved SD card restored from this browser.');
-    else if (restoreFailed) cardNote(restoreFailed, true);
-    else await saveSD(image);
+    if (kept) {
+      revision = kept.revision;
+      stale = false;
+      cardNote('Saved SD card restored from this browser.');
+    } else if (restoreFailed) cardNote(restoreFailed, true);
+    else await saveSD(image, true);
     card = { ...card, busy: false };
     handlers?.card(card, true);
   })();
   loading.catch((error) => {
-    card = { path: '', name, size: 0, note: `Could not load the SD image: ${errorMessage(error)}`, error: true };
+    // A save still finishing must not cover this note.
+    saving++;
+    if (previous) {
+      image = previous.image;
+      card = { ...previous.card, busy: false, note: `Could not open ${name}: ${errorMessage(error)} The card in use is unchanged.`, error: true };
+    } else card = { path: '', name, size: 0, note: `Could not load the SD image: ${errorMessage(error)}`, error: true };
     handlers?.card(card, true);
     handlers?.problem(`SD image: ${errorMessage(error)}`);
   }).finally(() => { loading = null; });
   return loading;
 }
 function autosave() {
-  if (session.state !== 'running' || snapshotPending || calls.size) return;
+  if (session.state !== 'running' || snapshotPending || calls.size || stale) return;
   snapshotPending = true;
   post({ type: 'autosave' });
 }
@@ -274,16 +354,44 @@ function autosave() {
 async function recoverCard() {
   image = null;
   card = { path: '', name: 'sd.img', size: 0, note: 'Reading the saved SD card…', busy: true };
+  noteSaved = false;
   handlers?.card(card, false);
   try {
     const kept = await sdStore.load();
     if (!kept) throw new Error('nothing is saved');
-    image = kept;
-    card = { path: '', name: 'sd.img', size: kept.byteLength, note: 'The SD card is as last saved in this browser.' };
+    image = kept.bytes;
+    revision = kept.revision;
+    stale = false;
+    card = { path: '', name: 'sd.img', size: kept.bytes.byteLength, note: 'The SD card is as last saved in this browser.' };
   } catch (error) {
     card = { path: '', name: 'sd.img', size: 0, note: `The SD card was lost with the emulator: ${errorMessage(error)}. Open an SD image or make a blank card.`, error: true };
   }
   handlers?.card(card, true);
+}
+/** Another tab saved the card. A tab with nothing unsaved and no device
+    running takes it up; otherwise its own saves would now be refused. */
+function savedElsewhere(saved: number) {
+  if (saved <= revision) return;
+  if (frame || loading || stale || !image) {
+    stale = true;
+    cardNote(STALE_NOTE, true);
+    return;
+  }
+  saves = saves.then(async () => {
+    if (frame || loading || stale) return;
+    try {
+      const kept = await sdStore.load();
+      if (!kept || kept.revision <= revision || frame || loading) return;
+      image = kept.bytes;
+      revision = kept.revision;
+      card = { path: '', name: 'sd.img', size: kept.bytes.byteLength, note: 'SD card updated from another tab of this page.' };
+      noteSaved = false;
+      handlers?.card(card, true);
+    } catch (error) {
+      stale = true;
+      cardNote(`${STALE_NOTE} (${errorMessage(error)})`, true);
+    }
+  });
 }
 
 /* Explorer operations: on the page's image while the emulator is stopped,
@@ -381,6 +489,7 @@ function onMessage({ source, origin, data }: MessageEvent) {
       break;
     case 'snapshot': {
       const bytes = data.bytes as Uint8Array;
+      sdSyncInfo(bytes);
       if (data.action === 'autosave') {
         saveSD(bytes).finally(() => { snapshotPending = false; });
       } else if (data.action === 'download') {
@@ -391,6 +500,7 @@ function onMessage({ source, origin, data }: MessageEvent) {
       } else {
         image = bytes;
         card = { path: '', name: card?.name ?? 'sd.img', size: bytes.byteLength };
+        noteSaved = false;
         endRun({ kind: 'stopped', reason: null });
         void saveSD(bytes);
         handlers?.card(card, true);
@@ -432,6 +542,22 @@ function fatName(name: string) {
   if (!FAT.isValidName(name)) throw new AppError('EINVAL', `"${name}" is not a valid FAT file name.`);
   return name;
 }
+/** Where the items land under `dir`, what they replace (found as FAT finds
+    names, so also in nested folders and in another case) and the space they
+    need beyond the clusters they reuse. A file that meets a folder is
+    refused here, before anything is written. */
+async function plan(dir: string, items: Item[]) {
+  const dirs = new Set<string>(), files: { path: string; file: File }[] = [];
+  for (const { path, file } of items) {
+    const parts = path.split('/').filter(Boolean).map(fatName);
+    for (let depth = 1; depth < parts.length; depth++) dirs.add(joinPath(dir, parts.slice(0, depth).join('/')));
+    files.push({ path: joinPath(dir, parts.join('/')), file });
+  }
+  const result = await sdCall<{ replaced: string[]; needed: number; free: number }>('plan', {
+    dirs: [...dirs], files: files.map(({ path, file }) => ({ path, size: file.size })),
+  });
+  return { dirs: [...dirs], files, ...result };
+}
 const listing = (path: string) => sdCall<{ entries: { name: string; size: number; isDir: boolean; mtime: Date | null }[]; free: number; total: number; type: string }>('list', { path });
 
 /* Drops: files and folders from the DataTransfer, as refs. Folders arrive
@@ -455,6 +581,12 @@ export const browser: Backend = {
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') autosave(); });
     document.title = 'eink-qemu · Browser emulator';
     const problems: string[] = [];
+    // A first visit reloads once the isolation service worker is active. A
+    // database this page opened meanwhile can stall the reloaded page's own
+    // (IndexedDB queues it behind the old connection), so storage waits for
+    // the reload, for a while, in case it never comes.
+    for (let waited = 0; window.coiReloading && waited < 10000; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
+    try { recent = await firmwareStore.list(); } catch {}
     // ?flash=<url>: a same-origin firmware image, started as soon as the page opens.
     const flash = params.get('flash');
     if (flash) {
@@ -463,17 +595,29 @@ export const browser: Backend = {
         const name = flash.split('/').pop() || flash;
         firmware = { source: { kind: 'url', url: flash }, info: describeFirmware(name, bytes.length, bytes.subarray(0, HEAD), null), bytes };
       } catch (error) { problems.push(`Firmware: ${errorMessage(error)}`); }
+    } else if (recent.length) {
+      // The firmware last chosen in this browser, ready for Start.
+      try {
+        const file = await firmwareStore.file(recent[0].id);
+        if (file) await useFile(file, false);
+      } catch {}
     }
+    sdStore.onSaved(savedElsewhere);
     // An explicit ?sd= URL replaces the saved card (also useful for repeatable tests).
     void loadCard(params.get('sd') ?? 'blank-sd.img', !params.has('sd'));
     return {
       session, settings, card, firmware: firmware?.info ?? null, elf: null, platform: 'browser',
-      autostart: !!firmware, pane: null, problems,
+      autostart: !!flash && !!firmware, pane: null, problems,
     };
   },
   note: () => {},
   async settings(patch) {
     settings = { ...settings, ...patch };
+    if (patch.device && firmware?.source.kind === 'file') {
+      const id = firmware.info.path, device = patch.device;
+      recent = recent.map((r) => r.id === id ? { ...r, device } : r);
+      firmwareStore.device(id, device).catch(() => {});
+    }
     try {
       for (const key of ['device', 'panel', 'wifi', 'ghosting', 'turbo'] as const) {
         if (!(key in patch)) continue;
@@ -489,7 +633,21 @@ export const browser: Backend = {
     return file ? useFile(file) : null;
   },
   useFirmware: async (ref) => useFile(await fileOf(ref)),
-  recentFirmware: () => notSupported('Recent firmware'),
+  async recentFirmware(id) {
+    const kept = recent.find((r) => r.id === id);
+    const file = kept && await firmwareStore.file(id).catch(() => null);
+    if (!kept || !file) {
+      recent = recent.filter((r) => r.id !== id);
+      throw new AppError('ENOENT', 'That firmware is no longer kept in this browser; choose the file again.');
+    }
+    const setup = await useFile(file);
+    // The device last used with it, when it suits the chip.
+    if (kept.device !== 'auto' && kept.device !== settings.device && devicesOf(firmware!.info.chip).includes(kept.device)) {
+      await browser.settings({ device: kept.device });
+      return setupOf();
+    }
+    return setup;
+  },
   setup: async () => setupOf(),
   async readFirmware() {
     if (!firmware) throw new AppError('ENOENT', 'Choose a firmware .bin, an X4 Pro .xota update, or a 16 MiB flash dump.');
@@ -498,7 +656,9 @@ export const browser: Backend = {
       firmware.bytes = source.kind === 'url' ? await fetchBytes(source.url)
         : new Uint8Array(await (source.kind === 'file' ? source.file : await entryFile(source.entry as FileSystemFileEntry)).arrayBuffer());
     }
-    return firmware.bytes;
+    // A copy: start() hands its buffer to the runtime, and a full flash dump
+    // reaches it as these very bytes.
+    return firmware.bytes.slice();
   },
 
   createScreen(machine, resized) {
@@ -506,7 +666,7 @@ export const browser: Backend = {
     return frame;
   },
   async start(flash, options: StartOptions) {
-    if (!crossOriginIsolated) throw new AppError('EISOLATE', 'SharedArrayBuffer needs isolation headers. Serve this folder with serve.py on localhost or HTTPS.');
+    if (!crossOriginIsolated) throw new AppError('EISOLATE', notIsolated());
     if (!frame) throw new AppError('EINVAL', 'No screen to boot into.');
     if (loading) await loading.catch(() => {});
     if (!image) throw new AppError('ENOENT', 'No SD image is loaded.');
@@ -530,7 +690,7 @@ export const browser: Backend = {
         if (frame !== booting || !bootData) return;
         endRun({ kind: 'failed', reason: 'the runtime page did not load' });
         void recoverCard();
-        starting?.reject(new AppError('EQEMU', 'The emulator runtime did not load. Run package-web.sh first.'));
+        starting?.reject(new AppError('EQEMU', missing('The emulator runtime did not load.')));
         starting = null;
       }, 30000);
       booting.el.src = 'runtime.html';
@@ -601,24 +761,18 @@ export const browser: Backend = {
   async sdPlanUpload(dir, refsList): Promise<UploadPlan> {
     const items = await collect(refsList);
     plans.set(refsList.join('\n'), items);
-    const { entries } = await listing(dir);
-    const conflicts = items.filter(({ path }) => entries.some((e) => !e.isDir && e.name === path)).map(({ path }) => joinPath(dir, path));
-    return { files: items.length, bytes: items.reduce((sum, { file }) => sum + file.size, 0), conflicts };
+    const { replaced } = await plan(dir, items);
+    return { files: items.length, bytes: items.reduce((sum, { file }) => sum + file.size, 0), conflicts: replaced };
   },
   async sdUpload(dir, refsList): Promise<UploadPlan> {
     const items = plans.get(refsList.join('\n')) ?? await collect(refsList);
     plans.delete(refsList.join('\n'));
-    const dirs = new Set<string>(), files: { path: string; bytes: Uint8Array }[] = [];
-    for (const { path, file } of items) {
-      const parts = path.split('/').filter(Boolean).map(fatName);
-      for (let depth = 1; depth < parts.length; depth++) dirs.add(joinPath(dir, parts.slice(0, depth).join('/')));
-      files.push({ path: joinPath(dir, parts.join('/')), bytes: new Uint8Array(await file.arrayBuffer()) });
-    }
-    const total = files.reduce((sum, { bytes }) => sum + bytes.length, 0);
-    const { free } = await listing(dir);
-    if (total > free) throw new AppError('ENOSPC', `Not enough space: ${(total / MiB).toFixed(1)} MiB to copy, ${(free / MiB).toFixed(1)} MiB free.`);
-    await sdCall('write', { dirs: [...dirs], files }, files.map(({ bytes }) => bytes.buffer));
-    return { files: files.length, bytes: total, conflicts: [] };
+    // Checked again: the firmware may have written to the card since the plan.
+    const { dirs, files, needed, free } = await plan(dir, items);
+    if (needed > free) throw new AppError('ENOSPC', `Not enough space: ${(needed / MiB).toFixed(1)} MiB more is needed, ${(free / MiB).toFixed(1)} MiB is free.`);
+    const writes = await Promise.all(files.map(async ({ path, file }) => ({ path, bytes: new Uint8Array(await file.arrayBuffer()) })));
+    await sdCall('write', { dirs, files: writes }, writes.map(({ bytes }) => bytes.buffer));
+    return { files: writes.length, bytes: writes.reduce((sum, { bytes }) => sum + bytes.length, 0), conflicts: [] };
   },
   async sdPickExport(path) {
     const { bytes } = await sdCall<{ bytes: Uint8Array }>('read', { path });

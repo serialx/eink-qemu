@@ -36,7 +36,8 @@ window.addEventListener('blur', () => homeKey(false));
 // Keep these overrides in sync with eink-qemu/turbo-args.sh.
 function turboProperties(machine) {
     const properties = [
-        ...(machine === 'picco' ? [] : ['read-access-us', 'read-seq-access-us', 'read-repeat-us', 'read-next-us',
+        // The X4 Pro and Picco cards sit on the S3's SDMMC host, not on SPI.
+        ...(machine === 'x4pro' || machine === 'picco' ? [] : ['read-access-us', 'read-seq-access-us', 'read-repeat-us', 'read-next-us',
             'write-busy-us', 'write-random-busy-us', 'write-repeat-busy-us',
             'write-block-busy-us', 'write-stop-busy-us', 'write-stop-decrement-us',
             'write-stop-random-extra-us'].map(name => `ssi-sd.${name}=0`)),
@@ -110,7 +111,7 @@ function sdOperation({id, op, args}) {
             reply.ok = false;
             reply.error = {code: error.code || 'EIO', message: error.message};
             // Anything that may have touched a sector needs a remount.
-            reply.reset = sdMutates(op) && !sdPrecheckErrors.includes(error.code);
+            reply.reset = sdChanged(op, error);
         }
         if (reply.reset) {
             // Save the edited card before the reset lets firmware write again.
@@ -197,7 +198,9 @@ window.addEventListener('message', async ({source, origin, data}) => {
                 '-global', 'driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc',
                 '-chardev', 'file,id=hmp,path=/dev/hmp,input-path=/dev/hmp,append=on',
                 '-mon', 'chardev=hmp,mode=readline', '-display', 'sdl,show-cursor=on',
-                '-nic', wifi ? 'browser,model=esp32_wifi' : 'hubport,hubid=0,model=esp32_wifi'],
+                // With Wi-Fi off the radio stays, with no access points to find.
+                '-nic', wifi ? 'browser,model=esp32_wifi' : 'hubport,hubid=0,model=esp32_wifi',
+                ...(wifi ? [] : ['-global', 'esp32_wifi.access-points=off'])],
             print: output, printErr: output,
             onAbort: reason => send('error', {message: String(reason)}),
             onExit: status => send('exit', {status}),
@@ -218,7 +221,8 @@ window.addEventListener('message', async ({source, origin, data}) => {
         };
         const script = document.createElement('script');
         script.src = `qemu-system-${(machine === 'x3' || machine === 'x4') ? 'riscv32' : 'xtensa'}.js`;
-        script.onerror = () => send('error', {message: 'Could not load the emulator. Run package-web.sh first.'});
+        script.onerror = () => send('error', {message: `Could not load the emulator (${script.src.split('/').pop()}). Reload the page to try again.` +
+            (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) ? ' Serving a checkout? Run package-web.sh first.' : '')});
         document.body.append(script);
     }
 });

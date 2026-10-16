@@ -22,9 +22,16 @@ declare module '@web/xota.js';
 declare const FAT: { isValidName(name: string): boolean };
 declare function sdExecute(image: Uint8Array, op: string, args: Record<string, unknown>): unknown;
 declare function sdMutates(op: string): boolean;
-declare const sdStore: { load(): Promise<Uint8Array | null>; save(bytes: Uint8Array): Promise<void> };
+declare function sdSyncInfo(image: Uint8Array): void;
+declare const sdStore: {
+  load(): Promise<{ bytes: Uint8Array; revision: number } | null>;
+  save(bytes: Uint8Array, revision: number, force?: boolean): Promise<number>;
+  onSaved(listener: (revision: number) => void): void;
+};
 
 interface Window {
+  /** coi-serviceworker.js will reload the page once its worker is active. */
+  coiReloading?: boolean;
   /** Seconds from boot to the Home screen; a hook for the acceptance tests. */
   bootTimeSeconds?: number | null;
   /** The browser backend's explorer and card, for the acceptance tests. */

@@ -460,6 +460,13 @@
       try { this.resolve(parts(path)); return true; }
       catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false; throw error; }
     }
+    // The entry at a path, matched as FAT matches names (case-insensitively), or null.
+    stat(path) {
+      try {
+        const e = this.resolve(parts(path));
+        return { name: e.name, size: e.isDirectory ? 0 : e.size, isDir: e.isDirectory };
+      } catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null; throw error; }
+    }
     freeBytes() { return this.freeClusters * this.clusterSize; }
     free() { return this.freeBytes(); }
   }

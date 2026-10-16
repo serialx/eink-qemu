@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {test} from 'node:test';
 
-async function boot(machine, panel, turbo = false) {
+async function boot(machine, panel, turbo = false, wifi = false) {
     const listeners = {}, scripts = [];
     const window = {addEventListener: (name, fn) => { listeners[name] = fn; }};
     const parent = {location: {search: ''}, postMessage() {}};
@@ -13,7 +13,7 @@ async function boot(machine, panel, turbo = false) {
             createElement: () => ({}), body: {append: script => scripts.push(script.src)}}});
     vm.runInContext(readFileSync(new URL('./runtime.js', import.meta.url), 'utf8'), context);
     await listeners.message({source: parent, origin: 'http://localhost',
-        data: {type: 'boot', machine, panel, turbo, wifi: false}});
+        data: {type: 'boot', machine, panel, turbo, wifi}});
     return {args: Array.from(window.Module.arguments), scripts};
 }
 
@@ -33,4 +33,17 @@ test('turbo overrides measured panel power and refresh waits', async () => {
     const {args} = await boot('x4pro', 'uc8279-68', true);
     assert.ok(args.includes('dwc_sdmmc.timing=off'));
     for (const name of ['pon-ms', 'pof-ms', 'busy-ms']) assert.ok(args.includes(`uc8179.${name}=1`));
+});
+
+test('turbo SPI card timings go only to the boards with an SPI card', async () => {
+    for (const machine of ['x3', 'x4', 'x4pro', 'picco']) {
+        const {args} = await boot(machine, undefined, true);
+        assert.equal(args.includes('ssi-sd.read-access-us=0'), machine === 'x3' || machine === 'x4', machine);
+    }
+});
+
+test('Wi-Fi off keeps the radio with no access points', async () => {
+    const {args} = await boot('x3', undefined, false, false);
+    assert.equal(args[args.indexOf('-nic') + 1], 'hubport,hubid=0,model=esp32_wifi');
+    assert.ok(args.includes('esp32_wifi.access-points=off'));
 });

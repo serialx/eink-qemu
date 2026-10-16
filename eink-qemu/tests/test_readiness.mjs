@@ -7,7 +7,7 @@ import { Readiness } from '../desktop/src/readiness.ts';
 
 function fresh(now = () => 10000) {
   const seen = [];
-  const r = new Readiness((text) => seen.push(text), () => 'X4 Pro', () => 'Accurate timing', now);
+  const r = new Readiness((text) => seen.push(text), () => 'X4 Pro', () => 'Accurate timing', now, () => () => {});
   r.startedAt = 0;
   return { r, seen };
 }
@@ -52,4 +52,42 @@ test('firmware that resumes a book is Ready once the screen has been quiet', () 
   clock = 5000;
   r.feed(['[MEM] Free: 1 bytes']);
   assert.equal(seen.at(-1), 'X4 Pro · Accurate timing · Ready');
+});
+
+test('firmware without a memory report settles as Running after Home', () => {
+  let settle = null;
+  const seen = [];
+  const r = new Readiness((text) => seen.push(text), () => 'X4', () => 'Turbo', () => 0,
+    (run) => { settle = run; return () => { settle = null; }; });
+  r.restart();
+  for (let i = 0; i < 3; i++) r.feed(['[326]   Wait complete: refresh (1 ms)']);
+  assert.match(seen.at(-1), /finishing startup/);
+  settle();
+  assert.equal(seen.at(-1), 'X4 · Turbo · Running · Home drawn in 0.00 s');
+});
+
+test('a memory report before the settle wins, and stop() cancels it', () => {
+  let settle = null;
+  const seen = [];
+  const r = new Readiness((text) => seen.push(text), () => 'X4', () => 'Turbo', () => 0,
+    (run) => { settle = run; return () => { settle = null; }; });
+  r.restart();
+  for (let i = 0; i < 3; i++) r.feed(['Wait complete: refresh (1 ms)']);
+  r.feed(['[MEM] Free: 1 bytes']);
+  assert.equal(settle, null);
+  assert.match(seen.at(-1), /Ready · Home drawn/);
+  r.restart();
+  for (let i = 0; i < 3; i++) r.feed(['Wait complete: refresh (1 ms)']);
+  r.stop();
+  assert.equal(settle, null);
+});
+
+test('a panel wait that ran out is not a refresh', () => {
+  const { r, seen } = fresh();
+  r.restart();
+  r.feed(['[30301]   Wait complete:  CMD_SOFT_RESET (30001 ms)']);
+  assert.match(seen.at(-1), /display did not answer the firmware \(a 30 s wait ran out\)/);
+  for (let i = 0; i < 3; i++) r.feed(['[120317]   Wait complete: refresh (29999 ms)']);
+  assert.equal(r.bootSeconds, null);
+  assert.equal(seen.length, 1);
 });

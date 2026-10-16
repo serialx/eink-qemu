@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { runInNewContext } from 'node:vm';
+import { createContext, runInContext, runInNewContext } from 'node:vm';
 import FAT, { open, FatError, isValidName } from './fat.mjs';
 
 const MiB = 1024 * 1024;
@@ -396,5 +396,41 @@ test('root volume label and dot/dotdot conventions interoperate', () => {
   assert.equal(f.view.getUint16(parentOffset + 26, true), parent.cluster);
   assert.equal(f.view.getUint16(parentOffset + 32 + 26, true), 0);
   assert.equal(f.view.getUint16(childOffset + 32 + 26, true), parent.cluster);
+  f.verify();
+});
+
+test('explorer plans name what a write replaces, refuse file/folder clashes, and count reused space', () => {
+  const f = fixture();
+  // sd-ops.js is a classic script: its consts are reached by evaluating in its context.
+  const context = createContext({ FAT });
+  runInContext(readFileSync(new URL('./sd-ops.js', import.meta.url), 'utf8'), context);
+  const ops = runInContext('({sdExecute, sdMutates, sdChanged})', context);
+  const run = (op, args) => ops.sdExecute(f.image, op, args);
+  f.fs.mkdir('/books'); f.fs.writeFile('/books/A.EPUB', pattern(3 * f.fs.clusterSize)); f.fs.writeFile('/TEXT.BIN', pattern(10));
+  f.fs.mkdir('/text.dir');
+  const plan = run('plan', { dirs: ['/books', '/new'], files: [
+    { path: '/books/a.epub', size: 3 * f.fs.clusterSize }, { path: '/text.bin', size: 5 }, { path: '/new/b', size: 2 * f.fs.clusterSize + 1 },
+  ] });
+  // Nested and case-only matches are named as the card has them.
+  assert.deepEqual([...plan.replaced], ['/books/A.EPUB', '/TEXT.BIN']);
+  // A same-size replacement reuses its clusters: a new folder and three new clusters.
+  assert.equal(plan.needed, 4 * f.fs.clusterSize);
+  assert.equal(plan.free, f.fs.freeBytes());
+  assert.throws(() => run('plan', { dirs: [], files: [{ path: '/TEXT.DIR', size: 1 }] }), { code: 'EISDIR' });
+  assert.throws(() => run('plan', { dirs: ['/text.bin'], files: [{ path: '/text.bin/x', size: 1 }] }), { code: 'ENOTDIR' });
+  assert.equal(ops.sdMutates('plan'), false);
+  // A write that fails after its first file says the card changed.
+  let failure;
+  try { run('write', { dirs: [], files: [{ path: '/ok.bin', bytes: pattern(4) }, { path: '/text.dir', bytes: pattern(4) }] }); } catch (error) { failure = error; }
+  assert.equal(failure.code, 'EISDIR');
+  assert.equal(failure.changed, true);
+  assert.equal(ops.sdChanged('write', failure), true);
+  assert.equal(ops.sdChanged('write', Object.assign(new Error('x'), { code: 'EISDIR' })), false);
+  assert.deepEqual(open(f.image).readFile('/ok.bin'), pattern(4));
+  assert.equal(f.fs.stat('/books/a.epub').name, 'A.EPUB');
+  assert.equal(f.fs.stat('/missing/x'), null);
+  assert.equal(f.fs.stat('/TEXT.BIN/x'), null);
+  // The operations opened their own volume on the image.
+  f.fs = open(f.image);
   f.verify();
 });
