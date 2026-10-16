@@ -56,6 +56,14 @@ class C3DeepSleep(unittest.TestCase):
         self.command('clock_step 1500000000')
         self.assertEqual(self.read(GPIO_IN) & 8, 8)
 
+    def test_an_early_software_reset_ends_the_cold_boot_hold(self):
+        self.assertEqual(self.read(GPIO_IN) & 8, 0)     # held since power-on
+        self.command('clock_step 100000000')
+        self.write(RTC + OPTIONS0, 1 << 31)             # SW_SYS_RST within the hold
+        self.qmp('query-status')
+        self.assertEqual(self.read(RTC + RESET_STATE), 3)
+        self.assertEqual(self.read(GPIO_IN) & 8, 8)
+
     def test_software_reset_boots_with_power_released(self):
         self.release_boot_hold()
         self.write(RTC + OPTIONS0, 1 << 31)     # SW_SYS_RST
@@ -70,8 +78,12 @@ class C3DeepSleep(unittest.TestCase):
         self.write(RTC + SLP_TIMER0, now + 13600)
         self.write(RTC + SLP_TIMER1, 1 << 16)
         self.deep_sleep(WAKE_TIMER)
+        # Deep sleep on a timer keeps the VM running; the RTC still says so.
+        self.assertEqual(self.status(), 'running')
+        self.assertIs(self.qmp('qom-get', path='/machine/rtccntl', property='deep-sleep'), True)
         self.command('clock_step 200000000')
         self.qmp('query-status')
+        self.assertIs(self.qmp('qom-get', path='/machine/rtccntl', property='deep-sleep'), False)
         self.assertEqual(self.read(RTC + RESET_STATE), 5)
         self.assertEqual(self.read(RTC + WAKEUP_CAUSE), WAKE_TIMER)
         self.assertEqual(self.read(GPIO_IN) & 8, 8)     # no hand on Power

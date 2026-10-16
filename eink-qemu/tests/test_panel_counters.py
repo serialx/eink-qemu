@@ -153,8 +153,8 @@ class PanelCounters(unittest.TestCase):
         q.write(gpio + 0x0c, 1 << 21)
         q.write(spi + 0x10, 1 << 27)
 
-        def send(value):
-            q.write(gpio + 0x0c, 1 << 4)    # DC low: a command
+        def send(value, data=False):
+            q.write(gpio + (0x08 if data else 0x0c), 1 << 4)    # DC: low a command, high data
             q.write(spi + 0x98, value)
             q.write(spi + 0x1c, 7)
             q.write(spi, 1 << 24)
@@ -171,6 +171,19 @@ class PanelCounters(unittest.TestCase):
         # "busy-ms" is 300, on a millisecond deadline.
         self.assertGreater(ns, 299000000)
         self.assertLessEqual(ns, 300000000)
+        # Update control 2 decides what an activation does: switching the
+        # clock and analog supply on or off, or loading a LUT, is no refresh.
+        for control in (0xc0, 0x03, 0x91):
+            send(0x22)
+            send(control, data=True)
+            send(0x20)
+            q.command('clock_step 400000000')
+            self.assertEqual(q.counters(), (1, ns), hex(control))
+        send(0x22)
+        send(0xf7, data=True)               # a full update, display stage included
+        send(0x20)
+        q.command('clock_step 400000000')
+        self.assertEqual(q.counters()[0], 2)
 
 
 if __name__ == '__main__':

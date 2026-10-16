@@ -261,7 +261,13 @@ static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
     case 0x20:  /* master activation */
         ssd1677_activate(s);
         ssd1677_set_busy(s, s->busy_ms);
-        s->refreshing = true;
+        /*
+         * Count it as a refresh only when update control 2 includes the
+         * display stage (bit 2): 0xc0, 0x03 or 0x91 only switch the clock
+         * and analog supply or load a LUT. 0 is the model's value before
+         * any 0x22 (the datasheet's power-on value, 0xff, includes it).
+         */
+        s->refreshing = s->ctrl2 == 0 || (s->ctrl2 & 0x04);
         s->refresh_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         break;
     case 0x32:

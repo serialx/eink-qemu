@@ -143,6 +143,21 @@ static void keys_boot(void *opaque, int n, int level)
     keys_update(s);
 }
 
+/*
+ * Every reset ends the previous boot's synthetic Power hold (the keys
+ * themselves stay as they are); the RTC's "boot" line starts a new one
+ * for a cold power-on or a Power-pad wake. This runs in the enter phase,
+ * before any hold phase, so the S3 SoC's reset (a hold phase) and the
+ * C3 RTC's (exit phase) can signal the new boot after it.
+ */
+static void keys_reset_enter(Object *obj, ResetType type)
+{
+    X3KeysState *s = X3_KEYS(obj);
+
+    timer_del(&s->boot_timer);
+    s->boot_hold = false;
+}
+
 static void keys_reset_hold(Object *obj, ResetType type)
 {
     /* Physical keys keep their state across a reset; republish the levels. */
@@ -193,6 +208,7 @@ static void keys_class_init(ObjectClass *klass, const void *data)
 
     dc->realize = keys_realize;
     dc->unrealize = keys_unrealize;
+    rc->phases.enter = keys_reset_enter;
     rc->phases.hold = keys_reset_hold;
     device_class_set_props(dc, keys_properties);
 }

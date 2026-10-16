@@ -75,8 +75,9 @@ This needs only Python 3, detects the chip, adds the bundled bootloader and
 Arduino-ESP32's 16 MB partition table (`boot/partitions.csv` is its
 `default_16MB.csv`, which CrossPoint uses), and preserves the app bytes. Firmware
 with another layout passes its own table: `--partitions partitions.csv` (or the
-binary table), read like `gen_esp32part.py` reads it. The app goes where
-`idf.py flash` puts it, the factory partition or else ota_0. Bootloader
+binary table), read and checked as ESP-IDF's `gen_esp32part.py` does. The app
+goes to ESP-IDF's boot-default slot: the factory partition, else the lowest OTA
+slot. Bootloader
 provenance, licenses and regeneration commands are in
 [eink-qemu/boot/](eink-qemu/boot/README.md). CrossPoint X3 images (those that
 carry its `cphw`/`dev_det` strings) get its cached device type in NVS; every
@@ -134,9 +135,10 @@ Keep `firmware.elf` beside you for symbols. To find a hang: run with `-s -S`, at
 `xtensa-esp32s3-elf-addr2line -pfiaC -e firmware.elf <PC>`.
 
 To test a firmware without a person at the keys, use the command-line tool
-([eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md)). On an X3 with a
-blank card, this opens the book and keeps its first page and heaps (the first
-confirm opens Browse Files, the second the book):
+([eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md)). With CrossPoint on
+an X3 and a blank card, this opens the book and keeps its first page and heaps
+(the first confirm opens Browse Files, the second the book; `Page render` is
+CrossPoint's log line):
 
 ```sh
 eink-qemu/cli run <build dir> --put book.epub ready press:confirm wait-screen \
@@ -509,8 +511,9 @@ Done in `eink-qemu`:
 - Every panel model (`uc8179`, `uc8279`, `ssd1677`, at
   `/machine/peripheral/panel`) has read-only QOM properties for scripts and
   firmware-neutral metrics: `busy` (BUSY asserted now), `refreshes` (refreshes
-  completed since QEMU started: DRF 0x12 on the UltraChip panels, master
-  activation 0x20 on the SSD1677; power on/off and resets don't count) and
+  completed since QEMU started: DRF 0x12 on the UltraChip panels, a master
+  activation 0x20 whose update control 2 (0x22) includes the display stage on
+  the SSD1677; power on/off, LUT loads and resets don't count) and
   `refresh-ns` (their summed BUSY time in guest ns). The counts survive guest
   and external resets. A refresh that RST cuts short is not counted (the
   UC8253/UC8279 model keeps BUSY through RST, so its refresh completes).
@@ -568,7 +571,8 @@ Done in `eink-qemu`:
   power-on, and after a deep-sleep wake by a pad while Power is pressed or was
   pressed in the last 2 s of guest time: the hand that turns the device on is
   still on the button when the firmware checks. A software or watchdog reset,
-  a timer wake or a wake by another key boots with Power released. The stock
+  a timer wake, or a wake by another key when Power was not pressed in the last 2 s
+  of guest time, boots with Power released. The stock
   X4 Pro firmware (7.5.11) wants Power held 600 ms when its app starts (about
   2.5 s after power-on): `-global x4pro-keys.power-boot-ms=3000` boots it with
   no press.
@@ -584,7 +588,10 @@ Done in `eink-qemu`:
   - Deep sleep that only a pad can end suspends the VM (the guest clock stops);
     the wake resumes it. Deep sleep with no wake source modelled (or none
     armed) is the chip off: the VM stays suspended until a reset. Light sleep
-    with no wake source returns at once, as before.
+    with no wake source returns at once, as before. Deep sleep with the RTC
+    timer armed keeps the VM running until the timer or a pad ends it. Either
+    way the RTC's read-only QOM property `deep-sleep` (`/machine/rtccntl` on
+    the C3, `/machine/soc/rtc_cntl` on the S3) is true while it lasts.
   - The SoC resets the RTC domain itself: an external reset (QEMU start, QMP
     `system_reset`, also of a suspended VM) is a power cycle with reset reason
     POWERON and the last wake forgotten; guest resets keep theirs (SW_SYS,

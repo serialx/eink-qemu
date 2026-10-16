@@ -219,6 +219,14 @@ class S3DeepSleepWake(unittest.TestCase):
         self.assertEqual(self.read(self.base + 0x38) & 63, 1)
         self.assertEqual(self.read(self.base + 0x130), 0)
 
+    def test_an_early_software_reset_ends_the_cold_boot_hold(self):
+        self.assertEqual(self.read(GPIO_IN) & 8, 0)     # held since power-on
+        self.command('clock_step 100000000')
+        self.write(self.base, 1 << 31)                  # OPTIONS0 SW_SYS_RESET within the hold
+        self.qmp('query-status')
+        self.assertEqual(self.read(self.base + 0x38) & 63, 3)
+        self.assertEqual(self.read(GPIO_IN) & 8, 8)
+
     def test_software_reset_and_timer_wake_boot_with_power_released(self):
         self.release_boot_hold()
         self.write(self.base, 1 << 31)      # OPTIONS0 SW_SYS_RESET
@@ -226,8 +234,10 @@ class S3DeepSleepWake(unittest.TestCase):
         self.assertEqual(self.read(self.base + 0x38) & 63, 3)
         self.assertEqual(self.read(GPIO_IN) & 8, 8)
         self.sleep_until(self.rtc() + 13600, deep=True)
+        self.assertIs(self.qmp('qom-get', path='/machine/soc/rtc_cntl', property='deep-sleep'), True)
         self.command('clock_step 200000000')
         self.qmp('query-status')
+        self.assertIs(self.qmp('qom-get', path='/machine/soc/rtc_cntl', property='deep-sleep'), False)
         self.assertEqual(self.read(self.base + 0x38) & 63, 5)
         self.assertEqual(self.read(self.base + 0x130), 8)
         self.assertEqual(self.read(GPIO_IN) & 8, 8)

@@ -516,6 +516,18 @@ static void esp32s3_rtc_cntl_init(Object *obj)
     esp32s3_rtc_update_clk(s);
 }
 
+/*
+ * "deep-sleep": the chip is in deep sleep, whether QEMU suspended the VM
+ * (a pad will wake it) or the CPU spins until the RTC timer fires. A test
+ * driver reads it to tell a device that is off from one that is quiet.
+ */
+static bool esp32s3_rtc_get_deep_sleep(Object *obj, Error **errp)
+{
+    Esp32s3RtcCntlState *s = ESP32S3_RTC_CNTL(obj);
+
+    return s->sleeping && (s->dig_pwc & DIG_WRAP_PD_EN);
+}
+
 static void esp32s3_rtc_cntl_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -523,6 +535,7 @@ static void esp32s3_rtc_cntl_class_init(ObjectClass *klass, const void *data)
 
     rc->phases.hold = esp32s3_rtc_cntl_reset_hold;
     dc->realize = esp32s3_rtc_cntl_realize;
+    object_class_property_add_bool(klass, "deep-sleep", esp32s3_rtc_get_deep_sleep, NULL);
 }
 
 static const TypeInfo esp32s3_rtc_cntl_info = {
