@@ -9,7 +9,7 @@ export interface Flash { flash: Uint8Array; machine: Machine; composed: boolean 
 const chipOf = (bytes: Uint8Array) => bytes[12] | (bytes[13] << 8);
 
 async function bootAsset(name: string): Promise<Uint8Array> {
-  const response = await fetch(`/boot/${name}`);
+  const response = await fetch(`./boot/${name}`);
   if (!response.ok) throw new Error(`Missing boot asset ${name}; run scripts/prepare-resources.sh.`);
   return new Uint8Array(await response.arrayBuffer());
 }
