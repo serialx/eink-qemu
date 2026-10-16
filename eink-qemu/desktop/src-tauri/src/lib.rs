@@ -9,6 +9,8 @@
 mod settings;
 
 use eink_core::cards::{card_key, identity_key, open_card, reserve, reserve_path, validate_card, Card};
+use eink_core::script::automation::Automation;
+use eink_core::script::events::RunEvents;
 use eink_core::session::{self, AppError, Events, QemuPaths, Session, SessionInfo, StartOptions};
 use eink_core::{display, firmware, heap, heapview, sd};
 use serde::Serialize;
@@ -33,21 +35,32 @@ struct DesktopEvents {
     app: tauri::AppHandle,
     logs: Mutex<Option<Channel<Vec<String>>>>,
     frames: Mutex<Option<Channel<InvokeResponseBody>>>,
+    /// A scripted run's recorder (`eink-qemu run --gui`), which sees everything too.
+    run: Option<Arc<RunEvents>>,
 }
 
 impl Events for DesktopEvents {
     fn session(&self, info: &SessionInfo) {
         let _ = self.app.emit("session", info);
+        if let Some(run) = &self.run {
+            run.session(info);
+        }
     }
     fn sd_reset(&self) {
         let _ = self.app.emit("sd-reset", ());
     }
     fn logs(&self, lines: Vec<String>) {
+        if let Some(run) = &self.run {
+            run.logs(lines.clone());
+        }
         if let Some(channel) = self.logs.lock().unwrap().as_ref() {
             let _ = channel.send(lines);
         }
     }
     fn display(&self, message: &[u8]) {
+        if let Some(run) = &self.run {
+            run.display(message);
+        }
         if let Some(frames) = self.frames.lock().unwrap().as_ref() {
             let _ = frames.send(InvokeResponseBody::Raw(message.to_vec()));
         }
@@ -936,19 +949,49 @@ pub fn run() {
             let mut problems = Vec::new();
             let mut settings = Settings::load(&settings_path, &mut problems);
             let locks = locks_dir(app.handle());
-            let card = startup_card(&mut settings, &data, &locks, &mut problems);
+            // EINK_QEMU_AUTOMATION: a scripted run from `eink-qemu run --gui`
+            // (with EINK_QEMU_DATA_DIR in its run directory): its card, its
+            // firmware, and its steps once the session is up.
+            let automation = match std::env::var_os("EINK_QEMU_AUTOMATION") {
+                Some(path) => Some(Automation::load(Path::new(&path)).map_err(|e| format!("EINK_QEMU_AUTOMATION: {e}"))?),
+                None => None,
+            };
+            let run_events = match &automation {
+                Some(spec) => Some(Arc::new(RunEvents::new(&spec.dir, false)?)),
+                None => None,
+            };
+            let card = match &automation {
+                Some(spec) => {
+                    settings.firmware = Some(spec.firmware.clone());
+                    settings.device = spec.machine.clone();
+                    settings.elf = spec.elf.clone();
+                    settings.turbo = spec.options.turbo;
+                    settings.ghosting = spec.options.ghosting;
+                    settings.wifi = spec.options.wifi;
+                    settings.panel = spec.options.panel.clone();
+                    settings.card = Some(spec.card.clone());
+                    Some(open_card(&locks, &spec.card).map_err(|e| e.message)?)
+                }
+                None => startup_card(&mut settings, &data, &locks, &mut problems),
+            };
             if let Some(firmware) = settings.firmware.as_deref() {
                 if let Err(error) = check_firmware(firmware) {
                     problems.push(format!("The firmware {} cannot be used: {}", firmware.display(), error.message));
                 }
             }
-            let events = Arc::new(DesktopEvents { app: app.handle().clone(), logs: Mutex::default(), frames: Mutex::default() });
+            let events = Arc::new(DesktopEvents { app: app.handle().clone(), logs: Mutex::default(), frames: Mutex::default(), run: run_events.clone() });
             let paths = qemu_paths(app.handle());
             // The session's tasks run on Tauri's Tokio runtime.
             let session = tauri::async_runtime::block_on({
                 let events = events.clone();
                 async move { Session::new(events, paths, card) }
             });
+            if let (Some(spec), Some(run_events)) = (automation, run_events) {
+                let session = session.clone();
+                tauri::async_runtime::spawn(async move {
+                    eink_core::script::automation::run(session, run_events, spec).await;
+                });
+            }
             let _ = settings.save(&settings_path);
             app.manage(App {
                 session,

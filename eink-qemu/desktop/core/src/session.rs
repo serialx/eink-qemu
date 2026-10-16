@@ -92,7 +92,7 @@ pub struct SessionInfo {
     pub seq: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartOptions {
     pub machine: String,

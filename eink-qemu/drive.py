@@ -7,7 +7,9 @@ steps:  wait:SECONDS     press:KEY[:MS]     shot:FILE.png
 KEY: up|down|power on the X4 Pro; back|confirm|left|right|up|down|power on the X3/X4.
 The machine follows the image's chip (X4MACHINE=x3|x4|x4pro|picco overrides).
 X4 Pro defaults to measured UC8279 revision 0x68; X4PANEL=uc8179 selects the legacy panel.
-The firmware log (USB-CDC) goes to log.txt."""
+The firmware log (USB-CDC) goes to log.txt.
+The command-line tool (eink-qemu/cli, eink-qemu/desktop/cli/README.md) does
+this and more: waits on the log and the screen, heaps, comparisons."""
 import os, socket, subprocess, sys, time
 
 here = os.path.dirname(os.path.abspath(__file__))

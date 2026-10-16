@@ -139,12 +139,29 @@ card. To start with books on it, build one from a folder with
 to touch. On the X3, Left, Right, Enter (Confirm) and Backspace (Back) work too.
 The QEMU monitor is at `socat - unix:/tmp/eink-qemu-mon.sock`.
 
-**Scripted runs** take key presses, touches and screenshots without a window:
+### Scripted runs and tests
+
+The command-line tool boots a firmware headless and runs a script of steps
+against it: key presses and touches, waits on the log or the screen,
+screenshots, heap snapshots and allocation traces. It takes a build
+directory or a release `.bin` directly, and keeps everything a run saw in a
+run directory with a report:
 
 ```sh
-eink-qemu/drive.py flash.bin sd.img log.txt wait:30 press:down shot:home.png \
-  "hmp:qom-set /machine/gt911 tap 240,529" wait:5 shot:settings.png
+eink-qemu/cli run .pio/build/default --put book.epub \
+  ready press:confirm wait-screen press:confirm 'wait-log:Page render' \
+  shot:page1 heap:page1
+eink-qemu/cli compare base/.pio/build/default pr/.pio/build/default \
+  --put book.epub --script reading.txt
 ```
+
+`compare` runs two builds side by side and writes a table of render times,
+heaps and screenshot differences for a pull request. `start`, `do` and
+`stop` drive a long-lived session step by step, and `--gui` shows a run in
+the desktop app's window. The tool needs Rust to build; the guide is
+[eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md). The older
+`eink-qemu/drive.py` still takes `wait:`, `press:`, `shot:` and `hmp:` steps
+without Rust.
 
 ## What's emulated
 
@@ -240,6 +257,8 @@ requirements, benchmarks and limits are in the
   X4 Pro pin map, the WebAssembly build, and what's still missing.
 - [eink-qemu/desktop](eink-qemu/desktop/README.md): the desktop app, how
   to build and package it, and its [design](eink-qemu/desktop/DESIGN.md).
+- [eink-qemu/desktop/cli](eink-qemu/desktop/cli/README.md): the
+  command-line tool for scripted runs, heap profiling and comparisons.
 - [eink-qemu/sdcal](eink-qemu/sdcal/README.md): how the X3's SD, panel and CPU
   timing was measured and fitted.
 - [eink-qemu/ghosting](eink-qemu/ghosting/README.md): how the e-ink model

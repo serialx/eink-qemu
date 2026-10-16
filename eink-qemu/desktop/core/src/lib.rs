@@ -11,6 +11,7 @@ pub mod heap;
 pub mod heapview;
 pub mod host;
 pub mod qmp;
+pub mod script;
 pub mod sd;
 pub mod session;
 pub mod trace;

@@ -169,6 +169,49 @@ impl HeapView {
         Ok(snap)
     }
 
+    /// Follow run `run`'s allocation log at `log` (as a snapshot of that run
+    /// would), so a window can be read before any snapshot.
+    pub fn use_trace(&mut self, run: u64, log: PathBuf) {
+        if self.trace.as_ref().is_none_or(|(r, _)| *r != run) {
+            self.gens += 1;
+            self.trace = Some((run, Trace::new(log, self.gens)));
+        }
+    }
+
+    /// Forget the last snapshot, so the next one is read afresh even within
+    /// the reuse interval (a scripted run reads heaps right after input).
+    pub fn invalidate(&mut self) {
+        self.last = None;
+    }
+
+    /// The allocation log's activity between two host times (microseconds
+    /// since the epoch), by site with names, largest kept bytes first; None
+    /// without a log for the current run.
+    pub fn trace_window(&mut self, from: u64, to: u64) -> Option<Value> {
+        self.update_trace();
+        let (_, trace) = self.trace.as_ref()?;
+        let sites = trace.window(from, to);
+        let total = |f: fn(&crate::trace::SiteWindow) -> u64| sites.iter().map(f).sum::<u64>();
+        let named: Vec<Value> = sites.iter().map(|w| {
+            let mut v = serde_json::to_value(w).unwrap_or_default();
+            let name = usize::try_from(w.site).ok().and_then(|i| self.sites.names.get(i)).cloned();
+            v["fn"] = name.as_ref().and_then(|n| n.get("fn")).cloned().unwrap_or(json!("??"));
+            v["loc"] = name.as_ref().and_then(|n| n.get("loc")).cloned().unwrap_or(json!(""));
+            v
+        }).collect();
+        Some(json!({
+            "allocs": total(|w| w.allocs),
+            "alloc_bytes": total(|w| w.alloc_bytes),
+            "freed": total(|w| w.freed),
+            "kept": total(|w| w.kept),
+            "kept_bytes": total(|w| w.kept_bytes),
+            "older_freed": total(|w| w.older_freed),
+            "older_freed_bytes": total(|w| w.older_freed_bytes),
+            "events": trace.events_len(),
+            "sites": named,
+        }))
+    }
+
     /// The current run's free-memory history, as heapview.py's /history.
     pub fn history(&self, session: &Session) -> Value {
         if session.info().run != self.run {
