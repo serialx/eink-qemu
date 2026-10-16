@@ -25,7 +25,7 @@ async function call<T>(command: string, args?: Record<string, unknown> | Uint8Ar
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 let platform = '';
 
-/* The screen: a canvas at the panel's resolution. src-tauri/src/display.rs
+/* The screen: a canvas at the panel's resolution. core/src/display.rs
    sends one raw binary channel message per flush: `u32 1, width, height`
    for a size, or `u32 2, count` followed by each rect's x, y, w, h and gray8
    pixels. Rust keeps a copy of the panel and sends it first on attach, which

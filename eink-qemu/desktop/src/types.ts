@@ -66,7 +66,7 @@ export interface MadeCard { card: CardInfo | null; made: { size: number; cluster
 export interface SdEntry { name: string; size: number; isDir: boolean; mtime: number | null }
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
 export interface UploadPlan { files: number; bytes: number; conflicts: string[] }
-/** One heap (src-tauri/src/heap.rs). `blocks` is flat: offset, length, flags,
+/** One heap (core/src/heap.rs). `blocks` is flat: offset, length, flags,
     requested size; with an allocation log, each block's site, stack id and
     the event that allocated it (-1 where the log has none). */
 export interface Heap {
@@ -75,7 +75,7 @@ export interface Heap {
   infoFree: number; infoMinFree: number; corrupt: number; blocks: number[];
   sites?: number[]; stk?: number[]; ev?: number[];
 }
-/** A snapshot of the heaps (src-tauri/src/heapview.rs `heap_snapshot`): time in seconds. */
+/** A snapshot of the heaps (core/src/heapview.rs `heap_snapshot`): time in seconds. */
 export interface HeapSnapshot {
   time: number; heaps: Heap[]; missing: number; traced?: boolean;
   /** Why allocations are not recorded, when they are not. */

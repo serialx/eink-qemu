@@ -138,7 +138,7 @@ poisoning), `multi_heap_free()` and `multi_heap_realloc()`, and logs every
 allocation, free and realloc with its time and call stack to
 `/tmp/eink-qemu-heaptrace.bin`, unwinding RISC-V with the ELF's `.debug_frame`
 and `.eh_frame` and Xtensa through its register windows. The desktop app's
-`src-tauri/src/trace.rs` reads that format. Boot to the first X3 `[MEM]` line
+`core/src/trace.rs` reads that format. Boot to the first X3 `[MEM]` line
 took 10.77 s instead of 10.57 s with the plugin (mean of three runs).
 
 Unmapped peripheral registers read as 0 and ignore writes (catch-all

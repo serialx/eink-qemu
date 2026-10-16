@@ -2,6 +2,7 @@ node_modules
 dist
 dist-web
 public/boot
+target
 src-tauri/target
 src-tauri/resources
 src-tauri/gen/schemas

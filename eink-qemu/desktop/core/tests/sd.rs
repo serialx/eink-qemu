@@ -2,7 +2,7 @@
 //! src/sd.rs, with every modified image re-read by the browser's fat.js
 //! (scripts/sd-parity.mjs) when Node is available.
 
-use eink_qemu_desktop_lib::sd::{self, SdError, SdListing};
+use eink_core::sd::{self, SdError, SdListing};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;

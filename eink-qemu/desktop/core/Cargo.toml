@@ -1,0 +1,33 @@
+[package]
+name = "eink-core"
+description = "eink-qemu's emulator core: QEMU sessions, the eink display, heaps, SD cards, flash images and scripted runs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "eink_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "net", "io-util", "sync", "time", "macros", "rt-multi-thread", "fs", "signal"] }
+fatfs = "0.3.6"
+fscommon = "0.1.1"
+flate2 = "1"
+tempfile = "3"
+unicode-normalization = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dunce = "1"
+sha2 = "0.10"
+md-5 = "0.10"
+addr2line = "0.25"
+regex = "1"
+png = "0.17"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl"] }

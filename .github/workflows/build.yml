@@ -223,8 +223,8 @@ jobs:
           path: |
             dist/
 
-  # eink-qemu: the desktop app's generated inputs (boot assets, turbo
-  # overrides), made once on Linux for every desktop build.
+  # eink-qemu: the desktop app's generated inputs (boot assets), made once
+  # on Linux for every desktop build.
   desktop-resources:
     runs-on: ubuntu-latest
     steps:
@@ -236,7 +236,6 @@ jobs:
           name: desktop-resources
           path: |
             eink-qemu/desktop/public/boot
-            eink-qemu/desktop/src-tauri/resources
           if-no-files-found: error
 
   # eink-qemu: the Tauri desktop app, bundling the QEMU the Build job made for
@@ -311,7 +310,7 @@ jobs:
         run: |
           node --test ../tests/test_heap_log.mjs ../tests/test_readiness.mjs
           pnpm exec tsc --noEmit
-          cargo test --manifest-path src-tauri/Cargo.toml
+          cargo test --workspace
 
       # The resources are prepared already, so only the front end is built.
       - name: Build
@@ -328,10 +327,10 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
-            source=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe)
+            source=$(ls target/release/bundle/nsis/*-setup.exe)
             name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}-setup.exe
           else
-            source=$(ls src-tauri/target/release/bundle/dmg/*.dmg)
+            source=$(ls target/release/bundle/dmg/*.dmg)
             name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}.dmg
           fi
           mkdir -p ../../dist

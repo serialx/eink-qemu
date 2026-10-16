@@ -133,7 +133,7 @@ qdev id `panel` (the UC8179, UC8279 or SSD1677). Records are little-endian: a
 | 4 `FLUSH` | none | end of a refresh that sent rectangles |
 
 At most one update is queued in QEMU, so the guest never waits for the UI.
-`src-tauri/src/display.rs` validates every record (sizes up to 4096², rects
+`core/src/display.rs` validates every record (sizes up to 4096², rects
 inside the surface, at most 1024 per flush) and sends one raw binary channel
 message per flush: `u32 1, width, height` for a size, or `u32 2, count`
 followed by each rect. The WebView writes the gray pixels into an
@@ -151,14 +151,14 @@ a release never overtakes its press.
 
 ## SD card
 
-The card is an image file QEMU opens directly. `src-tauri/src/sd.rs` edits
+The card is an image file QEMU opens directly. `core/src/sd.rs` edits
 it with the `fatfs` crate (FAT12/16/32, long names, bare or MBR-partitioned
 images), streaming file contents rather than loading the card, so stock
 2 GiB cards work. Name rules, folder-first ordering and the common error
 codes follow `fat.js`; the deviations (generated short aliases, which damaged
 cards are refused and with which code, partition and FSInfo handling, upload
 of nested dotfiles and empty folders) are listed in `sd.rs`'s header. The
-crate is vendored with fixes (`src-tauri/vendor/fatfs/EINK-QEMU.md`) so the
+crate is vendored with fixes (`core/vendor/fatfs/EINK-QEMU.md`) so the
 folders it writes pass `fsck_msdos` and `fsck.fat`, which every SD test runs.
 
 Cards are made in Rust (`create_card`), as `mksd.py` lays them out: an MBR
@@ -201,7 +201,7 @@ no key event reaches a stopped guest.
 
 ## Heap view
 
-`src-tauri/src/heap.rs` ports the earlier heapview.py's snapshot (removed; in git history): the ELF's
+`core/src/heap.rs` ports the earlier heapview.py's snapshot (removed; in git history): the ELF's
 `registered_heaps` lists the heaps (`heap_t`, with or without
 CONFIG_HEAP_TASK_TRACKING's name pointer), and each region is walked as a
 TLSF physical block list, whose start is found once past the TLSF control
