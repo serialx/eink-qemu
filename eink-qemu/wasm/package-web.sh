@@ -10,12 +10,22 @@ esac
 BUILD=${WASM_BUILD_DIR:-$DEFAULT_BUILD}
 DEST="$BUILD/web-dist"
 "$ROOT/eink-qemu/wasm/build-browser-net.sh"
+# Optional static files for the browser's Wi-Fi: CrossPoint Reader's font
+# catalog, which its font downloader then fetches from the page itself. The
+# page's Wi-Fi works without them (downloads go through the browser's fetch).
+# WIFI_ASSETS=none packages none; otherwise a catalog that cannot be prepared
+# (offline) is left out with a warning.
 ASSETS="${WIFI_ASSETS:-$ROOT/build-wasm-deps/wifi-assets}"
-if [ ! -f "$ASSETS/index.json" ]; then
-    python3 "$ROOT/eink-qemu/wasm/prepare-wifi-assets.py" "$ASSETS"
+if [ "$ASSETS" != none ] && [ ! -f "$ASSETS/index.json" ]; then
+    python3 "$ROOT/eink-qemu/wasm/prepare-wifi-assets.py" "$ASSETS" ||
+        echo "package-web.sh: could not prepare the font catalog for browser Wi-Fi; packaging without it" >&2
 fi
 mkdir -p "$DEST"
-python3 "$ROOT/eink-qemu/wasm/prepare-wifi-assets.py" "$ASSETS" --copy-to "$DEST/wifi-assets"
+if [ "$ASSETS" != none ] && [ -f "$ASSETS/index.json" ]; then
+    python3 "$ROOT/eink-qemu/wasm/prepare-wifi-assets.py" "$ASSETS" --copy-to "$DEST/wifi-assets"
+else
+    rm -rf "$DEST/wifi-assets"
+fi
 cp "$ROOT/build-wasm-deps/browser-net/build/"{browser-net.mjs,browser-net.wasm,lwip.LICENSE.txt,mbedtls.LICENSE.txt} "$DEST/"
 # Node resolves the adapter next to its QEMU module.
 cp "$ROOT/build-wasm-deps/browser-net/build/"{browser-net.mjs,browser-net.wasm} "$BUILD/"

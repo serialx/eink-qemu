@@ -37,17 +37,27 @@ const status = (text: string) => { $('status').textContent = text; };
 const timingLabel = () => session.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing';
 const deviceLabel = () => session.machine ? shortNames[session.machine] : 'Device';
 const errorMessage = (error: unknown) => (error as Error)?.message ?? String(error);
-/* Readiness from the firmware log. window.bootTimeSeconds is a hook for the
-   browser acceptance tests. */
+/* Readiness from the firmware log and the screen. window.bootTimeSeconds is
+   a hook for the browser acceptance tests. */
 const readiness = new Readiness(status, deviceLabel, timingLabel);
+const sessionLive = () => session.state === 'running' || session.state === 'starting';
 function watchLog(lines: string[]) {
   // Late lines from a run that has ended must not overwrite its status.
-  if (session.state !== 'running' && session.state !== 'starting') return;
+  if (!sessionLive()) return;
   readiness.feed(lines);
   window.bootTimeSeconds = readiness.bootSeconds;
 }
+function watchScreen() {
+  if (sessionLive()) readiness.screen();
+}
+// A quiet screen ends the boot of firmware without a profile; no event marks it.
+setInterval(() => {
+  if (!sessionLive()) return;
+  readiness.tick();
+  window.bootTimeSeconds = readiness.bootSeconds;
+}, 1000);
 function resetting(prefix = '') {
-  readiness.restart();
+  readiness.restart(true);
   window.bootTimeSeconds = null;
   status(`${prefix}Resetting…`);
 }
@@ -128,8 +138,8 @@ async function start() {
   try {
     status('Loading firmware…');
     const input = await api.readFirmware();
-    const { flash, machine, composed } = await prepareFlash(input, settings.device, status);
-    const composition = composed ? 'Composed 16 MiB flash from release app · ' : '';
+    const { flash, machine, composed, composition: composedFrom } = await prepareFlash(input, settings.device, status);
+    const composition = composedFrom ? `${composedFrom} · ` : '';
     if (composed) {
       appendLines([composition.replace(/ · $/, '')]);
       api.note(composition.replace(/ · $/, ''));
@@ -280,6 +290,10 @@ const keyboard: Record<string, string> = {
   ArrowUp: 'Up', ArrowDown: 'Down', KeyP: 'Power', Home: 'Home',
 };
 const keyHints: Record<string, string> = { Back: 'Esc', Confirm: 'Enter', Left: '←', Right: '→', Up: '↑', Down: '↓', Power: 'P', Home: 'Home' };
+// The X3/X4's four keys below the screen, left to right, are named by what
+// they do in CrossPoint (where they can be remapped); other firmware gives
+// them its own meanings.
+const frontKeys = ['Back', 'Confirm', 'Left', 'Right'];
 // Each held device key has owners (keyboard codes, pointer ids); it is
 // released when the last owner lets go.
 const held = new Map<string, Set<string>>();
@@ -316,6 +330,8 @@ function buttons(machine: Machine) {
     element.type = 'button';
     element.textContent = name;
     element.dataset.key = name;
+    const front = machine === 'x3' || machine === 'x4' ? frontKeys.indexOf(name) : -1;
+    if (front >= 0) element.title = `${name} (${keyHints[name]}) · front key ${front + 1} of 4, from the left`;
     // The hint is CSS-generated so the button's text stays the key name.
     element.dataset.kbd = keyHints[name];
     element.addEventListener('pointerdown', (event) => {
@@ -839,6 +855,7 @@ export async function boot(backend: Backend) {
 
   const state = await api.attach({
     log: (lines) => { appendLines(lines); watchLog(lines); },
+    screen: watchScreen,
     session: onSession,
     sdReset: () => { releaseTouch?.(); resetting('SD card changed · '); },
     card: onCard,
@@ -865,7 +882,9 @@ export async function boot(backend: Backend) {
   } catch (error) { state.problems.push(errorMessage(error)); }
   paintCard();
   if (session.machine && session.state !== 'idle') {
-    // A reloaded WebView: the session kept running; the screen follows.
+    // A reloaded WebView: the session kept running; the screen follows. Its
+    // boot is long over: readiness waits for the next one.
+    readiness.resume();
     buttons(session.machine);
     createScreen(session.machine);
     status(`${deviceLabel()} · ${timingLabel()} · ${session.state === 'running' ? 'Running' : 'Starting…'}`);

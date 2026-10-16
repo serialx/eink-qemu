@@ -99,9 +99,29 @@ class CanvasScreen implements Screen {
 }
 
 let screen: CanvasScreen | null = null;
+let screenUpdated: () => void = () => {};
 /** Display messages that arrived before the page made a screen. */
 const early: ArrayBuffer[] = [];
+/** Whether a display message shows something: rectangles that are not all
+    one value (the blank panel before the firmware draws, a refresh's flash). */
+function showsSomething(buffer: ArrayBuffer) {
+  const view = new DataView(buffer), bytes = new Uint8Array(buffer);
+  if (view.getUint32(0, true) !== 2) return false;
+  const count = view.getUint32(4, true);
+  let at = 8, first = -1;
+  for (let n = 0; n < count; n++) {
+    const area = view.getUint32(at + 8, true) * view.getUint32(at + 12, true);
+    at += 16;
+    for (let i = at; i < at + area; i++) {
+      if (first < 0) first = bytes[i];
+      else if (bytes[i] !== first) return true;
+    }
+    at += area;
+  }
+  return false;
+}
 function onDisplay(buffer: ArrayBuffer) {
+  if (showsSomething(buffer)) screenUpdated();
   if (screen) { screen.paint(buffer); return; }
   // A size starts the panel over: what came before it is stale.
   if (new DataView(buffer).getUint32(0, true) === 1) early.length = 0;
@@ -129,6 +149,7 @@ export const tauri: Backend = {
     const logs = new Channel<string[]>();
     logs.onmessage = (lines) => handlers.log(lines);
     const frames = new Channel<ArrayBuffer>();
+    screenUpdated = () => handlers.screen();
     frames.onmessage = onDisplay;
     const state = await call<Attached>('attach', { logs, frames });
     platform = state.platform;

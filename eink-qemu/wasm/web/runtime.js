@@ -16,6 +16,31 @@ const canvas = document.querySelector('canvas');
 // trips Emscripten's BigInt-to-string conversion. Saves happen before unload.
 window.addEventListener('beforeunload', event => event.stopImmediatePropagation(), {capture: true});
 const send = (type, extra = {}) => parent.postMessage({type, ...extra}, location.origin);
+// The page decides that firmware without a profile has booted once its
+// screen stays quiet, so it hears when the panel shows something new. SDL's
+// software renderer presents each frame with putImageData on this canvas; a
+// fingerprint of the pixels skips repaints of an unchanged frame, and a
+// blank frame (one value throughout: the panel before the firmware draws, a
+// refresh's flash) shows nothing.
+let screenPrint = 0, screenTimer = 0;
+if (typeof CanvasRenderingContext2D === 'function') {
+    const putImageData = CanvasRenderingContext2D.prototype.putImageData;
+    CanvasRenderingContext2D.prototype.putImageData = function (image, ...rest) {
+        if (this.canvas === canvas && image?.data) {
+            const words = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.byteLength >> 2);
+            let hash = 2166136261, blank = true;
+            for (let i = 0; i < words.length; i++) {
+                hash = Math.imul(hash ^ words[i], 16777619);
+                blank &&= words[i] === words[0];
+            }
+            if (hash !== screenPrint) {
+                screenPrint = hash;
+                if (!blank) screenTimer ||= setTimeout(() => { screenTimer = 0; send('screen'); }, 100);
+            }
+        }
+        return putImageData.call(this, image, ...rest);
+    };
+}
 const keyCodes = {ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
     Enter: 13, Backspace: 8, Escape: 27, KeyP: 80, Home: 36};
 // Home is a capacitive key on the GT911, separate from the GPIO buttons.

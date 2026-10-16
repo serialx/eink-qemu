@@ -1,10 +1,20 @@
 /* The browser page's prepareFlash: release apps and X4 Pro .xota updates are
-   composed into 16 MiB with the bundled boot assets; merged images and full
-   dumps pass through. Images are validated before QEMU sees them. */
+   composed into 16 MiB with the bundled boot assets (the Arduino-ESP32 16 MB
+   partition table, or the Picco's); merged images and full dumps pass
+   through. Images are validated before QEMU sees them. CrossPoint's NVS entry
+   (its profile, eink-qemu/profiles/crosspoint.json) goes only into apps that
+   carry its strings, on the boards it names. */
 import '@web/xota.js';
 import '@web/flash-image.js';
+import crosspoint from '../../profiles/crosspoint.json' with { type: 'json' };
 
-export interface Flash { flash: Uint8Array; machine: Machine; composed: boolean }
+export interface Flash {
+  flash: Uint8Array;
+  machine: Machine;
+  composed: boolean;
+  /** How an app image was composed, for the status bar and the log; null when the image passed through. */
+  composition: string | null;
+}
 
 const chipOf = (bytes: Uint8Array) => bytes[12] | (bytes[13] << 8);
 
@@ -26,12 +36,12 @@ export async function prepareFlash(input: Uint8Array, device: string, progress: 
     // application for the boot chip; then every application is verified.
     if (!FlashImage.expandMerged(bytes)) throw new Error('This 16 MiB file is not an ESP flash image: no bootloader or partition table.');
     await validateFlash(bytes);
-    return { flash: bytes, machine: FlashImage.selectMachine(chipOf(bytes), device), composed: false };
+    return { flash: bytes, machine: FlashImage.selectMachine(chipOf(bytes), device), composed: false, composition: null };
   }
   const merged = !xota && FlashImage.expandMerged(bytes);
   if (merged) {
     await validateFlash(merged);
-    return { flash: merged, machine: FlashImage.selectMachine(chipOf(merged), device), composed: false };
+    return { flash: merged, machine: FlashImage.selectMachine(chipOf(merged), device), composed: false, composition: null };
   }
   if (bytes.length < 24 || bytes[0] !== 0xe9) {
     throw new Error('Choose a firmware .bin, an X4 Pro .xota update, or a 16 MiB flash dump (16777216 bytes).');
@@ -42,10 +52,13 @@ export async function prepareFlash(input: Uint8Array, device: string, progress: 
   const machine = FlashImage.selectMachine(chip, device);
   const layout = FlashImage.appLayout(machine);
   progress('Composing 16 MiB flash image…');
+  const seed = crosspoint.nvs_seed.machines.includes(machine) && FlashImage.hasCStrings(bytes, crosspoint.detect.image_strings);
   const [boot, partitions, nvs] = await Promise.all([
-    bootAsset(layout.bootAsset), bootAsset(layout.partitionAsset), layout.nvsAsset ? bootAsset(layout.nvsAsset) : null,
+    bootAsset(layout.bootAsset), bootAsset(layout.partitionAsset), seed ? bootAsset('nvs-crosspoint.bin') : null,
   ]);
-  return { flash: FlashImage.composeApp(bytes, { machine, boot, partitions, nvs, selectOta: xota }), machine, composed: true };
+  const composition = `Composed 16 MiB flash from the ${xota ? 'XOTA update' : 'app'} with ${layout.partitionTable}` +
+    (seed ? ` and ${crosspoint.title}'s NVS entry` : '');
+  return { flash: FlashImage.composeApp(bytes, { machine, boot, partitions, nvs, selectOta: xota }), machine, composed: true, composition };
 }
 
 async function validateApp(bytes: Uint8Array): Promise<void> {

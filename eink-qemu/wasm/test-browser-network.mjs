@@ -178,6 +178,12 @@ test('DHCP discover from 0.0.0.0 traverses Ethernet/IP/UDP and gets an offer', a
         assert.equal(reply[284], 2);
     } finally { network.close(); }
 });
+test('Wi-Fi starts without bundled static files, and downloads go to the browser', async () => {
+    const empty = new URL('./no-such-assets/', assets), lines = [];
+    const network = await createBrowserNetwork({assets: empty, fetchResource: localFetch, log: line => lines.push(line)});
+    network.close();
+    assert.ok(lines.some(line => /no bundled static files/.test(line)));
+});
 test('a blocked download returns HTTP failure rather than an empty successful file', {timeout: 20000}, async () => {
     const response = await requestFont(true, base + 'Alef_12.cpfont', {}, async (url, options) => {
         if (String(url).endsWith('.cpfont')) throw new Error('CORS blocked');

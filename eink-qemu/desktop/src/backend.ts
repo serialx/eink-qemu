@@ -28,6 +28,8 @@ export interface CardSize { size: number; label: string; note?: string }
 
 export interface AttachHandlers {
   log(lines: string[]): void;
+  /** The panel showed new pixels (for readiness: a quiet screen ends a boot). */
+  screen(): void;
   session(info: SessionInfo): void;
   /** The card changed under the running guest, which is being reset. */
   sdReset(): void;

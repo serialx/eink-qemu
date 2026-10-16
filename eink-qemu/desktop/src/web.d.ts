@@ -5,11 +5,12 @@
 type Machine = 'x3' | 'x4' | 'x4pro' | 'picco';
 declare const FlashImage: {
   selectMachine(chip: number, selected?: string): Machine;
-  appLayout(machine: Machine): { bootAsset: string; partitionAsset: string; nvsAsset: string | null };
+  appLayout(machine: Machine): { bootAsset: string; partitionAsset: string; partitionTable: string };
+  hasCStrings(bytes: Uint8Array, strings: string[]): boolean;
   expandMerged(bytes: Uint8Array): Uint8Array | null | false;
   composeApp(app: Uint8Array, options: {
     machine: Machine; boot: ArrayBuffer | Uint8Array; partitions: ArrayBuffer | Uint8Array;
-    nvs: ArrayBuffer | Uint8Array | null; selectOta?: boolean;
+    nvs?: ArrayBuffer | Uint8Array | null; selectOta?: boolean;
   }): Uint8Array;
 };
 declare const XOTA: {

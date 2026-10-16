@@ -40,11 +40,13 @@ the Rust core.
   behind tabs below the stage.
 - `src/app.ts` is the page: screen zoom (whole physical pixels, Fit, Auto),
   key rows, the SD table, the firmware card's handlers and the card menu,
-  over a `Backend`. Readiness from the firmware log is `readiness.ts`
-  (`tests/test_readiness.mjs`): CrossPoint's refresh tags and memory report,
-  the X4's plain `refresh` waits, restart counting when the guest reboots, an
-  SD card the firmware could not mount and the stock X4 Pro firmware's wait
-  for a Power press. The console buffer and filter are in `console.ts`; the
+  over a `Backend`. Readiness is `readiness.ts` (`tests/test_readiness.mjs`),
+  with the core's rules (`core/src/script/readiness.rs`): firmware with a
+  profile in `eink-qemu/profiles` by its log (CrossPoint's refresh tags and
+  memory report, an SD card it could not mount, the stock X4 Pro firmware's
+  wait for a Power press), any other firmware by a screen quiet for 5 s,
+  which both backends report and a one-second tick decides; restart counting
+  when the guest reboots, and ROM messages about an image it cannot boot. The console buffer and filter are in `console.ts`; the
   Heap tab in `heap.ts`; help tips, the theme toggle, the phone tabs and the
   panel gutters in `main.ts`.
 - Device keys are released by their own key-up whatever the modifiers; the
@@ -260,10 +262,12 @@ for the session event, so a new run starts it afresh.
 
 ## Firmware
 
-Release apps and X4 Pro `.xota` updates are composed into 16 MiB flash in the
+App images and X4 Pro `.xota` updates are composed into 16 MiB flash in the
 WebView with the page's `flash-image.js` and `xota.js`, with boot assets
-served from `public/boot`; merged images and full dumps pass through after
-validating their partition table and application checksums. The composed
+served from `public/boot` (the Arduino-ESP32 16 MB partition table, or the
+Picco's; CrossPoint's NVS entry only for X3 apps that carry the strings its
+profile names); merged images and full dumps pass through after validating
+their partition table and application checksums. The composed
 image goes to Rust as a raw request body, and QEMU runs a temporary copy,
 because it writes NVS and OTA data to flash.
 
