@@ -233,6 +233,7 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
             }
         };
         remember_trace_starts(&mut runner.trace_names, &parsed);
+        crate::run::record_script(&dir, &tokens);
         *status.lock().unwrap() = status_value(runner, true);
         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
         *tap.lock().unwrap() = Some(tx);

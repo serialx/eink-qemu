@@ -21,7 +21,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         return crate::gui::run(firmware, tokens, args).await;
     }
     let printer = Arc::new(Printer::new(args.quiet, args.progress));
-    let (_, steps) = match collect_steps(&args, &tokens) {
+    let (all, steps) = match collect_steps(&args, &tokens) {
         Ok(collected) => collected,
         Err(e) => return usage(&printer, &e),
     };
@@ -32,7 +32,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         Ok(dir) => dir,
         Err(e) => return usage(&printer, &e),
     };
-    execute(&firmware, &args, dir, None, printer, &steps).await.code
+    execute(&firmware, &args, dir, None, printer, &steps, &all).await.code
 }
 
 pub fn usage(printer: &Printer, error: &str) -> u8 {
@@ -110,7 +110,17 @@ pub async fn interrupted() {
 }
 
 /// Prepare, start, run the steps (then serve `do` with --hold), stop.
-pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option<String>, printer: Arc<Printer>, steps: &[Step]) -> Outcome {
+/// Append steps to the run's script.txt: every step it ran, replayable with --script.
+pub fn record_script(dir: &Path, tokens: &[String]) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("script.txt")) {
+        for token in tokens {
+            let _ = writeln!(file, "{token}");
+        }
+    }
+}
+
+pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option<String>, printer: Arc<Printer>, steps: &[Step], tokens: &[String]) -> Outcome {
     let started = Instant::now();
     let side_field = |mut v: Value| {
         if let Some(side) = &side {
@@ -173,6 +183,7 @@ pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option
     let _ = std::fs::write(dir.join("run.json"), serde_json::to_string_pretty(&start).unwrap_or_default());
     runner.emit(&start);
     crate::control::remember_trace_starts(&mut runner.trace_names, steps);
+    record_script(&dir, tokens);
     let mut was_interrupted = false;
     let ran = tokio::select! {
         ok = runner.run(steps) => Some(ok),

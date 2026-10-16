@@ -313,6 +313,10 @@ pub struct Runner {
     /// Screen updates before the current boot (a reset): readiness by a
     /// quiet screen needs one after it.
     readiness_screen_base: u64,
+    /// Host seconds the current boot started: the run's start, or a reset.
+    boot_started: f64,
+    /// The last heap record's numbers, for the next one's changes.
+    last_heap: Option<(String, Fields)>,
     crash_pos: usize,
     heap: HeapView,
     traces: HashMap<String, u64>,
@@ -360,6 +364,8 @@ impl Runner {
             readiness: Readiness::new(),
             readiness_pos: 0,
             readiness_screen_base: 0,
+            boot_started: 0.0,
+            last_heap: None,
             crash_pos: 0,
             heap: HeapView::default(),
             traces: HashMap::new(),
@@ -574,6 +580,7 @@ impl Runner {
         self.readiness = Readiness::after_reset(&self.readiness);
         self.readiness_pos = self.events.line_count();
         self.readiness_screen_base = self.events.screen().updates;
+        self.boot_started = self.events.now();
     }
 
     /// Let the guest run for `ms` of its own time (host time without the
@@ -644,7 +651,8 @@ impl Runner {
                         Verdict::Ready(how) => {
                             self.check_alive()?;
                             f.insert("how".into(), json!(how));
-                            f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(now))));
+                            // From the boot's start (the run's, or the last reset) to Home.
+                            f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(now) - self.boot_started)));
                             if let Some(ms) = self.readiness.home_fw_ms {
                                 f.insert("home_fw_ms".into(), json!(ms));
                             }
@@ -839,7 +847,19 @@ impl Runner {
                 std::fs::write(self.opts.dir.join(&file), snap.to_string()).map_err(|e| Failure::new(e.to_string()))?;
                 f.insert("name".into(), json!(label));
                 f.insert("file".into(), json!(file));
-                for (k, v) in heap_summary(&snap) {
+                let summary = heap_summary(&snap);
+                if let Some((previous, before)) = &self.last_heap {
+                    let mut change = Map::new();
+                    change.insert("heap".into(), json!(previous));
+                    for key in ["free", "largest", "min_free", "dram_free", "dram_largest", "internal_free"] {
+                        if let (Some(a), Some(b)) = (before.get(key).and_then(Value::as_i64), summary.get(key).and_then(Value::as_i64)) {
+                            change.insert(key.into(), json!(b - a));
+                        }
+                    }
+                    f.insert("since_previous".into(), Value::Object(change));
+                }
+                self.last_heap = Some((label.clone(), summary.clone()));
+                for (k, v) in summary {
                     f.insert(k, v);
                 }
             }

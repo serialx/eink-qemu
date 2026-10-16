@@ -50,6 +50,7 @@ stdout. The run directory is in the first record and linked from
 | Path | What it holds |
 | --- | --- |
 | `run.jsonl` | Every record: start, one per step, end |
+| `script.txt` | Every step the run (or session) ran, one per line: replay it with `--script` |
 | `log.txt` | The firmware's log as it printed it |
 | `console.jsonl` | The same lines with the host time each arrived |
 | `frames/` | Every settled screen, named by guest time, and `frames.json` |
@@ -63,7 +64,22 @@ stdout. The run directory is in the first record and linked from
 Exit codes: 0 when every step passed, 1 when a step failed, 2 for bad usage
 or steps (found before the emulator starts), 3 when the run could not start
 (firmware, card, QEMU), 130 when interrupted (Ctrl-C or SIGTERM, which still
-write the end record and report).
+write the end record and report). A run that could not start leaves only
+`error.txt` in its directory, and the same command, `--out` included, can be
+run again.
+
+### The X4 Pro
+
+The X4 Pro has a touchscreen and three keys. Coordinates are pixels of its
+screenshots (480 wide, 800 tall, origin top left), or percentages; look at a
+shot to find a menu entry, then tap it:
+
+```sh
+eink-qemu/cli run ~/crosspoint-reader/.pio/build/x4pro --put book.epub \
+    ready shot:home touch:240,348 wait-screen shot:files \
+    touch:240,138 'wait-log:Page render' swipe:left 'wait-log:Page render' \
+    shot:page2 press:home wait-quiet:3 shot:home-again
+```
 
 ## Steps
 
@@ -168,7 +184,7 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 
 | Step | Fields |
 | --- | --- |
-| `ready` | `how`, `boot_s`, `home_fw_ms` (the firmware's ms at Home), `restarts` |
+| `ready` | `how`, `boot_s` (host seconds from the boot's start, the run's or the last reset, to Home), `home_fw_ms` (the firmware's ms at Home), `restarts` |
 | `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs) |
 | `wait-screen`, `wait-quiet` | `frame`, `changed` |
 | `press`, `touch`, `swipe` | `waited_ms` (the input wait), coordinates |
@@ -191,6 +207,7 @@ and PSRAM on the X4 Pro) and resumes. The record's numbers:
 | `internal_free`, `internal_largest` | Internal memory, DRAM and the RTC heap |
 | `heaps` | Each heap: `name`, `free`, `largest`, `min_free`, `used`, `blocks`, `corrupt` |
 | `live_sites` | With `--trace`: the allocation sites holding the most requested bytes in live blocks |
+| `since_previous` | The change in `free`, `largest`, `min_free` and the DRAM totals since the previous `heap` step |
 
 `heaps/NAME.json` has every block: each heap's `blocks` is a flat list of
 four numbers per block (offset from the heap start, length, flags with 1 =
@@ -234,7 +251,11 @@ and:
 - `report.html`: the table and the screenshot pairs.
 
 `wait-log` values are grouped by the `mark` before them, so a script can
-measure only the page turns, apart from the opening page. A side that could
+measure only the page turns, apart from the opening page; the marked rows
+come first in the table, and the whole-run rows after them say so. The
+periodic `[MEM]` rows are the firmware's last 10-second report, not a
+measurement at a step: use `heap` steps for that. With `--trace`, each heap
+snapshot's live allocation sites are listed side by side. A side that could
 not start still gets its outcome in the table. `--require-identical` fails
 the comparison when a screenshot differs, for changes that must not change
 rendering. `--sequential` runs one after the other.
@@ -273,7 +294,8 @@ returns; the emulator keeps running. `do` runs more steps and prints their
 records, then a `done` record whose `screen` is the latest settled screen:
 look at it to see where you are before the next step. `status` reports
 whether the session is alive, whether a request is running, the last step
-and the latest screen. `stop` ends the session (cancelling a running `do`),
+and the latest screen; it exits 0 when the session is alive, 1 when it has
+ended, and 3 when it cannot be reached. `stop` ends the session (cancelling a running `do`),
 waits for it to write its end record and report, and prints the outcome:
 the session fails if any of its steps failed. They find the session through
 `eink-qemu-out/latest`, or take `--session DIR` (pass the run directory a
@@ -296,6 +318,10 @@ check a screenshot when a step does not do what you expect.
 - In Settings, `confirm` on a tab header moves to the next tab; `down` and
   `right` move into the list. `back` from a row returns to its tab header,
   and from the header leaves Settings.
+- To check that a setting survives a reset: change it (for the font size,
+  Settings, the Reader tab, Text Settings, Size), press `back` until Home,
+  `wait-quiet:3`, then `reset ready`, open the same screen again, and compare
+  the shots. Settings are written when you leave the screen.
 - On the X4 Pro, tap the menu entries (coordinates are screenshot pixels,
   origin top left, 480 wide by 800 tall in portrait), turn pages with
   `swipe:left` and `swipe:right` or `down`/`up`, and `press:home` returns to

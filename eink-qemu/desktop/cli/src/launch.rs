@@ -43,7 +43,7 @@ pub fn run_dir(out: Option<&Path>, firmware: &Path, suffix: &str) -> Result<Path
 pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool) -> Result<PathBuf, String> {
     let dir = match out {
         Some(out) => {
-            if !reuse && out.exists() && std::fs::read_dir(out).map(|mut d| d.next().is_some()).unwrap_or(false) {
+            if !reuse && out.exists() && std::fs::read_dir(out).map(|mut d| d.next().is_some()).unwrap_or(false) && !clear_failed_setup(out) {
                 return Err(format!("{} already exists and is not empty; choose another --out", out.display()));
             }
             std::fs::create_dir_all(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
@@ -89,6 +89,28 @@ pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool
         point_latest(&dir);
     }
     Ok(dir)
+}
+
+/// A run directory left by a run that never started (error.txt, no
+/// run.jsonl) is cleared of the files such a run makes, so the same command
+/// can be retried; anything else in it keeps it from being reused.
+fn clear_failed_setup(dir: &Path) -> bool {
+    if !dir.join("error.txt").is_file() || dir.join("run.jsonl").exists() {
+        return false;
+    }
+    const OURS: &[&str] = &[
+        ".eink-qemu-run", "error.txt", "card.img", ".locks", "log.txt", "console.jsonl", "flash.bin", "automation.json",
+        "desktop", "desktop.log", "session.log", "ready.json", "steps.txt", "frames", "shots", "heaps", "traces",
+    ];
+    let names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    if names.iter().any(|n| !OURS.contains(&n.as_str())) {
+        return false;
+    }
+    for name in names {
+        let path = dir.join(&name);
+        let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+    }
+    true
 }
 
 /// eink-qemu-out/latest -> `dir` (a symbolic link where possible, else a
@@ -359,7 +381,18 @@ pub async fn launch(p: &mut Prepared, events: Arc<RunEvents>) -> Result<Arc<Sess
     if let Err(e) = session.start(p.options.clone(), p.flash.image.clone(), trace).await {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let tail = events.with_lines(events.line_count().saturating_sub(12), |l| l.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
-        return Err(format!("QEMU did not start: {}\n{}", e.message, tail.join("\n")));
+        let denied = e.message.contains("Operation not permitted") || e.message.contains("Permission denied");
+        let hint = if denied {
+            format!(
+                " The tool starts {} and talks to it over Unix sockets in /tmp/eink-qemu-*; this process may not create those \
+                 sockets or start that program (a sandbox?). Allow both, then run the same command again \
+                 (see \"In a sandbox\" in eink-qemu/desktop/cli/README.md).",
+                p.qemu.binary(&p.flash.machine).display()
+            )
+        } else {
+            String::new()
+        };
+        return Err(format!("QEMU did not start: {}{hint}\n{}", e.message, tail.join("\n")));
     }
     Ok(session)
 }

@@ -30,7 +30,7 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
     if !valid(a) || !valid(b) || a.eq_ignore_ascii_case(b) {
         return usage(&printer, "--names takes two different names of letters, digits, '-', '_' or '.', not starting with '.'");
     }
-    let (_, steps) = match collect_steps(&args, &tokens) {
+    let (all, steps) = match collect_steps(&args, &tokens) {
         Ok(s) => s,
         Err(e) => return usage(&printer, &e),
     };
@@ -55,8 +55,8 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
             return usage(&printer, &format!("cannot create {}: {e}", d.display()));
         }
     }
-    let run_a = execute(&base, &args, dir_a.clone(), Some(a.to_string()), printer.clone(), &steps);
-    let run_b = execute(&candidate, &args, dir_b.clone(), Some(b.to_string()), printer.clone(), &steps);
+    let run_a = execute(&base, &args, dir_a.clone(), Some(a.to_string()), printer.clone(), &steps, &all);
+    let run_b = execute(&candidate, &args, dir_b.clone(), Some(b.to_string()), printer.clone(), &steps, &all);
     let (out_a, out_b) = if sequential {
         let out_a = run_a.await;
         (out_a, run_b.await)
@@ -178,7 +178,10 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         .map(|x| {
             let name = x["name"].clone();
             let other = steps_of(&rb, "heap").into_iter().find(|y| y["name"] == name).cloned().unwrap_or(Value::Null);
-            let pick = |h: &Value| json!({"free": h["free"], "largest": h["largest"], "min_free": h["min_free"], "internal_free": h["internal_free"], "internal_largest": h["internal_largest"]});
+            let pick = |h: &Value| json!({
+                "free": h["free"], "largest": h["largest"], "min_free": h["min_free"], "dram_free": h["dram_free"],
+                "dram_largest": h["dram_largest"], "live_sites": h["live_sites"].as_array().map(|s| s.iter().take(5).cloned().collect::<Vec<_>>()),
+            });
             json!({"name": name, "a": pick(x), "b": pick(&other)})
         })
         .collect();
@@ -222,13 +225,13 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
 
     let m = |v: &Value, path: &[&str]| path.iter().fold(v.clone(), |acc, k| acc[*k].clone());
     let metric_rows = vec![
-        json!({"metric": "page renders", "a": ma["page_renders"], "b": mb["page_renders"]}),
-        json!({"metric": "page drawing (bw_render) median ms", "a": m(&ma, &["bw_render_ms", "median"]), "b": m(&mb, &["bw_render_ms", "median"])}),
-        json!({"metric": "total rendering median ms", "a": m(&ma, &["total_render_ms", "median"]), "b": m(&mb, &["total_render_ms", "median"])}),
+        json!({"metric": "page renders in the whole run", "a": ma["page_renders"], "b": mb["page_renders"]}),
+        json!({"metric": "page drawing (bw_render) median ms, whole run", "a": m(&ma, &["bw_render_ms", "median"]), "b": m(&mb, &["bw_render_ms", "median"])}),
+        json!({"metric": "total rendering median ms, whole run", "a": m(&ma, &["total_render_ms", "median"]), "b": m(&mb, &["total_render_ms", "median"])}),
         json!({"metric": "cold layout ms", "a": ma["cold_layout_ms"], "b": mb["cold_layout_ms"]}),
-        json!({"metric": "lowest Min Free (bytes)", "a": ma["mem_min_free"], "b": mb["mem_min_free"]}),
-        json!({"metric": "last [MEM] Free (bytes)", "a": m(&ma, &["mem_last", "free"]), "b": m(&mb, &["mem_last", "free"])}),
-        json!({"metric": "last [MEM] MaxAlloc (bytes)", "a": m(&ma, &["mem_last", "max_alloc"]), "b": m(&mb, &["mem_last", "max_alloc"])}),
+        json!({"metric": "lowest Min Free since boot (bytes, [MEM])", "a": ma["mem_min_free"], "b": mb["mem_min_free"]}),
+        json!({"metric": "last periodic [MEM] Free (bytes; every 10 s, not at a step)", "a": m(&ma, &["mem_last", "free"]), "b": m(&mb, &["mem_last", "free"])}),
+        json!({"metric": "last periodic [MEM] MaxAlloc (bytes)", "a": m(&ma, &["mem_last", "max_alloc"]), "b": m(&mb, &["mem_last", "max_alloc"])}),
     ];
     let start = |r: &[Value]| r.iter().find(|x| x["type"] == "start").cloned().unwrap_or(Value::Null);
     let (sa, sb) = (start(&ra), start(&rb));
@@ -297,27 +300,56 @@ pub fn markdown(s: &Value) -> String {
     if !ha.is_null() || !hb.is_null() {
         out += &format!("| Home drawn (firmware ms) | {} | {} | {} |\n", cell(ha), cell(hb), delta(ha, hb));
     }
+    // Marked windows (`mark:NAME` before the steps) first: they are what a
+    // script chose to measure; values outside any mark come after them.
+    let mut rows: Vec<Value> = s["values"].as_array().cloned().unwrap_or_default();
+    rows.sort_by_key(|r| !r["step"].as_str().unwrap_or_default().contains(" / "));
+    let mut value_lines = String::new();
+    for row in &rows {
+        let (x, y) = (&row["median"][0], &row["median"][1]);
+        value_lines += &format!("| `{}` {} median (n={}/{}) | {} | {} | {} |\n", cell(&row["step"]), cell(&row["value"]), cell(&row["n"][0]), cell(&row["n"][1]), cell(x), cell(y), delta(x, y));
+        let n = row["n"][0].as_u64().unwrap_or(0).max(row["n"][1].as_u64().unwrap_or(0));
+        if n > 1 && row["value"].as_str().is_some_and(|v| v.ends_with("_ms")) {
+            let (x, y) = (&row["sum"][0], &row["sum"][1]);
+            value_lines += &format!("| `{}` {} sum | {} | {} | {} |\n", cell(&row["step"]), cell(&row["value"]), cell(x), cell(y), delta(x, y));
+        }
+    }
+    out += &value_lines;
     for row in s["metrics"].as_array().into_iter().flatten() {
         if row["a"].is_null() && row["b"].is_null() || row["a"] == json!([]) && row["b"] == json!([]) {
             continue;
         }
         out += &format!("| {} | {} | {} | {} |\n", cell(&row["metric"]), cell(&row["a"]), cell(&row["b"]), delta(&row["a"], &row["b"]));
     }
-    for row in s["values"].as_array().into_iter().flatten() {
-        let (x, y) = (&row["median"][0], &row["median"][1]);
-        out += &format!("| `{}` {} median (n={}/{}) | {} | {} | {} |\n", cell(&row["step"]), cell(&row["value"]), cell(&row["n"][0]), cell(&row["n"][1]), cell(x), cell(y), delta(x, y));
-        let n = row["n"][0].as_u64().unwrap_or(0).max(row["n"][1].as_u64().unwrap_or(0));
-        if n > 1 && row["value"].as_str().is_some_and(|v| v.ends_with("_ms")) {
-            let (x, y) = (&row["sum"][0], &row["sum"][1]);
-            out += &format!("| `{}` {} sum | {} | {} | {} |\n", cell(&row["step"]), cell(&row["value"]), cell(x), cell(y), delta(x, y));
-        }
+    if s["timing"].as_array().is_some_and(|t| t.iter().any(|v| v == "turbo")) {
+        out += "\n**Turbo timing: the time rows above are not valid for comparison; run without --turbo.**\n";
     }
     let heaps = s["heaps"].as_array().cloned().unwrap_or_default();
     if !heaps.is_empty() {
         out += &format!("\n| Heap snapshot | {a} free / largest / lowest | {b} free / largest / lowest | change in free |\n|---|---|---|---|\n");
-        for h in heaps {
+        for h in &heaps {
             let f = |x: &Value| format!("{} / {} / {}", cell(&x["free"]), cell(&x["largest"]), cell(&x["min_free"]));
             out += &format!("| {} | {} | {} | {} |\n", cell(&h["name"]), f(&h["a"]), f(&h["b"]), delta(&h["a"]["free"], &h["b"]["free"]));
+        }
+        for h in &heaps {
+            let (la, lb) = (h["a"]["live_sites"].as_array(), h["b"]["live_sites"].as_array());
+            if la.is_none() && lb.is_none() {
+                continue;
+            }
+            out += &format!("\n| Live memory at `{}` | {a} bytes (blocks) | {b} bytes (blocks) |\n|---|---|---|\n", cell(&h["name"]));
+            let mut sites: Vec<String> = Vec::new();
+            for list in [la, lb].into_iter().flatten() {
+                for site in list {
+                    let name = cell(&site["fn"]);
+                    if !sites.contains(&name) {
+                        sites.push(name);
+                    }
+                }
+            }
+            for name in sites {
+                let find = |list: Option<&Vec<Value>>| list.and_then(|l| l.iter().find(|s| cell(&s["fn"]) == name)).map(|s| format!("{} ({})", cell(&s["bytes"]), cell(&s["blocks"]))).unwrap_or_else(|| "-".into());
+                out += &format!("| `{}` | {} | {} |\n", name.replace('|', "\\|"), find(la), find(lb));
+            }
         }
     }
     let traces = s["traces"].as_array().cloned().unwrap_or_default();
