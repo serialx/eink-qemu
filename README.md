@@ -67,6 +67,8 @@ size in place. Download `eink-qemu-desktop-*.dmg` (macOS 12.3+) or
 copying the app; on Windows choose *More info*, then *Run anyway*. Building
 it yourself is covered in [eink-qemu/desktop](eink-qemu/desktop/README.md).
 
+![The eink-qemu desktop app running CrossPoint on an Xteink X3, with SD card files, a page of Aesop's Fables, and live heap maps and memory usage](eink-qemu/screenshots/desktop-light.png)
+
 ## Run it on your computer
 
 ### Get the emulator

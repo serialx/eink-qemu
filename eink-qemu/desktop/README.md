@@ -6,6 +6,8 @@ itself: `src/desktop.css` imports `wasm/web/style.css`, and the fonts, marks
 and firmware modules come from the same directory. Design notes are in
 [DESIGN.md](DESIGN.md).
 
+![The eink-qemu desktop app running CrossPoint on an Xteink X3, with SD card files, a page of Aesop's Fables, and live heap maps and memory usage](../screenshots/desktop-light.png)
+
 ## Run
 
 Build QEMU first ([EINK-QEMU.md](../../EINK-QEMU.md#build-and-run)); in
