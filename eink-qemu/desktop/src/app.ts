@@ -1,14 +1,14 @@
-/* The desktop app: the browser page's app.js, with native QEMU behind the
-   Rust commands instead of the WebAssembly runtime iframe. */
-import { listen } from '@tauri-apps/api/event';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { openUrl } from '@tauri-apps/plugin-opener';
-import { api, AppError, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './api';
+/* The page: firmware card, SD card explorer, device stage, console and
+   status bar over a Backend (backend.ts), which is native QEMU behind the
+   desktop's Rust commands or the WebAssembly build in a runtime iframe. */
+import type { Backend, DropHandlers, FileRef, Screen } from './backend';
 import { appendLines, clearConsole } from './console';
 import { choose, confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
-import { attachHeap, heapSession, setElf, showPane, useElf } from './heap';
+import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
+import { Readiness } from './readiness';
 import { attachSetup, closeSetup, paintSetup } from './setup';
+import { AppError, type CardInfo, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const button = (id: string) => $<HTMLButtonElement>(id);
@@ -22,21 +22,35 @@ const bootNames: Record<Machine, string> = {
   x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)', picco: 'BOOX Picco (ESP32-S3)',
 };
 
+let api: Backend;
 let session: SessionInfo = { state: 'idle', machine: null, turbo: false, exit: null, run: 0, seq: -1 };
 let platform = '';
 let settings: Settings;
 /** The firmware card: firmware, device, ELF, recent firmware. */
 let setup: Setup | null = null;
 let firmware: FileInfo | null = null;
-let card: FileInfo | null = null;
+let card: CardInfo | null = null;
 let pending = false; // Preparing firmware before the session starts.
-let canvas: HTMLCanvasElement | null = null;
-let milestones = 0, startedAt = 0, lastDrawAt = 0, bootSeconds: number | null = null, sdFailed = false;
+let screen: Screen | null = null;
 
 const status = (text: string) => { $('status').textContent = text; };
 const timingLabel = () => session.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing';
 const deviceLabel = () => session.machine ? shortNames[session.machine] : 'Device';
 const errorMessage = (error: unknown) => (error as Error)?.message ?? String(error);
+/* Readiness from the firmware log. window.bootTimeSeconds is a hook for the
+   browser acceptance tests. */
+const readiness = new Readiness(status, deviceLabel, timingLabel);
+function watchLog(lines: string[]) {
+  // Late lines from a run that has ended must not overwrite its status.
+  if (session.state !== 'running' && session.state !== 'starting') return;
+  readiness.feed(lines);
+  window.bootTimeSeconds = readiness.bootSeconds;
+}
+function resetting(prefix = '') {
+  readiness.restart();
+  window.bootTimeSeconds = null;
+  status(`${prefix}Resetting…`);
+}
 
 /* Run state ------------------------------------------------------------ */
 
@@ -50,8 +64,8 @@ function paintControls() {
   button('reset').disabled = !running;
   button('sd').disabled = !idle;
   const live = running || session.state === 'starting';
-  for (const id of ['zoom-in', 'zoom-out', 'zoom-level', 'screenshot']) ($(id) as HTMLButtonElement).disabled = !live || !canvas;
-  if (live && canvas) resizeScreen();
+  for (const id of ['zoom-in', 'zoom-out', 'zoom-level', 'screenshot']) ($(id) as HTMLButtonElement).disabled = !live || !screen;
+  if (live && screen) resizeScreen();
   $('machine').textContent = session.machine ? machineNames[session.machine] : 'No device running';
   sdPaint();
 }
@@ -64,7 +78,7 @@ function onSession(info: SessionInfo) {
   heapSession(info.state, info.run);
   if (info.state !== 'running') releaseAll();
   // A WebView reloaded during startup learns the board here.
-  if ((info.state === 'starting' || info.state === 'running') && info.machine && !canvas) {
+  if ((info.state === 'starting' || info.state === 'running') && info.machine && !screen) {
     buttons(info.machine);
     createScreen(info.machine);
   }
@@ -93,7 +107,7 @@ function onSession(info: SessionInfo) {
 function fail(message: string) {
   status(message);
   appendLines([`Error: ${message}`]);
-  void api.note(`Error: ${message}`);
+  api.note(`Error: ${message}`);
 }
 
 async function start() {
@@ -108,7 +122,8 @@ async function start() {
   }
   pending = true;
   clearConsole();
-  milestones = 0; lastDrawAt = 0; bootSeconds = null; sdFailed = false; startedAt = performance.now();
+  readiness.restart();
+  window.bootTimeSeconds = null;
   paintControls();
   try {
     status('Loading firmware…');
@@ -117,12 +132,14 @@ async function start() {
     const composition = composed ? 'Composed 16 MiB flash from release app · ' : '';
     if (composed) {
       appendLines([composition.replace(/ · $/, '')]);
-      void api.note(composition.replace(/ · $/, ''));
+      api.note(composition.replace(/ · $/, ''));
     }
     buttons(machine);
     createScreen(machine);
     status(`${composition}Booting ${bootNames[machine]} · ${settings.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing'}…`);
-    startedAt = performance.now();
+    // Observers (the acceptance tests) can inspect the exact bytes before the backend takes them.
+    window.dispatchEvent(new CustomEvent('eink-qemu-flash-ready', { detail: { flash, machine, composed } }));
+    readiness.restart();
     pending = false;
     // The session events say how the start went; the result only adds
     // what an event may not have delivered yet.
@@ -140,133 +157,24 @@ async function start() {
   }
 }
 
-function resetting(prefix = '') {
-  milestones = 0; lastDrawAt = 0; bootSeconds = null; sdFailed = false; startedAt = performance.now();
-  status(`${prefix}Resetting…`);
-}
-
-/* Readiness from the firmware log, as on the page. */
-// Panel refresh completions: UC8179/UC8279 boards log their DRF command,
-// the X4 (SSD1677) a plain refresh.
-const refreshDone = /Wait complete:\s+(?:(?:8179|8279|8279x4|X3)_DRF|refresh)\b/;
-function watchLog(lines: string[]) {
-  // Late lines from a run that has ended must not overwrite its status.
-  if (session.state !== 'running' && session.state !== 'starting') return;
-  for (const line of lines) {
-    if (line.startsWith('ESP-ROM:') && milestones) {
-      // The guest rebooted (a crash, a firmware reset): count again.
-      milestones = 0; lastDrawAt = 0; bootSeconds = null; sdFailed = false; startedAt = performance.now();
-      status(`${deviceLabel()} · ${timingLabel()} · Restarting…`);
-    }
-    // CrossPoint reports a card it cannot mount; its Home is then an error screen.
-    if (/SD card initialization failed/.test(line)) sdFailed = true;
-    // Stock X4 Pro firmware powers itself off unless Power is held at boot.
-    if (/reject physical boot before init|POWERON without key/.test(line) && bootSeconds === null) {
-      status(`${deviceLabel()} is off · hold Power (P) for a moment to turn it on`);
-    }
-    if (/main_task: Returned from app_main\(\)/.test(line) && bootSeconds === null) {
-      status(`${deviceLabel()} · ${timingLabel()} · Firmware running`);
-    }
-    if (refreshDone.test(line)) {
-      lastDrawAt = performance.now();
-      if (++milestones === 3) {
-        bootSeconds = (lastDrawAt - startedAt) / 1000;
-        if (!sdFailed) status(`${deviceLabel()} · ${timingLabel()} · Home drawn in ${bootSeconds.toFixed(2)} s · finishing startup…`);
-      }
-    }
-    if (line.includes('[MEM]')) {
-      if (sdFailed) {
-        status(`${deviceLabel()} · The firmware could not mount the SD card · check it in the SD card panel`);
-      } else if (bootSeconds !== null) {
-        status(`${deviceLabel()} · ${timingLabel()} · Ready · Home drawn in ${bootSeconds.toFixed(2)} s`);
-      } else if (milestones && performance.now() - lastDrawAt > 3000) {
-        // Firmware that resumes a book or an app draws fewer full refreshes
-        // than a boot to Home; once the screen is quiet and it reports in, it runs.
-        status(`${deviceLabel()} · ${timingLabel()} · Ready`);
-      }
-    }
-  }
-}
-
 /* Screen ----------------------------------------------------------------- */
 
-let image: ImageData | null = null;
-let context: CanvasRenderingContext2D | null = null;
-
 function createScreen(machine: Machine) {
-  const [width, height] = machine === 'x3' ? [528, 792] : [480, 800];
-  canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  canvas.setAttribute('aria-label', `${shortNames[machine]} display`);
-  context = canvas.getContext('2d');
-  context!.fillStyle = '#f5f4ef';
-  context!.fillRect(0, 0, width, height);
-  image = null;
-  attachTouch(canvas, machine);
-  $('screen').replaceChildren(canvas);
+  screen?.dispose();
+  screen = api.createScreen(machine, resizeScreen);
+  $('screen').replaceChildren(screen.el);
+  if (!screen.ownPointer) attachTouch(screen.el, machine);
   resizeScreen();
 }
 
 function removeScreen(message: string) {
   releaseTouch?.();
-  canvas = null; context = null; image = null;
+  screen?.dispose();
+  screen = null;
   $('screen').style.width = '';
   $('screen').style.height = '';
   $('screen').textContent = message;
   $('keys').replaceChildren();
-}
-
-// Display messages that arrive before attach() returns (the current screen
-// is sent first) wait until the session and canvas are known.
-let attached = false;
-const early: ArrayBuffer[] = [];
-function onDisplay(buffer: ArrayBuffer) {
-  if (!attached) {
-    early.push(buffer);
-    return;
-  }
-  const view = new DataView(buffer);
-  const kind = view.getUint32(0, true);
-  if (kind === 1) {
-    const width = view.getUint32(4, true), height = view.getUint32(8, true);
-    if (!canvas && session.machine) createScreen(session.machine);
-    if (!canvas) return;
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-      resizeScreen();
-    }
-    context = canvas.getContext('2d');
-    image = context!.createImageData(width, height);
-    image.data.fill(255);
-    return;
-  }
-  if (kind !== 2 || !canvas || !context) return;
-  if (!image) {
-    image = context.createImageData(canvas.width, canvas.height);
-    image.data.fill(255);
-  }
-  const bytes = new Uint8Array(buffer);
-  const count = view.getUint32(4, true);
-  const stride = canvas.width, data = image.data;
-  let at = 8, minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
-  for (let n = 0; n < count; n++) {
-    const x = view.getUint32(at, true), y = view.getUint32(at + 4, true);
-    const w = view.getUint32(at + 8, true), h = view.getUint32(at + 12, true);
-    at += 16;
-    for (let row = 0; row < h; row++) {
-      let target = ((y + row) * stride + x) * 4;
-      const source = at + row * w;
-      for (let col = 0; col < w; col++, target += 4) {
-        const gray = bytes[source + col];
-        data[target] = gray; data[target + 1] = gray; data[target + 2] = gray;
-      }
-    }
-    at += w * h;
-    minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
-  }
-  if (count) context.putImageData(image, 0, 0, minX, minY, maxX - minX, maxY - minY);
 }
 
 /* Screen size: 'fit' (fills the stage, may resample), 'auto' (the largest
@@ -280,7 +188,7 @@ try {
 
 function screenLayout() {
   const dpr = window.devicePixelRatio || 1;
-  const width = canvas!.width, height = canvas!.height;
+  const width = screen!.width, height = screen!.height;
   const padding = (element: Element, axis: 'x' | 'y') => {
     const style = getComputedStyle(element);
     return axis === 'x' ? parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
@@ -288,11 +196,18 @@ function screenLayout() {
   };
   const style = getComputedStyle(appEl);
   const device = document.querySelector('.device')!, bezel = document.querySelector('.bezel')!;
-  // The stage shrinks to the device, so measure what the side panels leave.
-  let availableWidth = appEl.clientWidth - parseFloat(style.getPropertyValue('--sd-max')) - parseFloat(style.getPropertyValue('--output-min'));
-  const availableHeight = document.querySelector<HTMLElement>('.stage')!.clientHeight -
-    document.querySelector<HTMLElement>('.stage-bar')!.offsetHeight - $('keys').offsetHeight -
-    padding(device, 'y') - padding(bezel, 'y');
+  let availableWidth: number, availableHeight: number;
+  if (style.display === 'grid') {
+    // The stage shrinks to the device, so measure what the side panels leave.
+    availableWidth = appEl.clientWidth - parseFloat(style.getPropertyValue('--sd-max')) - parseFloat(style.getPropertyValue('--output-min'));
+    availableHeight = document.querySelector<HTMLElement>('.stage')!.clientHeight -
+      document.querySelector<HTMLElement>('.stage-bar')!.offsetHeight - $('keys').offsetHeight -
+      padding(device, 'y') - padding(bezel, 'y');
+  } else {
+    // One column (a phone): the page scrolls, so only the width limits the screen.
+    availableWidth = device.clientWidth;
+    availableHeight = Infinity;
+  }
   availableWidth -= padding(device, 'x') + padding(bezel, 'x');
   const auto = Math.max(1, Math.min(Math.floor(dpr), Math.floor(availableWidth * dpr / width)));
   const fit = Math.max(0.25, Math.min(availableWidth / width, availableHeight / height));
@@ -312,15 +227,13 @@ function zoomOptions(layout: Layout, scale: number) {
   $('zoom-level').replaceChildren(...options.map(([value, label]) => new Option(label, value, false, value === selected)));
 }
 function resizeScreen() {
-  if (!canvas) return;
+  if (!screen) return;
   const layout = screenLayout(), scale = screenScale(layout);
   $('screen').style.width = `${layout.width * scale}px`;
   $('screen').style.height = `${layout.height * scale}px`;
-  canvas.style.width = `${layout.width * scale}px`;
-  canvas.style.height = `${layout.height * scale}px`;
   const pixels = scale * layout.dpr, exact = Math.abs(pixels - Math.round(pixels)) < 1e-6;
   // Whole pixels stay sharp; a fractional Fit scale reads better smoothed.
-  canvas.style.imageRendering = exact ? 'pixelated' : 'auto';
+  screen.resize(scale, exact);
   zoomOptions(layout, scale);
   button('zoom-out').disabled = pixels <= 1 + 1e-6;
   button('zoom-in').disabled = pixels >= layout.max - 1e-6;
@@ -334,7 +247,7 @@ function setZoom(mode: typeof zoomMode) {
   resizeScreen();
 }
 function stepZoom(direction: number) {
-  if (!canvas) return;
+  if (!screen) return;
   // Steps land on whole physical pixels, also when leaving Fit.
   const layout = screenLayout(), pixels = screenScale(layout) * layout.dpr;
   const next = direction > 0 ? Math.floor(pixels + 1e-6) + 1 : Math.ceil(pixels - 1e-6) - 1;
@@ -349,9 +262,10 @@ function watchPixelRatio() {
 }
 
 async function screenshot() {
+  const canvas = screen?.canvas();
   if (!canvas || !session.machine) return;
   const machine = session.machine;
-  const blob = await new Promise<Blob | null>((resolve) => canvas!.toBlob(resolve, 'image/png'));
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
   if (!blob) return;
   try {
     const path = await api.saveScreenshot(new Uint8Array(await blob.arrayBuffer()), `${machine}-screen.png`);
@@ -426,7 +340,7 @@ function buttons(machine: Machine) {
 // Lifts the emulated finger, if one is down (lost capture, blur, reset, stop).
 let releaseTouch: (() => void) | null = null;
 
-function attachTouch(target: HTMLCanvasElement, machine: Machine) {
+function attachTouch(target: HTMLElement, machine: Machine) {
   releaseTouch?.();
   releaseTouch = null;
   if (machine !== 'x4pro' && machine !== 'picco') return;
@@ -479,7 +393,7 @@ function deviceKeyboard(event: KeyboardEvent) {
   }
   if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || dialogOpen()) return;
   const target = event.target as HTMLElement;
-  // As on the page: typing in a field and the SD card panel keep their keys.
+  // Typing in a field and the SD card panel keep their keys.
   if (target.closest('input, textarea, select, .sd, [role=dialog]')) return;
   if (session.state !== 'running') return;
   event.preventDefault();
@@ -518,30 +432,30 @@ async function chooseFirmware() {
   await useFirmware(api.pickFirmware());
 }
 
+/** The card line: a file's path, or (in a browser) how the card is kept. */
 function paintCard() {
-  const text = card ? card.path : 'No SD card is open: use the card menu.';
+  const text = card ? card.note ?? card.path : 'No SD card is open: use the card menu.';
+  const line = $('sd-save');
+  line.classList.toggle('note', !card || !!card.note);
   // The folder gives way to the file name when the path is too long.
-  const cut = card ? Math.max(card.path.lastIndexOf('/'), card.path.lastIndexOf('\\')) + 1 : 0;
-  $('sd-save').querySelector('.sd-dir')!.textContent = card ? card.path.slice(0, cut) : '';
-  $('sd-save').querySelector('.sd-name')!.textContent = card ? card.path.slice(cut) : text;
-  $('sd-save').title = text;
-  $('sd-save').classList.toggle('error', !card);
-  $('sd-reveal').hidden = !card;
+  const cut = card && !card.note ? Math.max(card.path.lastIndexOf('/'), card.path.lastIndexOf('\\')) + 1 : 0;
+  line.querySelector('.sd-dir')!.textContent = cut ? card!.path.slice(0, cut) : '';
+  line.querySelector('.sd-name')!.textContent = cut ? card!.path.slice(cut) : text;
+  line.title = card?.path || '';
+  line.classList.toggle('error', !card || !!card.error);
+  $('sd-reveal').hidden = !card || !api.can.cardReveal;
+}
+function onCard(next: CardInfo | null, changed: boolean) {
+  card = next;
+  paintCard();
+  if (changed) {
+    sd.cwd = '/';
+    void sdRefresh();
+  } else sdPaint();
 }
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
-/** Card sizes offered, all with the stock card's 32 KiB clusters (sd.rs). */
-const cardSizes = [
-  { size: 2050 * MiB, label: '2 GiB', note: 'The stock X3 card (2050 MiB): use it to compare timing with a real device' },
-  { size: 4 * GiB, label: '4 GiB' },
-  { size: 8 * GiB, label: '8 GiB' },
-  { size: 16 * GiB, label: '16 GiB', note: 'The default' },
-  { size: 32 * GiB, label: '32 GiB', note: 'The largest SDHC card' },
-];
 const sizeText = (bytes: number) => bytes % GiB === 0 ? `${bytes / GiB} GiB` : `${Math.round(bytes / MiB)} MiB`;
-const SPARSE = 'Cards are sparse files: an empty one takes a few MiB on disk and grows as files are written. ' +
-  "All have the stock card's 32 KiB clusters.";
-const NOT_SPARSE = "This disk can't hold sparse files, so the card is 128 MiB with 1 KiB clusters. Make it on another disk for a full-size card.";
 
 async function cardMenu() {
   if (session.state !== 'idle' || pending) return;
@@ -550,22 +464,23 @@ async function cardMenu() {
   const choice = await chooseCardAction();
   try {
     if (choice === 'resize') { await resizeCard(); return; }
-    let chosen: FileInfo | null = null;
+    let chosen: CardInfo | null = null;
     if (choice === 'open') chosen = await api.pickOpenCard();
     else if (choice === 'new') {
-      const size = await choose('New blank card', SPARSE,
-        cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(16 * GiB), 'Choose where…');
-      if (!size) return;
-      const made = await api.pickNewCard(Number(size));
+      let size = api.cardDefaultSize;
+      if (api.cardSizes.length > 1) {
+        const picked = await choose('New blank card', api.cardSizeNote,
+          api.cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(api.cardDefaultSize), 'Choose where…');
+        if (!picked) return;
+        size = Number(picked);
+      }
+      const made = await api.pickNewCard(size);
       if (!made) return;
       chosen = made.card;
-      if (!made.made.sparse) status(NOT_SPARSE);
+      if (made.made.note) status(made.made.note);
     }
     if (!chosen) return;
-    card = chosen;
-    paintCard();
-    sd.cwd = '/';
-    await sdRefresh();
+    onCard(chosen, true);
   } catch (error) { sdError(error); }
 }
 
@@ -573,7 +488,7 @@ async function cardMenu() {
 async function resizeCard() {
   if (!card) return;
   const now = card.size, used = sd.ready ? sd.total - sd.free : 0;
-  const choices = cardSizes.map((c) => {
+  const choices = api.cardSizes.map((c) => {
     const small = c.size < used * 1.02 + 8 * MiB;
     return {
       value: String(c.size), label: c.label, disabled: c.size === now || small,
@@ -583,7 +498,7 @@ async function resizeCard() {
   const start = choices.find((c) => !c.disabled && Number(c.value) > now) ?? choices.find((c) => !c.disabled);
   if (!start) return;
   const size = await choose('Resize the SD card',
-    `${card.name} is ${sizeText(now)}. Its folders and files are copied into a new card of the chosen size, which takes its place. ${SPARSE}`,
+    `${card.name} is ${sizeText(now)}. Its folders and files are copied into a new card of the chosen size, which takes its place. ${api.cardSizeNote}`,
     choices, start.value, 'Resize');
   if (!size) return;
   await sdRun(async () => {
@@ -602,7 +517,7 @@ function chooseCardAction(): Promise<'open' | 'new' | 'resize' | null> {
     const anchor = button('sd');
     menu.hidden = false;
     menu.querySelector<HTMLButtonElement>('[data-card="resize"]')!.disabled = !card;
-    const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled):not([hidden])')];
     const close = (value: 'open' | 'new' | 'resize' | null) => {
       menu.hidden = true;
       document.removeEventListener('pointerdown', outside, true);
@@ -637,7 +552,7 @@ function chooseCardAction(): Promise<'open' | 'new' | 'resize' | null> {
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keys, true);
     menu.addEventListener('focusout', leave);
-    items[0].focus();
+    items[0]?.focus();
   });
 }
 
@@ -648,14 +563,14 @@ async function copyCard() {
   });
 }
 
-/* SD card explorer: operations run in Rust on the image file. While the
-   emulator runs, Rust pauses the guest around them and resets the device
-   after a change so the firmware mounts the card afresh. */
+/* SD card explorer: operations run in the backend. While the emulator runs,
+   it pauses the guest around them and resets the device after a change so
+   the firmware mounts the card afresh. */
 // ready: the last listing worked. An unreadable card can still be used by
 // the emulator, but the explorer only allows retrying and switching cards.
 const sd = { cwd: '/', entries: [] as SdEntry[], free: 0, total: 0, busy: false, info: '', ready: false };
 const sdPanel = document.querySelector<HTMLElement>('.sd')!;
-const sdUsable = () => !sd.busy && !pending && (session.state === 'idle' || session.state === 'running');
+const sdUsable = () => !sd.busy && !pending && !card?.busy && (session.state === 'idle' || session.state === 'running');
 const joinPath = (dir: string, name: string) => dir === '/' ? `/${name}` : `${dir}/${name}`;
 
 function formatSize(bytes: number) {
@@ -713,6 +628,17 @@ async function sdRun(action: () => Promise<void>) {
 
 async function sdRefresh(path = sd.cwd): Promise<void> {
   if (session.state === 'starting' || session.state === 'stopping') return;
+  if (!card) {
+    sd.entries = [];
+    sd.ready = false;
+    sd.info = '';
+    $('sd-rows').replaceChildren();
+    $('sd-path').replaceChildren();
+    $('sd-meter').style.width = '0';
+    sdStatus('');
+    sdPaint();
+    return;
+  }
   let listing;
   try { listing = await api.sdList(path); } catch (error) {
     // The folder may have gone away (rename, delete, new card): fall back.
@@ -836,7 +762,7 @@ async function sdUpload(sources: string[]) {
 
 function validName(name: string) {
   name = name.normalize('NFC');
-  const invalid = !name || name.length > 255 || /[\x00-\x1f\uffff"*/:<>?\\|]/u.test(name) || /[ .]$/u.test(name) ||
+  const invalid = !name || name.length > 255 || /[\x00-\x1f￿"*/:<>?\\|]/u.test(name) || /[ .]$/u.test(name) ||
     name === '.' || name === '..' || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name);
   if (invalid) throw new AppError('EINVAL', `"${name}" is not a valid FAT file name.`);
   return name;
@@ -864,13 +790,10 @@ async function sdRowAction(action: string, name: string) {
   }
 }
 
-/* File drops: Tauri hands over paths and a position. Firmware drops onto the
+/* File drops: the backend reports what landed where. Firmware drops onto the
    chooser or the device stage; files and folders drop onto the SD panel. */
 function dropTarget(x: number, y: number): 'sd' | 'firmware' | null {
-  // macOS reports drop positions in points already (wry passes Cocoa
-  // coordinates through); other platforms report physical pixels.
-  const scale = platform === 'macos' ? 1 : window.devicePixelRatio;
-  const element = document.elementFromPoint(x / scale, y / scale);
+  const element = document.elementFromPoint(x, y);
   if (element?.closest('.sd')) return sdUsable() && card && sd.ready ? 'sd' : null;
   if (element?.closest('.stage, .file-chip')) return session.state === 'idle' && !pending ? 'firmware' : null;
   return null;
@@ -881,39 +804,46 @@ function paintDrop(target: 'sd' | 'firmware' | null) {
   $('flash').classList.toggle('firmware-drop', target === 'firmware');
 }
 
-async function onDrop(paths: string[], x: number, y: number) {
+async function onDrop(files: FileRef[], x: number, y: number) {
   paintDrop(null);
   // An ELF goes to the heap view wherever it lands.
-  if (paths.length === 1 && /\.elf$/i.test(paths[0])) {
-    await useElf(api.heapUseElf(paths[0]));
+  if (files.length === 1 && /\.elf$/i.test(files[0].name) && api.can.heap) {
+    await useElf(api.heapUseElf(files[0].ref));
     await refreshSetup();
     return;
   }
   const target = dropTarget(x, y);
   if (target === 'sd') {
-    await sdRun(() => sdUpload(paths));
+    await sdRun(() => sdUpload(files.map((file) => file.ref)));
   } else if (target === 'firmware') {
-    if (paths.length !== 1 || !/\.(bin|xota)$/i.test(paths[0])) {
+    if (files.length !== 1 || !/\.(bin|xota)$/i.test(files[0].name)) {
       status('Drop one firmware file: a .bin, or an X4 Pro .xota update.');
       return;
     }
-    await useFirmware(api.useFirmware(paths[0]));
+    await useFirmware(api.useFirmware(files[0].ref));
   }
 }
+const drops: DropHandlers = { target: dropTarget, paint: paintDrop, drop: (files, x, y) => void onDrop(files, x, y) };
 
 /* Wiring ------------------------------------------------------------------ */
 
-export async function boot() {
-  // Before attaching, so no session or log message is missed.
-  await listen<SessionInfo>('session', (event) => onSession(event.payload));
-  await listen('sd-reset', () => {
-    releaseTouch?.();
-    resetting('SD card changed · ');
+export async function boot(backend: Backend) {
+  api = backend;
+  const { can } = api;
+  setHeapAvailable(can.heap);
+  $('setup-elf-section').hidden = !can.heap;
+  $('heap-open').hidden = !can.heap;
+  $('card-menu').querySelector<HTMLElement>('[data-card="open"]')!.hidden = !can.cardOpen;
+  $('card-menu').querySelector<HTMLElement>('[data-card="new"]')!.hidden = !can.cardNew;
+  $('card-menu').querySelector<HTMLElement>('[data-card="resize"]')!.hidden = !can.cardResize;
+
+  const state = await api.attach({
+    log: (lines) => { appendLines(lines); watchLog(lines); },
+    session: onSession,
+    sdReset: () => { releaseTouch?.(); resetting('SD card changed · '); },
+    card: onCard,
+    problem: fail,
   });
-  const state = await api.attach((lines) => {
-    appendLines(lines);
-    watchLog(lines);
-  }, onDisplay);
   settings = state.settings;
   firmware = state.firmware;
   card = state.card;
@@ -940,12 +870,9 @@ export async function boot() {
     createScreen(session.machine);
     status(`${deviceLabel()} · ${timingLabel()} · ${session.state === 'running' ? 'Running' : 'Starting…'}`);
   } else status(firmware ? 'Start boots the chosen firmware.' : 'Choose a flash image to begin.');
-  // The current screen came with attach; draw it on the canvas made above.
-  attached = true;
-  for (const message of early.splice(0)) onDisplay(message);
   for (const problem of state.problems) {
     appendLines([`Error: ${problem}`]);
-    void api.note(`Error: ${problem}`);
+    api.note(`Error: ${problem}`);
   }
   if (state.problems.length) status(state.problems[0]);
   paintControls();
@@ -995,6 +922,7 @@ export async function boot() {
   });
   button('screenshot').addEventListener('click', () => void screenshot());
   for (const selector of ['.app', '.stage']) new ResizeObserver(resizeScreen).observe(document.querySelector(selector)!);
+  window.addEventListener('resize', resizeScreen);
   watchPixelRatio();
 
   document.addEventListener('keydown', deviceKeyboard);
@@ -1028,15 +956,11 @@ export async function boot() {
     void sdRun(() => sdRowAction(control.dataset.action!, name));
   });
 
-  await getCurrentWebview().onDragDropEvent((event) => {
-    const payload = event.payload;
-    if (payload.type === 'enter' || payload.type === 'over') paintDrop(dropTarget(payload.position.x, payload.position.y));
-    else if (payload.type === 'drop') void onDrop(payload.paths, payload.position.x, payload.position.y);
-    else paintDrop(null);
-  });
+  await api.watchDrops(drops);
 
-  // Project links open in the browser, not in the app's WebView.
-  document.addEventListener('click', (event) => {
+  // Project links open outside the page where the backend asks to (the app's WebView).
+  const openUrl = api.openUrl;
+  if (openUrl) document.addEventListener('click', (event) => {
     const link = (event.target as Element).closest<HTMLAnchorElement>('a[href^="https://"]');
     if (!link) return;
     event.preventDefault();

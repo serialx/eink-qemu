@@ -162,7 +162,7 @@ jobs:
       - name: Install the heaptrace plugin (${{ matrix.target }} @ ${{ matrix.platform }})
         run: |
           # eink-qemu: the heap view's allocation tracer (contrib/plugins/heaptrace.c),
-          # for heapview.py and the desktop app; QEMU does not install contrib plugins.
+          # for the desktop app; QEMU does not install contrib plugins.
           mkdir -p install/qemu/plugins
           for f in build/contrib/plugins/libheaptrace.so build/contrib/plugins/libheaptrace.dylib build/contrib/plugins/libheaptrace.dll; do
             if [ -f "$f" ]; then cp -v "$f" install/qemu/plugins/; fi
@@ -309,7 +309,7 @@ jobs:
 
       - name: Test
         run: |
-          node --test ../tests/test_heapview_client.mjs ../tests/test_heap_log.mjs
+          node --test ../tests/test_heap_log.mjs ../tests/test_readiness.mjs
           pnpm exec tsc --noEmit
           cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -474,8 +474,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '26'
+      # eink-qemu: the page is the desktop app's front end built for the browser (package-web.sh)
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.5.1
       - name: Test browser FAT filesystem
         run: node eink-qemu/wasm/web/fat.test.mjs
+      - name: Test the runtime and the page's readiness
+        run: node --test eink-qemu/wasm/web/runtime.test.mjs eink-qemu/tests/test_readiness.mjs
       - name: Test reproducible SD images
         run: python3 -m unittest eink-qemu.tests.test_mksd
       - name: Test Wi-Fi asset preparation and packaging

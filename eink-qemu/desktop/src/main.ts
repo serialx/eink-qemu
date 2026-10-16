@@ -1,9 +1,20 @@
-import './desktop.css';
+import './app.css';
 import { appendLines } from './console';
 import './heap';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const app = document.querySelector<HTMLElement>('.app')!;
+const params = new URLSearchParams(location.search);
+
+/* Which backend runs the emulator: the desktop's Rust commands inside Tauri,
+   the WebAssembly build in the web build (vite --mode web), or neither: the
+   mock content of demo.ts, for layout work in a plain browser (pnpm dev, or
+   ?demo). Markup meant for one of them is marked data-only. */
+const backend = params.has('demo') ? 'demo' : import.meta.env.MODE === 'web' ? 'browser' : '__TAURI_INTERNALS__' in window ? 'tauri' : 'demo';
+document.documentElement.dataset.backend = backend === 'browser' ? 'browser' : 'tauri';
+for (const element of document.querySelectorAll<HTMLElement>('[data-only]')) {
+  if (element.dataset.only !== document.documentElement.dataset.backend) element.remove();
+}
 
 /* Theme: the page's data-theme attribute over prefers-color-scheme. */
 function currentTheme(): 'light' | 'dark' {
@@ -46,6 +57,13 @@ document.addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.code === 'Escape' && closeTips()) event.preventDefault();
+});
+
+/* One column (a phone): the SD card and the console take turns below the stage. */
+for (const tab of document.querySelectorAll<HTMLElement>('.tabs [role=tab]')) tab.addEventListener('click', () => {
+  app.dataset.tab = tab.dataset.tab;
+  for (const other of document.querySelectorAll('.tabs [role=tab]')) other.setAttribute('aria-selected', String(other === tab));
+  if (tab.dataset.tab === 'console') $('console').scrollTop = $('console').scrollHeight;
 });
 
 /* Panel widths: the gutters at the stage's edges set the grid's variables.
@@ -110,13 +128,15 @@ for (const gutter of document.querySelectorAll<HTMLElement>('.gutter')) {
 window.addEventListener('resize', () => applyWidths());
 applyWidths();
 
-// Without the Tauri runtime (a plain browser on the dev server), the page
-// shows mock content so the layout can be checked.
-if ('__TAURI_INTERNALS__' in window && !new URLSearchParams(location.search).has('demo')) {
-  import('./app').then((app) => app.boot()).catch((error) => {
-    document.getElementById('status')!.textContent = `The app could not start: ${(error as Error)?.message ?? error}`;
-    appendLines([`Error: the app could not start: ${(error as Error)?.message ?? error}`]);
-  });
+const failed = (error: unknown) => {
+  const message = (error as Error)?.message ?? String(error);
+  $('status').textContent = `The app could not start: ${message}`;
+  appendLines([`Error: the app could not start: ${message}`]);
+};
+if (backend === 'browser') {
+  Promise.all([import('./backend-browser'), import('./app')]).then(([{ browser }, { boot }]) => boot(browser)).catch(failed);
+} else if (backend === 'tauri' && import.meta.env.MODE !== 'web') {
+  Promise.all([import('./backend-tauri'), import('./app')]).then(([{ tauri }, { boot }]) => boot(tauri)).catch(failed);
 } else {
   void import('./demo').then(({ demo }) => demo({ appendConsole: (text: string) => appendLines(text.trimEnd().split('\n')) }));
 }

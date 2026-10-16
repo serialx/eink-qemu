@@ -1,13 +1,17 @@
-/* The browser page's stylesheet is the theme: same tokens, fonts, marks and
-   component classes. This file only adapts the page to a desktop window. */
+/* The page's stylesheet (../wasm/web/style.css) is the theme: tokens, fonts,
+   marks and the component classes. This file is the app over it: the firmware
+   card, the run toggles, the card menu, the dialogs, the Heap tab and the
+   panel gutters, for the desktop window and the browser alike. */
 @import '@web/style.css';
 @import './heap.css';
 
-/* A fixed window never falls into the page's phone layout (min size 1000x640),
-   and the app never scrolls as a document. */
-html, body { height: 100%; overflow: hidden; }
+/* In the three-column layout the app never scrolls as a document; on a phone
+   it is one scrolling column (style.css). */
+@media (min-width: 961px) { html, body { height: 100%; overflow: hidden; } }
+/* The hidden attribute wins over any display a class sets. */
+[hidden] { display: none !important; }
 body { user-select: none; -webkit-user-select: none; }
-#console, .filter input { user-select: text; -webkit-user-select: text; }
+#console, .filter input, .intro, #screen:not(:has(canvas, iframe)) { user-select: text; -webkit-user-select: text; }
 
 /* Panel widths are the grid variables the page already reads; the gutters set them. */
 .app { --sd-min: var(--sd-w, 300px); --sd-max: var(--sd-w, 300px); --output-min: var(--output-w, 380px); }
@@ -30,16 +34,20 @@ button.file-chip:hover:enabled { background: var(--surface-2); }
 .intro button.button { background: #3d6652; border-color: transparent; color: #fff; font-weight: 600; }
 .intro button.button:hover:enabled { background: #315243; }
 
-/* The device screen is a canvas fed by QEMU's eink display backend. */
+/* The device screen: a canvas fed by QEMU's eink display backend, or the
+   runtime iframe scaled as a whole (style.css). */
 #screen canvas { display: block; image-rendering: pixelated; filter: var(--screen-filter); }
-.bezel:not(:has(canvas)) { width: min(400px, 100%); min-width: 0; flex-shrink: 0; }
-#screen:not(:has(canvas)) { width: 100%; aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; overflow-wrap: anywhere; }
+.bezel:not(:has(canvas, iframe)) { width: min(400px, 100%); min-width: 0; flex-shrink: 0; }
+#screen:not(:has(canvas, iframe)) { width: 100%; aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; overflow-wrap: anywhere; }
 
-/* The card is a file on disk: show its path on one line, full path on hover. */
+/* The card is a file on disk: show its path on one line, full path on hover.
+   In a browser the line says how the card is kept instead. */
 .sd-file { display: flex; align-items: center; gap: 4px; min-width: 0; }
 #sd-save { flex: 1; min-width: 0; display: flex; white-space: nowrap; }
 #sd-save .sd-dir { min-width: 1.5em; overflow: hidden; text-overflow: ellipsis; }
 #sd-save .sd-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#sd-save.note { white-space: normal; }
+#sd-save.note .sd-name { white-space: normal; overflow: visible; }
 #sd-reveal { width: 24px; height: 24px; margin: -4px -4px -4px 0; border-color: transparent; }
 #sd-reveal .icon { width: 14px; height: 14px; }
 
@@ -84,22 +92,15 @@ button.danger { background: var(--danger); border-color: transparent; color: #ff
 button.danger:hover:enabled { background: var(--danger); opacity: .9; }
 
 /* Stopped and error messages sit on the paper like the page's intro. */
-#screen:not(:has(canvas)):not(:has(.intro)) { color: #44403c; }
+#screen:not(:has(canvas, iframe)):not(:has(.intro)) { color: #44403c; }
 
 /* WebKit draws native compact selects that ignore padding; give them the
    page's look (as Chrome renders it) with a drawn chevron. */
-.device-choice select, .zoom select {
-  -webkit-appearance: none; appearance: none;
+.zoom select {
+  -webkit-appearance: none; appearance: none; padding: 0 18px 0 8px;
   background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%), linear-gradient(135deg, var(--faint) 50%, transparent 50%);
-  background-repeat: no-repeat; background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat; background-size: 4px 4px, 4px 4px; background-position: calc(100% - 11px) 52%, calc(100% - 7px) 52%;
 }
-.device-choice select {
-  min-height: 34px; padding: 6px 28px 6px 10px; line-height: 1.4; color: var(--text);
-  background-color: var(--surface); background-position: calc(100% - 15px) 52%, calc(100% - 11px) 52%;
-}
-.device-choice select:hover:enabled { background-color: var(--surface-2); }
-.device-choice select:disabled { opacity: .55; }
-.zoom select { padding: 0 18px 0 8px; background-position: calc(100% - 11px) 52%, calc(100% - 7px) 52%; }
 
 /* Output panel: Console and Heap tabs, the page's phone tabs made compact. */
 .pane-tabs { display: inline-flex; flex: none; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
@@ -244,3 +245,19 @@ button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint)
 .heap-note[hidden] { display: none; }
 #heap-trend-canvas { cursor: ew-resize; touch-action: none; }
 #heap-trend-canvas:focus-visible { outline: 2px solid var(--brand-text); outline-offset: 2px; border-radius: 4px; }
+
+/* Phones and narrow windows: the page's one-column layout, with the firmware
+   card and the toggles laid out for touch. The gutters have no grid to set. */
+@media (max-width: 960px) {
+  .gutter { display: none; }
+  .setup { grid-column: 1 / -1; }
+  button.setup-chip { width: 100%; max-width: none; min-height: 48px; }
+  .setup-card { width: min(460px, calc(100vw - 32px)); }
+  .toggles { grid-column: 1 / -1; justify-content: space-between; gap: 8px; }
+  .toggles .option { flex: 1; min-height: 0; padding: 0; border: 0; }
+  .toggles .option .tip { right: auto; left: 0; }
+  .toggles .option:last-child .tip { left: auto; right: 0; }
+  button.toggle { width: 100%; height: 44px; border-radius: 10px; }
+  .tabs [role=tab] { font: inherit; }
+  .output-head { flex-wrap: wrap; }
+}

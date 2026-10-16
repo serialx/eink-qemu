@@ -1,7 +1,7 @@
 /* Mock content for layout work in a plain browser (pnpm dev, or ?demo): an
    SD listing, a console log, a running X4 Pro with a drawn page and heaps
    that change with every snapshot. */
-import type { Setup } from './api';
+import type { Setup } from './types';
 /** Whether the mock firmware card has an ELF: without one, snapshots are unlabelled. */
 let demoElf = true;
 import { attachHeap, heapSession, setElf } from './heap';

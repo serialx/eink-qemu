@@ -55,7 +55,7 @@ await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve, {once: true});
     ws.addEventListener('error', reject, {once: true});
 });
-let sequence = 0, expectedDialog = null, observerScript;
+let sequence = 0, observerScript;
 let pageLoaded = false;
 const observedErrors = [];
 const calls = new Map(), errors = [];
@@ -77,16 +77,9 @@ ws.addEventListener('message', event => {
         else pending.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params);
     else if (message.method === 'Page.javascriptDialogOpening') {
-        const dialog = expectedDialog;
-        expectedDialog = null;
-        measurements.dialogs.push(message.params);
-        if (!dialog || dialog.type !== message.params.type || !message.params.message.includes(dialog.message)) {
-            errors.push({unexpectedDialog: message.params});
-            call('Page.handleJavaScriptDialog', {accept: false}).catch(error => errors.push(String(error)));
-        } else {
-            call('Page.handleJavaScriptDialog', {accept: true, ...(dialog.text === undefined ? {} : {promptText: dialog.text})})
-                .catch(error => errors.push(String(error)));
-        }
+        // The page asks with its own dialogs; a JavaScript dialog is a bug.
+        errors.push({unexpectedDialog: message.params});
+        call('Page.handleJavaScriptDialog', {accept: false}).catch(error => errors.push(String(error)));
     }
 });
 async function evaluate(expression) {
@@ -117,18 +110,35 @@ async function click(selector) {
 function rowButton(name, action) {
     return `#sd-rows tr[data-name=${JSON.stringify(name)}] button[data-action=${action}]`;
 }
+/* The page's own prompt and confirm (<dialog class="ask">): the real button
+   must open one whose title mentions `message`; it is answered and submitted. */
 async function dialogClick(selector, type, message, text) {
-    assert.equal(expectedDialog, null);
-    expectedDialog = {type, message, text};
     await click(selector);
-    assert.equal(expectedDialog, null, 'Real button must open the expected JavaScript dialog');
+    await waitFor('document.querySelector("dialog.ask[open]")');
+    const title = await evaluate('document.querySelector("dialog.ask[open] strong").textContent');
+    assert(title.includes(message), `Dialog "${title}" must mention ${message}`);
+    assert.equal(await evaluate('!!document.querySelector("dialog.ask[open] input[type=text]")'), type === 'prompt');
+    if (text !== undefined) await evaluate(`document.querySelector("dialog.ask[open] input[type=text]").value = ${JSON.stringify(text)}`);
+    measurements.dialogs.push({type, title});
+    await evaluate('document.querySelector("dialog.ask[open] button[type=submit]").click()');
+    await waitFor('!document.querySelector("dialog.ask[open]")');
 }
-async function picker(selector, files) {
+// The page's pickers are hidden file inputs the backend waits on once a
+// button asks for a file: click through to the button, then set the files.
+async function pickFile(clicks, input, ...files) {
+    for (const selector of clicks) {
+        await waitFor(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
+        await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    }
+    await waitFor(`document.querySelector(${JSON.stringify(input)})`);
     const {root} = await call('DOM.getDocument');
-    const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector});
-    assert(nodeId, `Missing ${selector}`);
-    await call('DOM.setFileInputFiles', {nodeId, files});
+    const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector: input});
+    await call('DOM.setFileInputFiles', {nodeId, files: files.map(file => path.resolve(file))});
 }
+const FIRMWARE_PICKER = [['#flash', '#setup-choose'], '#flash-file'];
+const CARD_PICKER = [['#sd', '#card-menu [data-card=open]'], '#sd-file'];
+const UPLOAD_PICKER = [['#sd-upload'], '#sd-files'];
+
 async function listing(label, names, collision = false) {
     await waitFor('!document.querySelector("#sd-refresh").disabled');
     const error = await evaluate('document.querySelector("#sd-error").textContent');
@@ -201,7 +211,7 @@ async function freshPage() {
     errors.length = 0;
     await waitFor('crossOriginIsolated && document.querySelector("#sd-refresh") && !document.querySelector("#sd-refresh").disabled');
     assert.equal(await evaluate('!!document.querySelector("iframe")'), false, 'Picker page must not auto-start');
-    assert.equal(await evaluate('document.querySelector("#turbo").checked'), measurements.turbo);
+    assert.equal(await evaluate('document.querySelector("#turbo").getAttribute("aria-pressed") === "true"'), measurements.turbo);
     pageLoaded = true;
 }
 try {
@@ -223,19 +233,19 @@ try {
         });
     `})).identifier;
     await freshPage();
-    await picker('#sd', [path.resolve(process.env.INPUT_SD || 'build-wasm-32limit/web-dist/blank-sd.img')]);
+    await pickFile(...CARD_PICKER, process.env.INPUT_SD || 'build-wasm-32limit/web-dist/blank-sd.img');
     await listing('baseline-blank', []);
     // Choosing the firmware starts the emulator.
-    await boot('baseline', () => picker('#flash', [flash]));
+    await boot('baseline', () => pickFile(...FIRMWARE_PICKER, flash));
     const blank = await openBrowser('device-blank-browser');
     await stop();
 
     // Explicitly replace the saved card to discard the reference run's cache.
     await freshPage();
-    await picker('#sd', [path.resolve(process.env.INPUT_SD || 'build-wasm-32limit/web-dist/blank-sd.img')]);
+    await pickFile(...CARD_PICKER, process.env.INPUT_SD || 'build-wasm-32limit/web-dist/blank-sd.img');
     await listing('state1-empty', []);
     assert.equal(await evaluate('document.querySelector("#sd-rows .empty").textContent'), 'Empty folder');
-    await picker('#sd-files', [small, demian]);
+    await pickFile(...UPLOAD_PICKER, small, demian);
     await listing('state1-uploaded', [smallName, demianName]);
     await dialogClick('#sd-mkdir', 'prompt', 'New folder name', folder);
     await listing('state1-folder', [smallName, demianName, folder]);
@@ -256,7 +266,7 @@ try {
     await freshPage();
     await listing('state1-restored', [renamed, folder]);
 
-    await boot('state2', () => picker('#flash', [flash]));
+    await boot('state2', () => pickFile(...FIRMWARE_PICKER, flash));
     await click('#sd-refresh');
     await listing('state2', [renamed, folder]);
     const populated = await openBrowser('device-populated-browser');
@@ -269,7 +279,7 @@ try {
     await waitFor(`window.explorerRefreshes > ${beforeBack}`);
     await evaluate('window.explorerStatuses.length = 0');
     await boot('running-upload', async () => {
-        await picker('#sd-files', [runningFile]);
+        await pickFile(...UPLOAD_PICKER, runningFile);
         await waitFor('window.explorerStatuses.includes("SD card changed · Resetting…")');
     });
     measurements.running_upload_statuses = await evaluate('window.explorerStatuses');
@@ -322,7 +332,7 @@ try {
     await screenshot('explorer-state3', '.sd');
     await freshPage();
     await listing('state3-restored', [renamed, folder]);
-    await boot('restarted', () => picker('#flash', [flash]));
+    await boot('restarted', () => pickFile(...FIRMWARE_PICKER, flash));
     await click('#sd-refresh');
     await listing('restarted', [renamed, folder]);
     await screenshot('explorer-restarted', '.sd');

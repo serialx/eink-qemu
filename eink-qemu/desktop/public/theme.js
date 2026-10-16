@@ -2,4 +2,4 @@
 // title bar inset. A file rather than an inline script, so the CSP needs no
 // 'unsafe-inline' for scripts.
 try { const theme = localStorage.getItem('eink-qemu-theme'); if (theme) document.documentElement.dataset.theme = theme; } catch {}
-if (navigator.userAgent.includes('Mac')) document.documentElement.dataset.platform = 'macos';
+if ('__TAURI_INTERNALS__' in window && navigator.userAgent.includes('Mac')) document.documentElement.dataset.platform = 'macos';

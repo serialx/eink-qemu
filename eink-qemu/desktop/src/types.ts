@@ -1,6 +1,6 @@
-/* Typed wrappers over the Rust commands (src-tauri/src/lib.rs). */
-import { Channel, invoke } from '@tauri-apps/api/core';
-import type { HeapEvents } from './heap-log';
+/* The shapes both front ends share: the session, settings, the firmware card,
+   the SD card and the heap view. The desktop's Rust commands (src-tauri/src/lib.rs)
+   answer in these shapes; the browser backend builds them itself. */
 
 export interface Exit { kind: 'stopped' | 'failed' | 'crashed'; reason: string | null }
 export interface SessionInfo {
@@ -25,6 +25,9 @@ export interface Settings {
   elfAuto: boolean;
 }
 export interface FileInfo { path: string; name: string; size: number }
+/** The open SD card: a file on disk, or (in a browser) the card saved in the
+    browser, with a note on how it is kept and whether that failed. */
+export interface CardInfo extends FileInfo { note?: string; error?: boolean; /** Still being loaded: the explorer waits. */ busy?: boolean }
 export interface FirmwareInfo extends FileInfo {
   /** The folder holding it (home as ~), and that folder's own name. */
   folder: string; parent: string;
@@ -48,7 +51,7 @@ export interface Setup {
 export interface Attached {
   session: SessionInfo;
   settings: Settings;
-  card: FileInfo | null;
+  card: CardInfo | null;
   firmware: FileInfo | null;
   /** The heap view's ELF. */
   elf: FileInfo | null;
@@ -57,8 +60,9 @@ export interface Attached {
   pane: string | null;
   problems: string[];
 }
-/** A card just made or resized (src-tauri/src/lib.rs `MadeCard`). */
-export interface MadeCard { card: FileInfo | null; made: { size: number; cluster: number; sparse: boolean } }
+/** A card just made or resized (src-tauri/src/lib.rs `MadeCard`); `note` is
+    something the backend wants said about it. */
+export interface MadeCard { card: CardInfo | null; made: { size: number; cluster: number; sparse: boolean; note?: string } }
 export interface SdEntry { name: string; size: number; isDir: boolean; mtime: number | null }
 export interface SdListing { path: string; entries: SdEntry[]; free: number; total: number; fsType: string }
 export interface UploadPlan { files: number; bytes: number; conflicts: string[] }
@@ -71,7 +75,7 @@ export interface Heap {
   infoFree: number; infoMinFree: number; corrupt: number; blocks: number[];
   sites?: number[]; stk?: number[]; ev?: number[];
 }
-/** heapview.py's /snapshot shape (src-tauri/src/heapview.rs): time in seconds. */
+/** A snapshot of the heaps (src-tauri/src/heapview.rs `heap_snapshot`): time in seconds. */
 export interface HeapSnapshot {
   time: number; heaps: Heap[]; missing: number; traced?: boolean;
   /** Why allocations are not recorded, when they are not. */
@@ -94,7 +98,7 @@ export interface HeapPast { snapshot: HeapSnapshot; prev: HeapSnapshot | null }
 export interface HeapHistoryPoint { t: number; h: Record<string, [number, number, number]> }
 /** An allocation site: the function that called the allocator, and where. */
 export interface HeapSite { fn: string; loc: string }
-/** A recorded allocation stack, symbolized (heapview.py's /stack): frames
+/** A recorded allocation stack, symbolized (`heap_stack`): frames
     innermost first, with the calls inlined into each; `caller` is the first
     frame outside the allocator, `site` the one the block is attributed to. */
 export interface HeapFrame { addr: number; fn: string; loc: string; inl: { fn: string; loc: string }[]; alloc: boolean; lib: boolean }
@@ -105,62 +109,3 @@ export interface StartOptions { machine: Machine; panel: string; wifi: boolean; 
 export class AppError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
-
-async function call<T>(command: string, args?: Record<string, unknown> | Uint8Array, options?: { headers: Record<string, string> }): Promise<T> {
-  try {
-    return await invoke<T>(command, args as never, options);
-  } catch (error) {
-    const { code = 'EIO', message = String(error) } = (typeof error === 'object' && error) ? error as { code?: string; message?: string } : {};
-    throw new AppError(code, message);
-  }
-}
-
-export const api = {
-  attach(onLog: (lines: string[]) => void, onDisplay: (message: ArrayBuffer) => void) {
-    const logs = new Channel<string[]>();
-    logs.onmessage = onLog;
-    const frames = new Channel<ArrayBuffer>();
-    frames.onmessage = onDisplay;
-    return call<Attached>('attach', { logs, frames });
-  },
-  note: (line: string) => call<void>('note', { line }).catch(() => {}),
-  settings: (patch: Partial<Pick<Settings, 'device' | 'panel' | 'wifi' | 'ghosting' | 'turbo'>>) => call<Settings>('settings_set', { patch }),
-  // Native dialogs run in Rust; host paths come back only as results.
-  pickFirmware: () => call<Setup | null>('firmware_pick'),
-  useFirmware: (path: string) => call<Setup>('firmware_use', { path }),
-  recentFirmware: (path: string) => call<Setup>('firmware_recent', { path }),
-  setup: (detect: boolean) => call<Setup>('firmware_setup', { detect }),
-  readFirmware: async () => new Uint8Array(await call<ArrayBuffer>('firmware_read')),
-  start: (flash: Uint8Array, options: StartOptions) =>
-    call<SessionInfo>('start', flash, { headers: { 'x-options': JSON.stringify(options) } }),
-  stop: () => call<void>('stop'),
-  reset: () => call<void>('reset'),
-  key: (key: string, down: boolean) => call<void>('key', { key, down }),
-  touch: (x: number, y: number, down: boolean) => call<void>('touch', { x, y, down }),
-  pickOpenCard: () => call<FileInfo | null>('card_pick_open'),
-  pickNewCard: (size: number) => call<MadeCard | null>('card_pick_new', { size }),
-  resizeCard: (size: number) => call<MadeCard>('card_resize', { size }),
-  pickCopyCard: () => call<string | null>('card_pick_copy'),
-  revealCard: () => call<void>('card_reveal'),
-  sdList: (path: string) => call<SdListing>('sd_list', { path }),
-  sdPickSources: () => call<string[]>('sd_pick_sources'),
-  sdPlanUpload: (dir: string, sources: string[]) => call<UploadPlan>('sd_plan_upload', { dir, sources }),
-  sdUpload: (dir: string, sources: string[], confirmed: string[]) => call<UploadPlan>('sd_upload', { dir, sources, confirmed }),
-  sdPickExport: (path: string) => call<string | null>('sd_pick_export', { path }),
-  sdMkdir: (path: string) => call<void>('sd_mkdir', { path }),
-  sdRename: (path: string, name: string) => call<void>('sd_rename', { path, name }),
-  sdRemove: (path: string) => call<void>('sd_remove', { path }),
-  heapPickElf: () => call<FileInfo | null>('heap_pick_elf'),
-  heapUseElf: (path: string) => call<FileInfo>('heap_use_elf', { path }),
-  heapForgetElf: () => call<void>('heap_forget_elf'),
-  heapSnapshot: () => call<HeapSnapshot>('heap_snapshot'),
-  heapSnapshotAt: (time: number) => call<HeapPast | null>('heap_snapshot_at', { time }),
-  heapStack: (id: number) => call<HeapStack | null>('heap_stack', { id }),
-  heapSites: (from: number) => call<HeapSite[]>('heap_sites', { from }),
-  heapHistory: () => call<HeapHistoryPoint[]>('heap_history'),
-  heapEvents: (gen: number, start: number, stacks: number, sites: number) =>
-    call<HeapEvents | null>('heap_events', { gen, start, stacks, sites }),
-  heapWindow: () => call<void>('heap_window'),
-  saveScreenshot: (png: Uint8Array, name: string) =>
-    call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),
-};

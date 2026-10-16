@@ -2,7 +2,7 @@
 //! ELF, its symbols and allocation sites, the current run's allocation log,
 //! the free-memory history with a snapshot for each of its points (the Heap
 //! tab's time machine), and the latest snapshot. Its answers have the shape
-//! of heapview.py's endpoints, which eink-qemu/heapview.js reads.
+//! of the earlier heapview.py's endpoints, which the Heap tab and window read.
 
 use crate::heap::Elf;
 use crate::session::{AppError, Session};

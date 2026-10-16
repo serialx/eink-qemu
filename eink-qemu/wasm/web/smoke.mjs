@@ -144,6 +144,22 @@ async function screenshot(name) {
 }
 const consoleText = 'document.querySelector("#console")?.textContent';
 const canvas = 'document.querySelector("iframe").contentDocument.querySelector("canvas")';
+const turboOn = 'document.querySelector("#turbo").getAttribute("aria-pressed") === "true"';
+// The page's pickers are hidden file inputs the backend waits on once a
+// button asks for a file: click through to the button, then set the files.
+async function pickFile(clicks, input, ...files) {
+    for (const selector of clicks) {
+        await waitFor(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
+        await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    }
+    await waitFor(`document.querySelector(${JSON.stringify(input)})`);
+    const {root} = await call('DOM.getDocument');
+    const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector: input});
+    await call('DOM.setFileInputFiles', {nodeId, files: files.map(file => path.resolve(file))});
+}
+const FIRMWARE_PICKER = [['#flash', '#setup-choose'], '#flash-file'];
+const CARD_PICKER = [['#sd', '#card-menu [data-card=open]'], '#sd-file'];
+const UPLOAD_PICKER = [['#sd-upload'], '#sd-files'];
 async function checkDisplaySizes(width, height) {
     const results = [];
     // Fit (the default) may resample; Auto must keep whole physical pixels.
@@ -253,15 +269,11 @@ smoke: try {
     // Do not count exceptions from the previous navigation.
     errors.length = 0;
     if (process.env.PICKER_FLASH) {
-        await waitFor('crossOriginIsolated && document.querySelector("#flash")');
+        await waitFor('crossOriginIsolated && window.einkQemu && document.querySelector("#flash")');
         await call('DOM.enable');
-        const {root} = await call('DOM.getDocument');
         // Choosing the firmware starts the emulator, so the SD card goes first.
-        for (const [selector, file] of [['#sd', process.env.PICKER_SD], ['#flash', process.env.PICKER_FLASH]]) {
-            if (!file) continue;
-            const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector});
-            await call('DOM.setFileInputFiles', {nodeId, files: [path.resolve(file)]});
-        }
+        if (process.env.PICKER_SD) await pickFile(...CARD_PICKER, process.env.PICKER_SD);
+        await pickFile(...FIRMWARE_PICKER, process.env.PICKER_FLASH);
         measurements.file_pickers = true;
     }
     await waitFor('crossOriginIsolated && document.querySelector("iframe")');
@@ -276,7 +288,7 @@ smoke: try {
             throw new Error('Browser-composed flash differs from mkflash.py output');
         }
     }
-    measurements.turbo = await evaluate('document.querySelector("#turbo").checked');
+    measurements.turbo = await evaluate(turboOn);
     if (measurements.turbo !== (new URL(process.argv[2]).searchParams.get('turbo') !== '0') ||
         !await evaluate('document.querySelector("#turbo").disabled')) {
         throw new Error('Turbo selection must follow the URL and stay fixed during a run');
@@ -529,7 +541,7 @@ smoke: try {
     if (await evaluate('document.querySelector("#turbo").disabled')) {
         throw new Error('Stop must allow changing Turbo before the next boot');
     }
-    measurements.exported_sd_bytes = await evaluate('sdImage.byteLength');
+    measurements.exported_sd_bytes = await evaluate('window.einkQemu.image().byteLength');
     measurements.stop_removed_runtime = true;
     measurements.sampled_peak_chrome_rss_kib = peakRSS;
     measurements.sampled_peak_chrome_cpu_percent = peakCPU;

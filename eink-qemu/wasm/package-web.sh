@@ -20,7 +20,17 @@ cp "$ROOT/build-wasm-deps/browser-net/build/"{browser-net.mjs,browser-net.wasm,l
 # Node resolves the adapter next to its QEMU module.
 cp "$ROOT/build-wasm-deps/browser-net/build/"{browser-net.mjs,browser-net.wasm} "$BUILD/"
 cp "$ROOT/eink-qemu/wasm/web/browser-network.mjs" "$BUILD/"
-cp "$ROOT"/eink-qemu/wasm/web/* "$DEST/"
+# The page is the front end shared with the desktop app (eink-qemu/desktop),
+# built for the browser: relative URLs, the runtime's classic scripts loaded by
+# index.html, and the boot assets under boot/ (scripts/prepare-resources.sh).
+(cd "$ROOT/eink-qemu/desktop" && pnpm install --frozen-lockfile && pnpm build:browser)
+cp -R "$ROOT/eink-qemu/desktop/dist-web/." "$DEST/"
+# The runtime iframe and what it loads, the isolation service worker, the
+# network adapter's page half, and the notices.
+for f in runtime.html runtime.js fat.js sd-ops.js sd-store.js browser-network.mjs \
+         coi-serviceworker.js coi-serviceworker.LICENSE.txt fonts.LICENSE.txt README.txt; do
+    cp "$ROOT/eink-qemu/wasm/web/$f" "$DEST/"
+done
 for arch in riscv32 xtensa; do
     cp "$BUILD/qemu-system-$arch.js" "$BUILD/qemu-system-$arch.wasm" "$DEST/"
     if [ -f "$BUILD/qemu-system-$arch.worker.js" ]; then
@@ -28,23 +38,17 @@ for arch in riscv32 xtensa; do
     fi
 done
 cp "$ROOT/pc-bios/esp32c3-rom.bin" "$ROOT/pc-bios/esp32s3_rev0_rom.bin" "$DEST/"
-cp "$ROOT"/eink-qemu/boot/bootloader-*.bin "$DEST/"
-cp "$ROOT/eink-qemu/boot/LICENSE" "$DEST/bootloader.LICENSE.txt"
-cp "$ROOT/eink-qemu/boot/LICENSE.partitions" "$DEST/partitions.LICENSE.txt"
-python3 - "$ROOT" "$DEST" <<'PYBOOT'
+# Boot asset provenance, beside the assets the build placed under boot/.
+python3 - "$ROOT" "$DEST/boot" <<'PYBOOT'
 from pathlib import Path
 from importlib import import_module
 import sys
 sys.path.insert(0, sys.argv[1])
 mkflash = import_module('eink-qemu.mkflash')
-mknvs = import_module('eink-qemu.mknvs')
 out = Path(sys.argv[2])
 provenance = (mkflash.BOOT_DIR / 'README.md').read_text()
 (out / 'boot-provenance.md').write_text(provenance.replace('(LICENSE)', '(bootloader.LICENSE.txt)')
                                        .replace('(LICENSE.partitions)', '(partitions.LICENSE.txt)'))
-(out / 'partitions.bin').write_bytes(mkflash.partition_table())
-(out / 'partitions-picco.bin').write_bytes(mkflash.partition_table(mkflash.BOOT_DIR / 'partitions-picco.csv'))
-(out / 'nvs-x3.bin').write_bytes(mknvs.image(0x5000, 'cphw', {'dev_det': 2}))
 PYBOOT
 if [ ! -f "$DEST/blank-sd.img" ]; then
     # Compact browser fixture; stock X3 timing comparisons need 32 KiB clusters.

@@ -2,7 +2,7 @@
    formatting, C++ names, the map colours, the painter that wraps a heap's
    blocks into rows of a chosen size, hit-testing, tooltips and the call
    stack markup. Nothing here knows which page it is on. */
-import type { Heap, HeapFrame, HeapStack } from './api';
+import type { Heap, HeapFrame, HeapStack } from './types';
 
 /** A block's flags (src-tauri/src/heap.rs). */
 export const FREE = 1, POISONED = 2, CORRUPT = 4;

@@ -3,7 +3,7 @@
    firmware; and the run options as icon toggles. Rust decides the device
    and finds the ELF (src-tauri/src/lib.rs `choose_firmware`); this paints
    what it reports and hands choices back. */
-import type { Settings, Setup } from './api';
+import type { Settings, Setup } from './types';
 
 export type RunOption = 'wifi' | 'ghosting' | 'turbo';
 export interface SetupHandlers {
@@ -61,12 +61,13 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
       ? `<span class="warn">${icon('alert')}ELF</span>` : `<span class="ok">${icon('check')}ELF</span>`;
     meta.innerHTML = [device ? esc(names[device]) : 'Choose a device', elf].filter(Boolean).join('<span aria-hidden="true">·</span>');
   }
-  chip.title = firmware ? firmware.path : 'Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump';
+  chip.title = firmware ? firmware.path || firmware.name : 'Firmware .bin (app or merged), X4 Pro .xota update, or a 16 MiB flash dump';
 
   // The file.
   $('setup-name').textContent = firmware ? firmware.name : 'No firmware chosen';
   $('setup-folder').textContent = firmware ? firmware.folder : 'A .bin (app or merged), an X4 Pro .xota update, or a 16 MiB flash dump.';
   $('setup-folder').title = firmware?.folder ?? '';
+  $('setup-folder').hidden = !!firmware && !firmware.folder;
   $('setup-tags').innerHTML = !firmware ? '' : [
     firmware.chip, firmware.version && `<span class="mono" title="Version in the app descriptor">${esc(firmware.version)}</span>`,
     mib(firmware.size), firmware.modified && `<span title="Modified">${when(firmware.modified)}</span>`,

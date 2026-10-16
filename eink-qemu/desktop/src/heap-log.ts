@@ -3,7 +3,7 @@
    hands them over in pieces), replayed into the live allocations at any
    moment and into block lists shaped like a snapshot's. Only type imports,
    so node's test runner loads it as it is. */
-import type { Heap, HeapSite } from './api';
+import type { Heap, HeapSite } from './types';
 
 export const ALLOC = 1, FREED = 2, REALLOC = 3;
 const FREE = 1, POISONED = 2;   // a block's flags, as heap-core.ts

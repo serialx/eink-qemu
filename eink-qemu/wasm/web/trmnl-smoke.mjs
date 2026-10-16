@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import {createHash} from 'node:crypto';
 const target = new URL(process.argv[2]);
 target.searchParams.set('wifi', 'off');
@@ -44,20 +45,36 @@ async function wait(expression) {
     }
     throw Error(`Timed out: ${expression}; ${await evaluate('document.querySelector("#console")?.textContent')}`);
 }
+// The device is chosen in the firmware card, which offers only the devices that take the firmware's chip.
 async function choose(value) {
-    await evaluate(`document.querySelector('#device').value = '${value}'; document.querySelector('#device').dispatchEvent(new Event('change'));`);
+    await evaluate(`document.querySelector('#flash').click()`);
+    await wait(`document.querySelector('#setup-devices [data-device=${value}]') && !document.querySelector('#setup-devices [data-device=${value}]').disabled`);
+    await evaluate(`document.querySelector('#setup-devices [data-device=${value}]').click()`);
 }
-async function picker() {
+const waitFor = wait;
+const picker = () => pickFile(...FIRMWARE_PICKER, firmware);
+// The page's pickers are hidden file inputs the backend waits on once a
+// button asks for a file: click through to the button, then set the files.
+async function pickFile(clicks, input, ...files) {
+    for (const selector of clicks) {
+        await waitFor(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
+        await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    }
+    await waitFor(`document.querySelector(${JSON.stringify(input)})`);
     const {root} = await call('DOM.getDocument');
-    const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector: '#flash'});
-    await call('DOM.setFileInputFiles', {nodeId, files: [firmware]});
+    const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector: input});
+    await call('DOM.setFileInputFiles', {nodeId, files: files.map(file => path.resolve(file))});
 }
+const FIRMWARE_PICKER = [['#flash', '#setup-choose'], '#flash-file'];
+const CARD_PICKER = [['#sd', '#card-menu [data-card=open]'], '#sd-file'];
+const UPLOAD_PICKER = [['#sd-upload'], '#sd-files'];
+
 try {
     await call('Runtime.enable'); await call('Page.enable'); await call('DOM.enable');
     await call('Emulation.setDeviceMetricsOverride', {width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false});
     const initial = new URL(base); initial.searchParams.set('device', 'auto');
     await call('Page.navigate', {url: initial.href});
-    await wait('document.querySelector("#device") && typeof start === "function"');
+    await wait('crossOriginIsolated && window.einkQemu && document.querySelector("#flash")');
     await evaluate(`window.addEventListener('eink-qemu-flash-ready', e => {
         window.flashHashPromise = crypto.subtle.digest('SHA-256', e.detail.flash.slice(0)).then(b =>
             [...new Uint8Array(b)].map(n => n.toString(16).padStart(2, '0')).join(''));
@@ -65,7 +82,15 @@ try {
     await picker();
     await wait('document.querySelector("#status").textContent.includes("Choose X3 or X4")');
     assert.equal(await evaluate('!!document.querySelector("iframe")'), false);
-    await choose('x4pro');
+    // The card never offers the X4 Pro for ESP32-C3 firmware; a link can still ask for it.
+    const mismatch = new URL(base); mismatch.searchParams.set('device', 'x4pro');
+    await call('Page.navigate', {url: mismatch.href});
+    await wait('crossOriginIsolated && window.einkQemu && document.querySelector("#flash")');
+    await evaluate(`window.addEventListener('eink-qemu-flash-ready', e => {
+        window.flashHashPromise = crypto.subtle.digest('SHA-256', e.detail.flash.slice(0)).then(b =>
+            [...new Uint8Array(b)].map(n => n.toString(16).padStart(2, '0')).join(''));
+    });`);
+    await picker();
     await wait('document.querySelector("#status").textContent.includes("conflicts")');
     assert.equal(await evaluate('!!document.querySelector("iframe")'), false);
     await choose('x4');
@@ -73,7 +98,7 @@ try {
     await delay(2000);
     const expected = Buffer.alloc(0x1000000, 255); fs.readFileSync(firmware).copy(expected);
     assert.equal(await evaluate('flashHashPromise'), createHash('sha256').update(expected).digest('hex'));
-    assert.equal(await evaluate('document.querySelector("#device").disabled'), true);
+    assert.equal(await evaluate('document.querySelector("#setup-devices [data-device=x4]").disabled'), true);
     const frame = 'document.querySelector("iframe")';
     assert.deepEqual(await evaluate(`({machine:${frame}.dataset.machine, width:${frame}.contentDocument.querySelector('canvas').width, height:${frame}.contentDocument.querySelector('canvas').height})`), {machine:'x4', width:480, height:800});
     const win = `${frame}.contentWindow`;
@@ -92,9 +117,9 @@ try {
     await wait('document.querySelector("#console").textContent.split(" + softAP").length >= 3');
     assert(!await evaluate('document.querySelector("#console").textContent.includes("assert failed:")'));
     await evaluate(`document.querySelector('#stop').click()`);
-    await wait('!document.querySelector("iframe") && !document.querySelector("#device").disabled');
+    await wait('!document.querySelector("iframe") && !document.querySelector("#setup-devices [data-device=x4]").disabled');
     await call('Page.navigate', {url: base});
-    await wait('document.querySelector("#device")?.value === "x4"');
+    await wait('document.querySelector("#setup-devices [aria-checked=true]")?.dataset.device === "x4"');
     assert.deepEqual(errors, []);
     console.log('PASS: C3 ambiguity, chip mismatch, X4 boot, preserved firmware, reset, stop, remembered selection');
 } finally { ws.close(); }

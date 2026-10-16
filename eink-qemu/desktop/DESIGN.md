@@ -1,10 +1,10 @@
 # eink-qemu desktop: design
 
-A Tauri 2 app with the browser page's interface (SD card explorer, device
-stage, firmware console) and a live heap view, that runs the native `qemu-system-*` binaries
-instead of the WebAssembly build. Native QEMU is several times faster than
-the Wasm JIT, has no fixed heap, and reads the SD card image from disk at any
-size.
+A Tauri 2 app (SD card explorer, device stage, firmware console, a live
+heap view) that runs the native `qemu-system-*` binaries. Native QEMU is
+several times faster than the Wasm JIT, has no fixed heap, and reads the SD
+card image from disk at any size. The same front end, built with
+`--mode web`, is the browser page over the WebAssembly build (see Backends).
 
 It replaces an Electron attempt (branch `serialx/electron-app`) whose
 renderer re-created the page with shadcn/ui. That copied the page's colours
@@ -20,34 +20,70 @@ the Rust core.
 
 ## Theme and layout
 
-- `src/desktop.css` starts with `@import '@web/style.css'` (a Vite alias to
+- `src/app.css` starts with `@import '@web/style.css'` (a Vite alias to
   `../wasm/web`): the stone neutrals, the forest green, Inter, Lora and Geist
-  Mono, the controls, the green status bar, the dotted stage and the bezel
-  are the site's bytes. Fonts, the cow mark and the firmware modules come
+  Mono, the controls, the green status bar, the dotted stage, the bezel and
+  the one-column phone layout are the stylesheet's. `app.css` adds the
+  firmware card, the run toggles, the card menu, the dialogs, the Heap tab
+  and the panel gutters. Fonts, the cow mark and the firmware modules come
   from the same directory.
-- `index.html` keeps the page's markup and class names. The desktop overlay
-  adds a canvas where the page had its runtime iframe, buttons where it had
-  file inputs (Tauri works with paths from native dialogs and drops), gutters
-  that set the grid's panel widths, the card menu, in-page prompt and confirm
-  dialogs (`window.prompt` is not available in every system WebView), and a
-  traffic-light inset with drag regions for the macOS overlay title bar.
-- The window's minimum size is 1000×640, so the stylesheet's phone layout
-  never engages.
-- `src/app.ts` is the page's `app.js` with the runtime iframe replaced by
-  Rust commands: screen zoom (whole physical pixels, Fit, Auto), key rows,
-  status milestones and the SD table carry over. The console buffer and
-  filter are in `console.ts`; the Heap tab in `heap.ts`; help tips, the
-  theme toggle and the panel gutters in `main.ts`.
-- Deliberate differences from the page: status milestones also recognise
-  the X4's plain `refresh` waits, restart counting when the guest reboots,
-  name an SD card the firmware could not mount and the stock X4 Pro
-  firmware's wait for a Power press; device keys are released by their own
-  key-up whatever the modifiers; the SD row action saves to the computer
-  through a save dialog ("Save to computer"); Turbo keeps idle time in real
-  time (see the README).
-- Without the Tauri runtime (`pnpm dev` in a browser) the page shows mock
+- `index.html` is the one page. Markup meant for one backend carries
+  `data-only="tauri"` or `data-only="browser"` (the about text, the tips'
+  URL hints, the intro's note on the card) and `main.ts` removes the rest.
+  The firmware chip opens the firmware card; the card menu, the in-page
+  prompt and confirm dialogs (`window.prompt` is not available in every
+  system WebView), the gutters that set the grid's panel widths, and the
+  traffic-light inset with drag regions for the macOS overlay title bar
+  (`data-platform`, set by `theme.js` only inside Tauri) are the app's.
+- The desktop window's minimum size is 1000×640, so the phone layout never
+  engages there; the browser page keeps it, with the SD card and the console
+  behind tabs below the stage.
+- `src/app.ts` is the page: screen zoom (whole physical pixels, Fit, Auto),
+  key rows, the SD table, the firmware card's handlers and the card menu,
+  over a `Backend`. Readiness from the firmware log is `readiness.ts`
+  (`tests/test_readiness.mjs`): CrossPoint's refresh tags and memory report,
+  the X4's plain `refresh` waits, restart counting when the guest reboots, an
+  SD card the firmware could not mount and the stock X4 Pro firmware's wait
+  for a Power press. The console buffer and filter are in `console.ts`; the
+  Heap tab in `heap.ts`; help tips, the theme toggle, the phone tabs and the
+  panel gutters in `main.ts`.
+- Device keys are released by their own key-up whatever the modifiers; the
+  SD row action saves to the computer through a save dialog ("Save to
+  computer"); Turbo keeps idle time in real time (see the README).
+- Without either backend (`pnpm dev` in a browser) the page shows mock
   content from `src/demo.ts`, for layout work; `heap.html` shows mock heaps
   with an allocation log from `src/heap-mock.ts` (`?untraced`: without one).
+
+## Backends
+
+`src/backend.ts` is what the page needs from whatever runs the emulator:
+the session and its events, settings, the firmware (chosen through the
+backend's own pickers, named by opaque refs), the screen, keys and touch,
+the card and the explorer's operations, the heap view, drops and a few
+capabilities (`can`) that hide what a backend cannot do. `main.ts` picks
+one: `backend-tauri.ts` inside Tauri, `backend-browser.ts` in the web build
+(`vite --mode web`), else the demo.
+
+- `backend-tauri.ts` wraps the Rust commands (`src-tauri/src/lib.rs`), the
+  session and SD-reset events, window drops (paths and a position, scaled on
+  platforms that report physical pixels) and the display channel, which it
+  paints into a canvas at the panel's resolution. Files are host paths.
+- `backend-browser.ts` is the WebAssembly build in a runtime iframe
+  (`../wasm/web/runtime.html`): the screen is the iframe, scaled as a whole,
+  and SDL inside it takes the pointer and the keyboard when it has focus;
+  keys pressed on the page are posted to it. The card is a FAT32 image in
+  page memory that `fat.js` edits and `sd-store.js` keeps in IndexedDB, with
+  the ownership rule of the old page: the page owns it while the emulator is
+  stopped, the runtime (MEMFS `/sd.img`) from boot until the stop snapshot
+  returns it, and explorer operations go to whichever owns it. Files come
+  from hidden inputs (one per purpose, so automation can set them) and from
+  drops (the entries API, read before the first await). `?flash=`, `?sd=`
+  and the option parameters work as they did. Settings are in localStorage.
+  There is no Heap tab, no ELF, no card resizing and no "show in folder".
+- Both build from `index.html` with Vite (`vite.config.ts`): the desktop
+  build adds `heap.html`; the web build uses relative URLs, injects the
+  page's classic scripts and, in development, serves the runtime's files and
+  a wasm package itself behind the isolation headers.
 
 ## Processes
 
@@ -165,7 +201,7 @@ no key event reaches a stopped guest.
 
 ## Heap view
 
-`src-tauri/src/heap.rs` ports heapview.py's snapshot: the ELF's
+`src-tauri/src/heap.rs` ports the earlier heapview.py's snapshot (removed; in git history): the ELF's
 `registered_heaps` lists the heaps (`heap_t`, with or without
 CONFIG_HEAP_TASK_TRACKING's name pointer), and each region is walked as a
 TLSF physical block list, whose start is found once past the TLSF control
@@ -191,7 +227,7 @@ At Start, when the chosen ELF is one of the flash image's apps, has the
 plugin's hooks (heap poisoning) and, on RISC-V, unwind tables, QEMU gets
 `-plugin libheaptrace,elf=…,out=<run dir>/heaptrace.bin`; otherwise the run
 keeps the reason, which snapshots carry as `traceNote`. `trace.rs` ports
-heapview.py's log reader (columns, each distinct stack once, the live
+that tool's log reader (columns, each distinct stack once, the live
 allocations), its symbolizer (the `addr2line` crate on the ELF's DWARF, with
 the symbol table for functions DWARF names without their scope, so names
 match binutils) and its allocation sites. `heapview.rs` keeps that state with
@@ -200,7 +236,7 @@ share for 0.8 s so two viewers do not pause the guest twice. Each history
 point keeps its snapshot as deflated JSON (about 2 KB on the X4 Pro, so the
 15 minutes cost a few MB); `heap_snapshot_at` returns the one nearest a time
 with the one before it, which the tab diffs to light what changed. Its commands
-answer in the shape of heapview.py's endpoints, plus `heap_sites` for the
+answer in the shape of its endpoints, plus `heap_sites` for the
 tab, which colours blocks by site id and fetches the names it has not seen.
 The tab updates its cards in place and moves one only when the order
 changes: re-appending them each second re-anchored the pane's scroll.
@@ -220,8 +256,7 @@ allocating event, else when it has the same place and size. Site colours go
 to the eight sites holding the most memory in the latest snapshot and stay
 while they remain among them, so they can differ from the tab's, which
 follow the site id. Snapshots carry their run, and the window also listens
-for the session event, so a new run starts it afresh. heapview.py keeps the
-earlier page, `eink-qemu/heapview.js`.
+for the session event, so a new run starts it afresh.
 
 ## Firmware
 

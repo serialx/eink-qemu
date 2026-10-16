@@ -5,7 +5,7 @@
    single bar, and a clicked block opens its details and call stack. Without
    the ELF the maps are drawn alone. Scrubbing the trend shows the heaps at
    that moment (Rust keeps a snapshot per trend point) until Live. */
-import type { FileInfo, Heap, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './api';
+import type { FileInfo, Heap, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './types';
 import {
   CORRUPT, FADE, FREE, GUTTER, POISONED, SCALES, SITE_COLORS, Stacks, ago, blockAddr, byKind, callName, copyStack,
   errorOf, esc, fmt, fragmented, hex, hitMap, isInternal, kib, load, onTheme, paintMap, per, pointerOf, readColors, role,
@@ -92,7 +92,15 @@ const folds: Record<string, boolean> = load('eink-qemu-heap-folds', {});
 /* Tabs ---------------------------------------------------------------- */
 
 const tabs = [...output.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+let available = true;
+/** Without native QEMU behind the page there are no heaps: the tab goes away. */
+export function setHeapAvailable(on: boolean) {
+  available = on;
+  $('tab-heap').hidden = !on;
+  if (!on && visible) showPane('console');
+}
 export function showPane(name: 'console' | 'heap') {
+  if (name === 'heap' && !available) name = 'console';
   output.dataset.pane = name;
   for (const tab of tabs) {
     const on = tab.dataset.pane === name;

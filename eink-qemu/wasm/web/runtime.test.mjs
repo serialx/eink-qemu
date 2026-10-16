@@ -34,20 +34,3 @@ test('turbo overrides measured panel power and refresh waits', async () => {
     assert.ok(args.includes('dwc_sdmmc.timing=off'));
     for (const name of ['pon-ms', 'pof-ms', 'busy-ms']) assert.ok(args.includes(`uc8179.${name}=1`));
 });
-
-test('firmware refresh tags advance the browser from Booting to Ready', () => {
-    const source = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
-    const append = source.slice(source.indexOf('function append(line)'), source.indexOf('function resetting('));
-    for (const tag of ['8179', '8279', 'X3', '8279x4']) {
-        const state = {window: {}, consoleText: '', milestones: 0, startedAt: 0, lastDrawAt: 0,
-            frame: {title: 'X4 Pro display'}, performance: {now: () => 10000},
-            $: () => ({scrollHeight: 0, scrollTop: 0, clientHeight: 0, append() {}}),
-            consoleMatches: () => true, timingLabel: () => 'Accurate timing', status: text => { state.statusText = text; }};
-        const context = vm.createContext(state);
-        vm.runInContext(append, context);
-        for (let i = 0; i < 3; i++) context.append(`Wait complete:  ${tag}_DRF (483 ms)`);
-        context.append('[MEM] Free: 200000 bytes');
-        assert.match(state.statusText || '', /Ready/);
-        assert.equal(state.window.bootTimeSeconds, 10);
-    }
-});

@@ -1,7 +1,7 @@
 //! Where heap blocks came from: the heaptrace plugin's event log
 //! (contrib/plugins/heaptrace.c), its stacks symbolized from the firmware's
 //! DWARF, and allocation sites. A port of heapview.py's Trace, Symbolizer
-//! and Sites; the heap window (eink-qemu/heapview.js) replays the events.
+//! and Sites; the heap window (desktop/src/heap-window.ts) replays the events.
 
 use regex::Regex;
 use serde::Serialize;

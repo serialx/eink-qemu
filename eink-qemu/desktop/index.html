@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>eink-qemu</title>
+  <link rel="icon" href="../wasm/web/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="../wasm/web/apple-touch-icon.png">
   <script src="/theme.js"></script>
   <script type="module" src="/src/main.ts"></script>
 </head>
@@ -39,7 +41,7 @@
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
   </svg>
 
-  <div class="app">
+  <div class="app" data-tab="sd">
     <header class="topbar" data-tauri-drag-region>
       <div class="brandbar">
         <div class="about">
@@ -48,9 +50,11 @@
             <strong>eink-qemu</strong>
             <p>An emulator for ESP32 e-ink readers: the Xteink X4 Pro, X3 and X4, and the BOOX Picco.
               It runs their unmodified firmware, stock or any fork, with the screen, SD card, keys
-              and Wi-Fi behaving like the real board. This app runs native QEMU.</p>
+              and Wi-Fi behaving like the real board. <span data-only="tauri">This app runs native QEMU.</span><span data-only="browser">Everything runs here in your browser.</span></p>
             <p class="fine">Built on QEMU. Started as a fork of
-              <a href="https://github.com/prokrypt/x4prosim" target="_blank" rel="noopener">prokrypt/x4prosim</a>.</p>
+              <a href="https://github.com/prokrypt/x4prosim" target="_blank" rel="noopener">prokrypt/x4prosim</a>.<span data-only="browser">
+              Runs in the browser on Kohei Tokunaga's
+              <a href="https://github.com/ktock/qemu-wasm" target="_blank" rel="noopener">qemu-wasm</a> JIT.</span></p>
             <a class="about-link" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener">
               <svg class="icon icon-fill" aria-hidden="true"><use href="#i-github"/></svg>github.com/serialx/eink-qemu</a>
           </div>
@@ -89,7 +93,7 @@
                 <span id="setup-device-note" class="setup-note"></span>
               </div>
             </section>
-            <section class="setup-section">
+            <section id="setup-elf-section" class="setup-section">
               <h3>Symbols for the Heap tab</h3>
               <div id="setup-elf" class="setup-elf">
                 <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
@@ -120,9 +124,12 @@
             <button id="wifi" class="toggle" type="button" aria-pressed="true" aria-label="Wi-Fi" aria-describedby="wifi-help"><svg class="icon"><use href="#i-wifi"/></svg></button>
             <div id="wifi-help" class="tip" role="tooltip">
               <strong>Wi-Fi <span class="tip-state"></span></strong>
-              <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, on QEMU's user
-                network, so the firmware reaches the internet and its font downloader works.</p>
-              <p class="fine">Applies when the emulator starts.</p>
+              <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, <span data-only="tauri">on QEMU's user
+                network, so the firmware reaches the internet and its font downloader works.</span><span data-only="browser">so the firmware's
+                font downloader works. On the device open Settings › Reader › Manage Fonts and join it.</span></p>
+              <p data-only="browser">The fonts come from a catalog bundled with this page and are served by your browser:
+                nothing goes through a relay server. Installed fonts are saved on the SD card.</p>
+              <p class="fine">Applies when the emulator starts. <span data-only="browser"><code>?wifi=off</code> opens the page with it off.</span></p>
             </div>
           </div>
           <div class="option">
@@ -132,7 +139,7 @@
               <p>Available on X3 and X4 Pro. X4 shows completed frames without ghosting.</p>
               <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
                 Turn it off for clean, stable pixels when comparing screenshots.</p>
-              <p class="fine">Applies when the emulator starts.</p>
+              <p class="fine">Applies when the emulator starts. <span data-only="browser"><code>?ghosting=0</code> opens the page with it off.</span></p>
             </div>
           </div>
           <div class="option">
@@ -141,11 +148,11 @@
               <strong>Turbo: fast, not timing-accurate <span class="tip-state"></span></strong>
               <p>Runs the device as fast as your computer allows: SD card, screen refresh and SPI
                 transfer delays are cut to a minimum. Booting and page turns take a fraction of the
-                time. Idle time still passes in real time, so a resting device keeps its screen and
-                your CPU stays free.</p>
+                time. <span data-only="tauri">Idle time still passes in real time, so a resting device keeps its screen and
+                your CPU stays free.</span><span data-only="browser">Idle waits are skipped too.</span></p>
               <p>Timing no longer matches real hardware, so log timestamps and refresh times are not
                 realistic. Turn it off to see how fast the firmware runs on an actual device.</p>
-              <p class="fine">Applies when the emulator starts.</p>
+              <p class="fine">Applies when the emulator starts. <span data-only="browser"><code>?turbo=0</code> opens the page with it off.</span></p>
             </div>
           </div>
         </div>
@@ -218,7 +225,8 @@
                 The device follows from the firmware; for the X3, or TRMNL firmware on the X4, pick it in the
                 firmware card. Drop the file here or choose it; loading it starts the emulator.</p>
               <button class="button" type="button" data-for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</button>
-              <p class="fine">The SD card is an image file on disk. A blank 16 GiB FAT32 card is created on first run; it takes a few MiB until files are written.</p>
+              <p class="fine" data-only="tauri">The SD card is an image file on disk. A blank 16 GiB FAT32 card is created on first run; it takes a few MiB until files are written.</p>
+              <p class="fine" data-only="browser">Your SD card is saved in this browser. On your first visit a blank 64 MiB FAT32 card is used.</p>
             </div>
           </div>
         </div>
@@ -278,6 +286,11 @@
       </div>
       <div id="heap-tip" class="heap-tip" hidden></div>
     </section>
+
+    <div class="tabs" role="tablist" aria-label="Panels">
+      <button id="tab-sd" role="tab" type="button" aria-selected="true" data-tab="sd">SD card</button>
+      <button id="tab-output" role="tab" type="button" aria-selected="false" data-tab="console">Console</button>
+    </div>
 
     <footer class="statusbar">
       <span class="dot" aria-hidden="true"></span>

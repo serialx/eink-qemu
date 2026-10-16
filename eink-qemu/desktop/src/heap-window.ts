@@ -11,7 +11,8 @@ import '@web/style.css';
 import './heap.css';
 import './heap-window.css';
 import { listen } from '@tauri-apps/api/event';
-import { api, type Heap, type HeapHistoryPoint, type HeapPast, type HeapSnapshot, type HeapStack, type SessionInfo } from './api';
+import { api } from './backend-tauri';
+import type { Heap, HeapHistoryPoint, HeapPast, HeapSnapshot, HeapStack, SessionInfo } from './types';
 import {
   CORRUPT, FADE, FREE, GUTTER, POISONED, SCALES, Stacks, ago, blockAddr, byKind, callName, copyStack, delta, errorOf,
   esc, fmt, fragmented, hex, hitMap, isInternal, kib, load, locHtml, onTheme, paintMap, per, pointerOf, readColors, role,

@@ -4,7 +4,7 @@
    allocation log, kept snapshots and free-memory history Rust would keep.
    Three minutes have already passed when it starts, and one site never
    frees, so comparing two moments shows it growing. */
-import type { Heap, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './api';
+import type { Heap, HeapHistoryPoint, HeapPast, HeapSite, HeapSnapshot, HeapStack } from './types';
 import type { HeapEvents } from './heap-log';
 
 const SITES: HeapSite[] = [

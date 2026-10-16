@@ -1,4 +1,7 @@
-// Globals installed by the browser page's dependency-free modules.
+/// <reference types="vite/client" />
+// Globals installed by the browser page's dependency-free modules
+// (../wasm/web): imported as modules here, or loaded as classic scripts by
+// the web build's index.html (vite.config.ts).
 type Machine = 'x3' | 'x4' | 'x4pro' | 'picco';
 declare const FlashImage: {
   selectMachine(chip: number, selected?: string): Machine;
@@ -15,4 +18,20 @@ declare const XOTA: {
 };
 declare module '@web/flash-image.js';
 declare module '@web/xota.js';
+/* fat.js, sd-ops.js and sd-store.js, in the web build only. */
+declare const FAT: { isValidName(name: string): boolean };
+declare function sdExecute(image: Uint8Array, op: string, args: Record<string, unknown>): unknown;
+declare function sdMutates(op: string): boolean;
+declare const sdStore: { load(): Promise<Uint8Array | null>; save(bytes: Uint8Array): Promise<void> };
 
+interface Window {
+  /** Seconds from boot to the Home screen; a hook for the acceptance tests. */
+  bootTimeSeconds?: number | null;
+  /** The browser backend's explorer and card, for the acceptance tests. */
+  einkQemu?: {
+    sdCall(op: string, args?: Record<string, unknown>): Promise<unknown>;
+    image(): Uint8Array | null;
+    saving(): number;
+    snapshotPending(): boolean;
+  };
+}

@@ -121,18 +121,15 @@ Keep `firmware.elf` beside you for symbols. To find a hang: run with `-s -S`, at
 `bt`. Or `info registers -a` on the HMP socket `/tmp/eink-qemu-mon.sock` and
 `xtensa-esp32s3-elf-addr2line -pfiaC -e firmware.elf <PC>`.
 
-To watch the firmware's heaps live, run `eink-qemu/heapview.py firmware.elf` beside
-`run.sh` and open <http://127.0.0.1:8765>. It maps every ESP-IDF 5.x TLSF heap
-(DRAM, RTC, and PSRAM on the X4 Pro) block by block: fresh allocations and frees,
-requested sizes and corrupt canaries (with the default light heap poisoning),
-fragmentation and a free-memory trend. Each refresh stops the VM, copies the heap
-regions with `pmemsave` and resumes; under `-icount` the guest does not see the
-pause. It takes the monitor socket (`--monitor` for another one, e.g. drive.py's);
-`--once` prints a text summary. The ELF must match the running app.
-The desktop app (`eink-qemu/desktop`) reads the same heaps without a monitor
-socket, in its Heap tab and heap window, and loads the plugin below by itself.
+To watch the firmware's heaps live, use the desktop app (`eink-qemu/desktop`):
+its Heap tab and heap window map every ESP-IDF 5.x TLSF heap (DRAM, RTC, and
+PSRAM on the X4 Pro) block by block, with a free-memory trend, allocation
+sites and call stacks, and a timeline that replays the allocation log. Each
+read stops the VM, copies the heap regions with `pmemsave` and resumes; under
+`-icount` the guest does not see the pause. The ELF must match the running app;
+the app finds one beside the firmware and loads the plugin below by itself.
 
-To see which code allocated each block, also load the heaptrace plugin:
+With `run.sh`, the heaptrace plugin alone logs which code allocated what:
 `run.sh flash.bin sd.img -plugin build/contrib/plugins/libheaptrace.so,elf=firmware.elf`
 (`.dylib` on macOS, `.dll` on Windows; release archives carry it in `qemu/plugins/`,
 and QEMU needs `--enable-plugins`, which the release builds have).
@@ -140,22 +137,9 @@ It hooks `poison_allocated_region()` (present with the default light heap
 poisoning), `multi_heap_free()` and `multi_heap_realloc()`, and logs every
 allocation, free and realloc with its time and call stack to
 `/tmp/eink-qemu-heaptrace.bin`, unwinding RISC-V with the ELF's `.debug_frame`
-and `.eh_frame` and Xtensa through its register windows. Hovering a block then
-shows "allocated by" and the stack; clicking keeps the full stack open. The map
-is colored by allocation site (the "allocated by" function; "Color by"
-switches back to block state). Above the heaps, tabs list live bytes by site
-(hover or click one to highlight its blocks), allocation churn by site over
-the last 10 s, and the newest events.
-
-The page replays the log too: drag the timeline (or use ←/→, shift for 1 s,
-space to play, Esc for live) to see the heaps as they were at any moment since
-QEMU started, with the churn and event tabs following the cursor; clicking an
-event jumps to it and marks its block. Replayed blocks still alive keep their
-walked size; freed ones are drawn at the TLSF minimum for their request.
-Replaying up to a snapshot reproduces its walk exactly on the X3 and X4 Pro.
-heapview symbolizes with the toolchain's `addr2line` (PATH or `~/.platformio`).
-Boot to the first X3 `[MEM]` line took 10.77 s instead of 10.57 s with the
-plugin (mean of three runs).
+and `.eh_frame` and Xtensa through its register windows. The desktop app's
+`src-tauri/src/trace.rs` reads that format. Boot to the first X3 `[MEM]` line
+took 10.77 s instead of 10.57 s with the plugin (mean of three runs).
 
 Unmapped peripheral registers read as 0 and ignore writes (catch-all
 `esp32s3.iomem`), so a missing model usually shows up as a busy-wait on a status
@@ -220,6 +204,13 @@ directories. QEMU configure can download missing Python packages/subprojects.
 
 ### Run, package and verify
 
+The page is the desktop app's front end (`eink-qemu/desktop/src`) built for
+the browser: `package-web.sh` runs `pnpm build:browser` there (Node 22.12+ and
+pnpm 10+) and lays the result over the runtime's files, the wasm binaries and
+the boot assets. `pnpm dev:browser` serves the page from source against a
+packaged `web-dist` for development; see
+[eink-qemu/desktop/README.md](eink-qemu/desktop/README.md#the-browser-page).
+
 Open `http://127.0.0.1:8000`, choose an official CrossPoint release app `.bin`
 or a 16 MiB flash dump and optionally an SD image. Use
 `crosspoint-<ver>-x3-x4.bin` for X3 or `crosspoint-<ver>-x4pro.bin` for X4 Pro
@@ -232,8 +223,9 @@ App header chip IDs 5 and 9 select X3 and X4 Pro; unsupported IDs are rejected.
 For full dumps, bootloader byte 12 equal to 5 selects X3; otherwise X4 Pro.
 The browser has a portrait SDL panel, CDC log, keys and X4 Pro pointer input.
 Reset resets the guest; Stop retains the SD in page memory for the next Start.
-Download SD image saves guest writes. Closing or reloading loses unsaved
-changes; flash changes are not exported. A blank 64 MiB FAT32 card is included.
+The card is saved in the browser (explorer changes at once, device changes
+every 10 s and on Stop) and "Save a copy" downloads it; flash changes are not
+exported. A blank 64 MiB FAT32 card is included.
 The SD card panel is a file explorer for the in-memory card: upload (picker or
 drag-and-drop, folders included), new folder, rename, delete, download a file,
 before Start, while running and after Stop. `fat.js` edits FAT32 in place; exFAT,

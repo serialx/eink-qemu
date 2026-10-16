@@ -41,11 +41,12 @@ selected explicitly**, because their chips match the other boards.
 
 1. Open https://serialx.github.io/eink-qemu/ in Chrome. Firefox and Safari are
    untested.
-2. Choose the **Device**. Auto works for the X4 Pro and the X3. Pick **X4** or
-   **BOOX Picco** for those boards.
-3. Choose the **Firmware**: an official CrossPoint release `.bin`, a merged
+2. Choose the **Firmware**: an official CrossPoint release `.bin`, a merged
    firmware `.bin`, an X4 Pro `.xota` update, or a 16 MiB flash dump. The
    emulator starts as soon as the file loads.
+3. The device follows from the firmware's chip: ESP32-S3 firmware runs on the
+   X4 Pro. For the X3 or the X4, and for the BOOX Picco, pick the device in the
+   firmware card (the chip at the top of the page).
 
 Use the arrow keys, Enter, Esc and `P` (Power). On boards with a touchscreen,
 click the screen to touch it. The SD card panel lets you add books, swap in
@@ -58,7 +59,8 @@ timing. Turn it off, or open the page with `?turbo=0`, for accurate timing.
 
 ## Desktop app
 
-The same interface as a macOS and Windows app, running native QEMU, several
+The same interface as a macOS and Windows app (one front end serves both,
+[eink-qemu/desktop](eink-qemu/desktop/README.md)), running native QEMU, several
 times faster than the browser. Its SD card explorer edits card images of any
 size in place. Download `eink-qemu-desktop-*.dmg` (macOS 12.3+) or
 `eink-qemu-desktop-*-setup.exe` (Windows 10/11) from
@@ -112,8 +114,9 @@ eink-qemu/run.sh flash.bin sd.img        # SDL window, firmware log on stdout
 X4 Pro defaults to the measured UC8279 revision `0x68` panel in native, Node,
 and browser runs. For a reader with the older panel, use
 `X4PANEL=uc8179 eink-qemu/run.sh flash.bin sd.img`; the same variable works
-with `drive.py` and the Node launcher. In the browser, the **X4 Pro panel**
-selector preserves saved choices; turn off Turbo to use measured panel delays.
+with `drive.py` and the Node launcher. In the browser and the desktop app, the
+firmware card's **Display panel** choice is remembered; turn off Turbo to use
+measured panel delays.
 See the [calibration report](eink-qemu/x4cal/README.md)
 for measured CPU, SDMMC, SPI, panel and sleep timing, and the remaining cache
 and optical limits. X4 Pro launchers use `icount shift=0` with these defaults.

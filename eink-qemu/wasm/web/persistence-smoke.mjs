@@ -52,14 +52,32 @@ async function navigate(target = url.href) {
     await call('Page.navigate', {url: target});
     await waitFor('document.querySelector("#sd-refresh") && !document.querySelector("#sd-refresh").disabled');
 }
+// window.einkQemu is the browser backend's hook for these tests: the
+// explorer's operations on whichever side owns the card, and the card itself.
 async function read(file) {
-    return evaluate(`sdCall('read', {path: ${JSON.stringify(file)}}).then(r => new TextDecoder().decode(r.bytes))`);
+    return evaluate(`einkQemu.sdCall('read', {path: ${JSON.stringify(file)}}).then(r => new TextDecoder().decode(r.bytes))`);
 }
 async function write(file, text) {
-    await evaluate(`sdRun(() => sdCall('write', {dirs: [], files: [{path: ${JSON.stringify(file)}, bytes: new TextEncoder().encode(${JSON.stringify(text)})}]}))`);
+    await evaluate(`einkQemu.sdCall('write', {dirs: [], files: [{path: ${JSON.stringify(file)}, bytes: new TextEncoder().encode(${JSON.stringify(text)})}]})`);
     assert.equal(await evaluate('document.querySelector("#sd-error").textContent'), '');
     assert.equal(await evaluate('document.querySelector("#sd-save").classList.contains("error")'), false);
 }
+// The page's pickers are hidden file inputs the backend waits on once a
+// button asks for a file: click through to the button, then set the files.
+async function pickFile(clicks, input, ...files) {
+    for (const selector of clicks) {
+        await waitFor(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);
+        await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    }
+    await waitFor(`document.querySelector(${JSON.stringify(input)})`);
+    const {root} = await call('DOM.getDocument');
+    const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector: input});
+    await call('DOM.setFileInputFiles', {nodeId, files: files.map(file => path.resolve(file))});
+}
+const FIRMWARE_PICKER = [['#flash', '#setup-choose'], '#flash-file'];
+const CARD_PICKER = [['#sd', '#card-menu [data-card=open]'], '#sd-file'];
+const UPLOAD_PICKER = [['#sd-upload'], '#sd-files'];
+
 try {
     await call('Runtime.enable'); await call('Page.enable'); await call('DOM.enable');
     const blank = new URL(url);
@@ -69,12 +87,12 @@ try {
     await navigate();
     assert.match(await evaluate('document.querySelector("#sd-save").textContent'), /restored/);
     assert.equal(await read('/refresh.txt'), 'preserved across refresh');
-    await evaluate("sdRun(() => sdCall('rename', {path: '/refresh.txt', name: 'renamed.txt'}))");
+    await evaluate("einkQemu.sdCall('rename', {path: '/refresh.txt', name: 'renamed.txt'})");
     await navigate();
     assert.equal(await read('/renamed.txt'), 'preserved across refresh');
-    await evaluate("sdRun(() => sdCall('remove', {path: '/renamed.txt'}))");
+    await evaluate("einkQemu.sdCall('remove', {path: '/renamed.txt'})");
     await navigate();
-    assert.deepEqual(await evaluate("sdCall('list', {path: '/'}).then(r => r.entries.map(e => e.name))"), []);
+    assert.deepEqual(await evaluate("einkQemu.sdCall('list', {path: '/'}).then(r => r.entries.map(e => e.name))"), []);
     console.log('PASS: file contents, rename and deletion survive reload');
 
     // A failed transaction preserves the last good image and keeps editing usable.
@@ -87,12 +105,12 @@ try {
             return request;
         };
     })()`);
-    await evaluate("sdRun(() => sdCall('write', {dirs: [], files: [{path: '/unsaved.txt', bytes: new Uint8Array([1,2,3])}]}))");
+    await evaluate("einkQemu.sdCall('write', {dirs: [], files: [{path: '/unsaved.txt', bytes: new Uint8Array([1,2,3])}]})");
     assert.equal(await evaluate('document.querySelector("#sd-save").classList.contains("error")'), true);
     assert.equal(await evaluate('document.querySelector("#sd-refresh").disabled'), false);
     await navigate();
     assert.equal(await read('/saved.txt'), 'last successful save');
-    assert.equal(await evaluate("sdCall('list', {path: '/'}).then(r => r.entries.some(e => e.name === 'unsaved.txt'))"), false);
+    assert.equal(await evaluate("einkQemu.sdCall('list', {path: '/'}).then(r => r.entries.some(e => e.name === 'unsaved.txt'))"), false);
     console.log('PASS: aborted save is visible and preserves the previous saved card');
 
     const denied = await call('Page.addScriptToEvaluateOnNewDocument', {source:
@@ -117,10 +135,8 @@ try {
             });
         })`);
         const boot = async () => {
-            const {root} = await call('DOM.getDocument');
-            const {nodeId} = await call('DOM.querySelector', {nodeId: root.nodeId, selector: '#flash'});
             // Choosing the firmware starts the emulator.
-            await call('DOM.setFileInputFiles', {nodeId, files: [path.resolve(process.env.PICKER_FLASH)]});
+            await pickFile(...FIRMWARE_PICKER, process.env.PICKER_FLASH);
             await waitFor('document.querySelector("#status").textContent.includes(" · Ready · ")');
         };
         await boot();
@@ -131,8 +147,8 @@ try {
         await boot();
         // Write only to the running card, bypassing the explorer save path.
         await runtimeWrite('/periodic.txt');
-        const revision = await evaluate('sdSaving');
-        await waitFor(`sdSaving > ${revision} && !sdSnapshotPending`);
+        const revision = await evaluate('einkQemu.saving()');
+        await waitFor(`einkQemu.saving() > ${revision} && !einkQemu.snapshotPending()`);
         await navigate();
         assert.equal(await read('/periodic.txt'), 'runtime-owned bytes');
         await boot();
@@ -146,7 +162,7 @@ try {
     }
     await navigate(blank.href);
     await navigate();
-    assert.deepEqual(await evaluate("sdCall('list', {path: '/'}).then(r => r.entries.map(e => e.name))"), []);
+    assert.deepEqual(await evaluate("einkQemu.sdCall('list', {path: '/'}).then(r => r.entries.map(e => e.name))"), []);
     assert.deepEqual(errors, []);
     console.log('PASS: explicit image URL replaces the saved card');
 } finally {

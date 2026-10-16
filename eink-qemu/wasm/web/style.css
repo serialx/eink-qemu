@@ -97,11 +97,8 @@ button.tint:hover:enabled { background: var(--brand-tint); border-color: var(--m
   width: 34px; height: 34px; padding: 0; display: inline-grid; place-items: center; flex: none;
   border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer;
 }
-label.icon-button:hover { background: var(--surface-2); }
 a.icon-button { text-decoration: none; }
 a.icon-button:hover { background: var(--surface-2); color: var(--text); }
-label.icon-button:has(input:disabled) { opacity: .45; cursor: default; }
-label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text); outline-offset: 2px; }
 .divider { width: 1px; align-self: stretch; background: var(--border); }
 
 /* App frame: header, SD card, device stage, console, status bar. */
@@ -109,7 +106,7 @@ label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text
   display: grid; height: 100vh; height: 100dvh;
   /* The stage is only as wide as the device. The SD card panel stops growing
      at a useful width and the console takes the rest, since log lines are long.
-     app.js reads these widths to size the screen without a layout loop; it
+     app.ts reads these widths to size the screen without a layout loop; it
      assumes the SD panel at its maximum, which the grid grants it first. */
   --sd-min: 260px; --sd-max: 300px; --output-min: 320px;
   grid-template-columns: minmax(var(--sd-min), var(--sd-max))
@@ -156,28 +153,11 @@ label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text
 }
 .file-chip:hover { background: var(--surface-2); }
 .file-chip.firmware-drop { outline: 2px dashed var(--meter); outline-offset: 2px; background: var(--brand-tint); }
-.file-chip:has(input:focus-visible) { outline: 2px solid var(--brand-text); outline-offset: 2px; }
-.file-chip:has(input:disabled) { opacity: .55; cursor: default; }
 .file-chip-text { display: flex; flex-direction: column; min-width: 0; }
-.file-chip-label { display: none; font-size: 11.5px; color: var(--faint); }
 #flash-name { font: 12px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #flash-name.empty { font: 500 13px/1.4 var(--sans); }
 .brand-icon { color: var(--brand-text); }
 .chevron { width: 12px; height: 12px; color: var(--faint); }
-.switches { display: flex; gap: 14px; }
-.switch { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; color: var(--text-2); cursor: pointer; }
-.switch:has(input:disabled) { opacity: .55; cursor: default; }
-.switch input {
-  appearance: none; -webkit-appearance: none; margin: 0; flex: none; cursor: inherit;
-  width: 32px; height: 18px; border-radius: 999px; background: var(--switch-off);
-  position: relative; transition: background .15s;
-}
-.switch input::before {
-  content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
-  border-radius: 50%; background: var(--knob-off); transition: transform .15s;
-}
-.switch input:checked { background: var(--brand); }
-.switch input:checked::before { transform: translateX(14px); background: #fff; }
 .run { display: flex; gap: 8px; }
 .option { position: relative; display: inline-flex; align-items: center; gap: 2px; }
 .info { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--faint); }
@@ -345,13 +325,7 @@ label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text
     padding: 16px; background: var(--surface); border-bottom: 1px solid var(--border);
   }
   .spacer, .controls > .divider { display: none; }
-  .file-chip { grid-column: 1 / -1; min-height: 48px; padding: 6px 12px; border-color: var(--border); background: var(--bg); }
-  .file-chip-label { display: block; }
-  .switches, .run { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .option { min-height: 48px; padding: 0 4px 0 12px; border: 1px solid var(--border); border-radius: 10px; }
-  .switch { flex: 1; justify-content: space-between; flex-direction: row-reverse; align-self: stretch; }
-  .info { width: 40px; height: 40px; }
-  .option:first-child .tip { left: 0; right: auto; }
+  .run { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .run button { min-height: 48px; border-radius: 10px; }
   .tabs {
     order: 4; display: flex; gap: 4px; margin: 14px 16px 0; padding: 3px;
@@ -374,7 +348,3 @@ label.icon-button:has(input:focus-visible) { outline: 2px solid var(--brand-text
   #sd-table td.ops { position: static; display: table-cell; padding: 0 2px; white-space: nowrap; opacity: 1; pointer-events: auto; background: none; text-align: right; }
   #sd-table td.ops button { width: 40px; height: 40px; }
 }
-
-.device-choice { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.device-choice[hidden] { display: none; }
-.device-choice select { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }

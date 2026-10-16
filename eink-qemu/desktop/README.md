@@ -1,10 +1,11 @@
 # eink-qemu desktop
 
-A Tauri app with the browser page's interface that runs native QEMU: SD card
-explorer, device stage, firmware console and a live heap view. The interface is the page
-itself: `src/desktop.css` imports `wasm/web/style.css`, and the fonts, marks
-and firmware modules come from the same directory. Design notes are in
-[DESIGN.md](DESIGN.md).
+A Tauri app that runs native QEMU: SD card explorer, device stage, firmware
+console and a live heap view. Its front end (`src/`) is also the browser
+page: one TypeScript app over two backends, the Rust commands here and the
+WebAssembly build in a runtime iframe (`pnpm build:browser`, below). The
+stylesheet, fonts, marks and firmware modules come from `../wasm/web`. Design
+notes are in [DESIGN.md](DESIGN.md).
 
 ![The eink-qemu desktop app running CrossPoint on an Xteink X3, with SD card files, a page of Aesop's Fables, and live heap maps and memory usage](../screenshots/desktop-light.png)
 
@@ -37,6 +38,23 @@ cargo test --manifest-path src-tauri/Cargo.toml  # display reader, locks, heaps,
 `pnpm dev` alone serves the front end in a browser at
 http://localhost:1420 with mock content, for layout work without Rust;
 `?demo` shows the same mock content inside the app.
+
+## The browser page
+
+`pnpm build:browser` builds the same front end for the browser into
+`dist-web/`: relative URLs for static hosting, the page's classic scripts
+(`fat.js`, `sd-ops.js`, `sd-store.js` and the isolation service worker)
+loaded by `index.html`, and the boot assets under `boot/`.
+`eink-qemu/wasm/package-web.sh` runs it and lays the result over the runtime
+iframe's files, the wasm binaries and the Wi-Fi assets. The browser has no Heap
+tab and no ELF (reading the guest's memory needs native QEMU), the card menu
+opens an image or the bundled blank card, and the SD card is saved in the
+browser; everything else is the same page.
+
+`pnpm dev:browser` serves the page from source at http://localhost:1421/ with
+the isolation headers, taking the runtime's files from `../wasm/web` and the
+wasm package from `EINK_WEB_DIST` (default `../../build-wasm-32limit/web-dist`,
+or the `eink-qemu-<version>-wasm` Actions artifact unpacked anywhere).
 
 ## Behaviour
 

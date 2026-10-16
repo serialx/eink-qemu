@@ -22,9 +22,23 @@ subsets) are bundled under the OFL, see fonts.LICENSE.txt. Chrome 155 is verifie
 Memory64 is also available in this Chrome version without experimental flags;
 older browsers may require MEMORY64=2. Firefox and Safari are not verified.
 
-Open http://127.0.0.1:8000, optionally replace the SD image, then select an
-official CrossPoint release app .bin, merged firmware .bin, or a 16 MiB flash dump; choosing the
-firmware starts the emulator (Start reruns it after Stop). Release assets:
+The page is the desktop app's front end built for the browser
+(eink-qemu/desktop, `pnpm build:browser`; package-web.sh runs it). This
+directory holds what the page loads: the runtime iframe (runtime.html,
+runtime.js), the FAT explorer (fat.js, sd-ops.js, sd-store.js), the stylesheet,
+fonts and marks, and the firmware modules. To work on the page against a
+packaged web-dist: `cd eink-qemu/desktop && pnpm dev:browser` serves it at
+http://localhost:1421/ with the isolation headers (EINK_WEB_DIST names the
+package; the default is build-wasm-32limit/web-dist).
+
+Open http://127.0.0.1:8000 and choose the firmware (the chip at the top of the
+page, or the button on the empty screen): an official CrossPoint release app
+.bin, merged firmware .bin, an X4 Pro .xota update, or a 16 MiB flash dump;
+choosing the firmware starts the emulator (Start reruns it after Stop). The
+firmware card shows the file, the devices that take its chip, the X4 Pro's
+display panel and, in the desktop app, the ELF for the Heap tab; the browser
+has no Heap tab, since reading the guest's memory needs native QEMU. Wi-Fi,
+Ghosting and Turbo are the icon toggles beside Start. Release assets:
   X3/X4:  crosspoint-<ver>-x3-x4.bin
   X4 Pro: crosspoint-<ver>-x4pro.bin
   https://github.com/crosspoint-reader/crosspoint-reader/releases
@@ -36,7 +50,7 @@ the package). Unsupported chips, invalid headers and apps exceeding the selected
 are rejected. Full 16 MiB images pass through unchanged.
 The hosted copy is https://serialx.github.io/eink-qemu/ (no firmware included).
 X4 Pro defaults to UC8279 revision 0x68. Use ?turbo=0 for measured timing.
-Select UC8179 in X4 Pro panel or use ?panel=uc8179 for the older panel.
+Select UC8179 under Display panel in the firmware card, or use ?panel=uc8179, for the older panel.
 Saved panel choices take precedence; this selection does not affect other boards.
 Auto detects the chip, not the panel revision.
 UC8279-0x68 has measured panel waits but has not had its optical ghosting fitted.
@@ -54,10 +68,13 @@ Alternatively put copies of your images in web-dist and open:
   http://127.0.0.1:8000/?flash=flash.bin&sd=sd.img
   http://127.0.0.1:8000/?flash=crosspoint-1.6.5-x3-x4.bin&sd=sd.img
 Query images must be same-origin or provide appropriate CORS/CORP headers.
-Device remembers your choice between visits. Auto selects X4 Pro for ESP32-S3;
-ESP32-C3 requires an explicit X3 or X4 choice because both use the same chip.
-Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to select a board in a link.
-A device/chip mismatch is rejected before boot.
+The device is remembered between visits. Auto selects X4 Pro for ESP32-S3;
+ESP32-C3 requires an explicit X3 or X4 choice in the firmware card because
+both use the same chip, and the card offers only the devices that take the
+firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to
+select a board in a link; a device/chip mismatch is rejected before boot.
+Wi-Fi, Ghosting and Turbo are remembered too; ?wifi=off, ?ghosting=0 and
+?turbo=0 override them for one visit.
 
 For TRMNL FW1.8.17.bin, choose X4 and load the merged .bin directly. Its
 bootloader, partitions and firmware bytes are preserved. The SSD1677 panel
@@ -65,8 +82,8 @@ shows the setup QR code and Wi-Fi instructions. X4 has simplified refresh
 timing and no ghosting simulation. The display stays in physical portrait
 orientation; firmware such as TRMNL may draw its interface in landscape.
 
-For BOOX Picco, select BOOX Picco before loading picco1.0.2920.bin, or use
-?device=picco. Its app is copied unchanged to 0xE0000 using Picco partitions;
+For BOOX Picco, select BOOX Picco in the firmware card before loading
+picco1.0.2920.bin, or use ?device=picco. Its app is copied unchanged to 0xE0000 using Picco partitions;
 the app limit is 0xE70000 bytes. The recovery slot stays erased. Controls are
 Up, Down, Power and touch. Frontlight brightness and touch firmware updates
 are not simulated.
@@ -104,8 +121,8 @@ Use the on-screen controls or arrows, Enter, Backspace/Esc, and P. X4 Pro also
 has a Home control (keyboard: Home) and accepts pointer/touch input on its canvas.
 Reset resets the machine. Stop pauses
 the guest, copies the current SD image, and removes the iframe and its workers.
-Start then boots again with that SD image. Download SD image pauses the guest,
-copies the card, and resumes execution. The SD card is saved in this browser
+Start then boots again with that SD image. "Save a copy of the SD card" pauses
+the guest, copies the card, and resumes execution. The SD card is saved in this browser
 and restored on refresh or your next visit to the same site. File explorer
 changes save immediately; running device changes save every 10 seconds and
 when you press Stop or Download SD image. Wait for the saved status before
@@ -114,10 +131,11 @@ Stop saves the current card. Flash changes are not exported or saved.
 
 Browser storage is local to this browser profile and site address. Clearing
 site data removes the saved card, and the browser may evict it when storage
-is scarce. Download SD image for a portable backup. If storage is unavailable
-or full, a warning appears and the card remains usable in memory. Selecting
-another SD image replaces the saved card. An explicit ?sd= URL loads that
-image instead of restoring the saved card, and saves it as the new card.
+is scarce. Save a copy for a portable backup. If storage is unavailable
+or full, a warning appears and the card remains usable in memory. Opening
+another SD image, or a new blank card, from the card menu (the card button in
+the SD panel) replaces the saved card. An explicit ?sd= URL loads that image
+instead of restoring the saved card, and saves it as the new card.
 The full image is stored atomically in IndexedDB, separately for each hosted
 application path. Avoid editing the same card in multiple tabs: the last
 completed save wins.
@@ -152,6 +170,13 @@ It verifies C3 ambiguity, chip mismatch rejection, unchanged merged firmware,
 compares the panel bytes against a native X4 capture with
 `-nic hubport,hubid=0,model=esp32_wifi`. This keeps the radio present without a
 host connection, matching the browser with Wi-Fi downloads off.
+
+The acceptance tests below drive the page's own controls. File pickers are
+hidden inputs the page waits on once a button asks for a file (#flash-file
+after Choose… in the firmware card, #sd-file after "Open SD image…" in the
+card menu, #sd-files after Upload), which the tests set through DevTools.
+window.einkQemu exposes the explorer's operations and the card for them, and
+window.bootTimeSeconds the measured boot.
 
 Automated acceptance (Node 22+ and Chrome; no npm dependencies):
   # In separate terminals, start serve.py as above and Chrome:

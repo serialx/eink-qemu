@@ -3,6 +3,9 @@
 Build and run instructions, both address modes, CI/Pages setup, measurements
 and limits are in [EINK-QEMU.md](../../EINK-QEMU.md#webassembly-build).
 Browser controls and Chrome automation are in [web/README.txt](web/README.txt).
+The page itself is the front end shared with the desktop app
+([../desktop](../desktop/README.md)); `web/` holds the runtime iframe, the FAT
+explorer, the stylesheet and the modules both front ends import.
 
 From the repository root, with Emscripten 6.0.12 activated:
 

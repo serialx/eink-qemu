@@ -1,6 +1,6 @@
 //! Heap view: the running firmware's ESP-IDF 5.x heaps, block by block.
 //!
-//! A port of `eink-qemu/heapview.py`'s snapshot. The firmware's ELF names
+//! A port of the earlier heapview.py's snapshot (removed; in git history). The firmware's ELF names
 //! `registered_heaps`, the list of heaps; each refresh stops the guest,
 //! copies every heap region, walks its TLSF block list and resumes. Under
 //! -icount the virtual clock stops too, so the guest does not see the pause.
