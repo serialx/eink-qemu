@@ -845,6 +845,11 @@ static const Property uc8279_properties[] = {
     DEFINE_PROP_UINT32("drift-s", Uc8279State, drift_s, 1800),
 };
 
+static bool uc8279_get_busy(Object *obj, Error **errp)
+{
+    return UC8279(obj)->busy;
+}
+
 static void uc8279_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -855,6 +860,8 @@ static void uc8279_class_init(ObjectClass *klass, const void *data)
     k->set_cs = uc8279_set_cs;
     k->cs_polarity = SSI_CS_LOW;
     device_class_set_props(dc, uc8279_properties);
+    /* Read-only BUSY state, for test drivers waiting for a refresh to end. */
+    object_class_property_add_bool(klass, "busy", uc8279_get_busy, NULL);
 }
 
 static const TypeInfo uc8279_info = {

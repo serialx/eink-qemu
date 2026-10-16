@@ -1011,6 +1011,11 @@ static const Property uc8179_properties[] = {
     DEFINE_PROP_UINT32("frame-us", Uc8179State, frame_us, 25000),
 };
 
+static bool uc8179_get_busy(Object *obj, Error **errp)
+{
+    return UC8179(obj)->busy;
+}
+
 static void uc8179_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1021,6 +1026,8 @@ static void uc8179_class_init(ObjectClass *klass, const void *data)
     k->set_cs = uc8179_set_cs;
     k->cs_polarity = SSI_CS_LOW;
     device_class_set_props(dc, uc8179_properties);
+    /* Read-only BUSY state, for test drivers waiting for a refresh to end. */
+    object_class_property_add_bool(klass, "busy", uc8179_get_busy, NULL);
 }
 
 static const TypeInfo uc8179_info = {

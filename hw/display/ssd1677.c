@@ -460,6 +460,11 @@ static const Property ssd1677_properties[] = {
     DEFINE_PROP_BOOL("portrait", Ssd1677State, portrait, true),
 };
 
+static bool ssd1677_get_busy(Object *obj, Error **errp)
+{
+    return timer_pending(&SSD1677(obj)->busy_timer);
+}
+
 static void ssd1677_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -470,6 +475,8 @@ static void ssd1677_class_init(ObjectClass *klass, const void *data)
     k->set_cs = ssd1677_set_cs;
     k->cs_polarity = SSI_CS_LOW;
     device_class_set_props(dc, ssd1677_properties);
+    /* Read-only BUSY state, for test drivers waiting for a refresh to end. */
+    object_class_property_add_bool(klass, "busy", ssd1677_get_busy, NULL);
 }
 
 static const TypeInfo ssd1677_info = {
