@@ -168,7 +168,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub sd_in_place: bool,
     /// Size of a blank card in MiB (2050 is the stock X3 card; timing comparisons need its 32 KiB clusters).
-    #[arg(long, default_value_t = 2050, value_name = "MIB")]
+    #[arg(long, default_value_t = 2050, value_name = "MIB", value_parser = clap::value_parser!(u64).range(2050..=32768))]
     pub sd_size: u64,
     /// Copy a host file or folder onto the card before boot: HOST or HOST=/CARD/DIR (default /). Repeatable.
     #[arg(long, value_name = "HOST[=DIR]")]

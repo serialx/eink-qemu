@@ -246,10 +246,20 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
             }
             write_half
         });
+        // A stop request or a signal cuts the steps short.
+        let mut interrupted_now = false;
         let outcome = tokio::select! {
             passed = runner.run(&parsed) => Some(passed),
             _ = stop_rx.changed() => None,
+            _ = interrupted() => {
+                interrupted_now = true;
+                None
+            }
         };
+        if outcome.is_none() {
+            let why = if interrupted_now { "interrupted while steps were running" } else { "stopped while steps were running" };
+            runner.record_cancelled(why).await;
+        }
         tap.lock().unwrap().take();
         let mut done = json!({
             "type": "done",
@@ -268,6 +278,9 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
         }
         *status.lock().unwrap() = status_value(runner, false);
         last_activity = Instant::now();
+        if interrupted_now {
+            break "interrupted";
+        }
         if outcome.is_none() {
             break "stopped";
         }

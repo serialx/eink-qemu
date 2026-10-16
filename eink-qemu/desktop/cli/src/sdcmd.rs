@@ -15,7 +15,7 @@ pub enum SdCommand {
     New {
         image: PathBuf,
         /// Size in MiB: 2050 (the stock X3 card) to 32768.
-        #[arg(long, default_value_t = 2050)]
+        #[arg(long, default_value_t = 2050, value_parser = clap::value_parser!(u64).range(2050..=32768))]
         size: u64,
     },
     /// List a folder on the card.

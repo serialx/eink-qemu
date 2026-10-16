@@ -127,7 +127,8 @@ impl Readiness {
             return verdict.clone();
         }
         let rom_quiet = self.last_rom.is_none_or(|t| now - t >= quiet_needed);
-        if !self.crosspoint && rom_quiet && screen_quiet.is_some_and(|q| q >= quiet_needed) {
+        // After a reset, nothing counts until the new boot's ROM banner.
+        if !self.crosspoint && !self.await_rom && rom_quiet && screen_quiet.is_some_and(|q| q >= quiet_needed) {
             return Verdict::Ready("screen-quiet");
         }
         Verdict::Waiting
@@ -198,6 +199,12 @@ mod tests {
         let mut rebooting = Readiness::new();
         rebooting.feed("ESP-ROM:esp32c3-api1-20210207", 8.0);
         assert_eq!(rebooting.verdict(Some(9.0), 5.0, 10.0), Verdict::Waiting);
+    }
+
+    #[test]
+    fn other_firmware_after_a_reset_waits_for_the_rom_banner() {
+        let after = Readiness::after_reset(&Readiness::new());
+        assert_eq!(after.verdict(Some(6.0), 5.0, 100.0), Verdict::Waiting);
     }
 
     #[test]

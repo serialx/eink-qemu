@@ -415,6 +415,12 @@ impl Runner {
         true
     }
 
+    /// Record that steps were cut short (a session stopped or interrupted
+    /// while they ran): a failed record, so the run does not read as passed.
+    pub async fn record_cancelled(&mut self, reason: &str) {
+        self.record_failure("cancelled", "(steps cancelled)", &[], Instant::now(), Failure::new(reason)).await;
+    }
+
     fn run_list<'a>(&'a mut self, steps: &'a [Step], iters: Vec<u32>) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(async move {
             for step in steps {

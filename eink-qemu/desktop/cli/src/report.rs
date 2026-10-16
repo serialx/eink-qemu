@@ -82,6 +82,12 @@ fn run_page(dir: &Path) -> Result<String, String> {
     let mut b = String::new();
     let firmware = text(&start["firmware"]);
     let _ = write!(b, "<h1>eink-qemu run</h1><div class=\"muted\"><code>{}</code> on {} · {} timing · {}</div>", esc(&firmware), esc(&text(&start["machine"])), esc(&text(&start["timing"])), esc(&dir.display().to_string()));
+    if let Some(error) = records.iter().find(|r| r["type"] == "error") {
+        if end.is_none() && failed.is_none() {
+            let _ = write!(b, "<p class=\"bad\">Could not start</p><div class=\"fail\">{}</div>", esc(&text(&error["error"])));
+            return Ok(page("eink-qemu run (did not start)", &b));
+        }
+    }
     let verdict = match (&end, &failed) {
         (Some(e), _) if e["ok"] == true => format!("<p class=\"ok\">PASS · {} steps in {} s</p>", text(&e["steps"]), text(&e["duration_s"])),
         (Some(e), _) => format!("<p class=\"bad\">FAIL · {} steps in {} s</p>", text(&e["steps"]), text(&e["duration_s"])),

@@ -95,11 +95,16 @@ pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, reuse: bool
 /// run.jsonl) is cleared of the files such a run makes, so the same command
 /// can be retried; anything else in it keeps it from being reused.
 fn clear_failed_setup(dir: &Path) -> bool {
-    if !dir.join("error.txt").is_file() || dir.join("run.jsonl").exists() {
+    if !dir.join("error.txt").is_file() {
+        return false;
+    }
+    // A run that started has more in run.jsonl than its error record.
+    let records = std::fs::read_to_string(dir.join("run.jsonl")).unwrap_or_default();
+    if records.lines().any(|l| !l.contains("\"type\":\"error\"")) {
         return false;
     }
     const OURS: &[&str] = &[
-        ".eink-qemu-run", "error.txt", "card.img", ".locks", "log.txt", "console.jsonl", "flash.bin", "automation.json",
+        ".eink-qemu-run", "error.txt", "run.jsonl", "report.html", "card.img", ".locks", "log.txt", "console.jsonl", "flash.bin", "automation.json",
         "desktop", "desktop.log", "session.log", "ready.json", "steps.txt", "frames", "shots", "heaps", "traces",
     ];
     let names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();

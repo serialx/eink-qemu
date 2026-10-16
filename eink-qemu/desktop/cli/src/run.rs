@@ -132,6 +132,9 @@ pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option
         let _ = std::fs::write(dir.join("error.txt"), &error);
         let record = side_field(json!({"type": "error", "stage": stage, "error": error, "run_dir": dir, "code": code}));
         printer.record(&record);
+        // The run never started; its record and report still say why.
+        let _ = std::fs::write(dir.join("run.jsonl"), format!("{record}\n"));
+        let _ = crate::report::write(dir);
         if let Some(path) = &args.ready_file {
             let _ = std::fs::write(path, json!({"ok": false, "error": record["error"], "code": code}).to_string());
         }
