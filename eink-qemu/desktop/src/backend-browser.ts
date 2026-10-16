@@ -355,7 +355,7 @@ function onMessage({ source, origin, data }: MessageEvent) {
     case 'screen':
       // After the lines logged before it, as the native backend delivers them.
       if (logTimer) { clearTimeout(logTimer); logTimer = 0; handlers?.log(pendingLog.splice(0)); }
-      handlers?.screen();
+      handlers?.screen(data.blank === true);
       break;
     case 'boot-error': {
       // The runtime returns the card so a failed Wi-Fi start can be retried.

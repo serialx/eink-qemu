@@ -99,7 +99,7 @@ class CanvasScreen implements Screen {
 }
 
 let screen: CanvasScreen | null = null;
-let screenUpdated: () => void = () => {};
+let screenUpdated: (blank: boolean) => void = () => {};
 /** Display messages that arrived before the page made a screen. */
 const early: ArrayBuffer[] = [];
 /** Whether a display message shows something: rectangles that are not all
@@ -121,7 +121,7 @@ function showsSomething(buffer: ArrayBuffer) {
   return false;
 }
 function onDisplay(buffer: ArrayBuffer) {
-  if (showsSomething(buffer)) screenUpdated();
+  screenUpdated(!showsSomething(buffer));
   if (screen) { screen.paint(buffer); return; }
   // A size starts the panel over: what came before it is stale.
   if (new DataView(buffer).getUint32(0, true) === 1) early.length = 0;
@@ -149,7 +149,7 @@ export const tauri: Backend = {
     const logs = new Channel<string[]>();
     logs.onmessage = (lines) => handlers.log(lines);
     const frames = new Channel<ArrayBuffer>();
-    screenUpdated = () => handlers.screen();
+    screenUpdated = blank => handlers.screen(blank);
     frames.onmessage = onDisplay;
     const state = await call<Attached>('attach', { logs, frames });
     platform = state.platform;

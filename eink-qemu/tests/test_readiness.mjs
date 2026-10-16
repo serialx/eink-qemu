@@ -88,6 +88,18 @@ test('stock firmware is Ready once its screen has been quiet for 5 s', () => {
   assert.equal(seen.filter((text) => /Ready/.test(text)).length, 1);
 });
 
+test('a blank screen after a drawn one is not ready, until something is drawn again', () => {
+  const { r, seen, at } = clocked();
+  r.feed(['ESP-ROM:esp32s3-20210327']);
+  at(1000); r.screen(false);
+  at(2000); r.screen(true);
+  at(7000);
+  assert.ok(!seen.some((text) => /Ready/.test(text)), 'blank at 2 s');
+  at(8000); r.screen(false);
+  at(13000);
+  assert.ok(seen.at(-1).includes('Ready · screen settled 8.00 s after boot'), seen.at(-1));
+});
+
 test('the stock power gate asks for Power, and its deep-sleep wakes count as restarts', () => {
   const { r, seen, at } = clocked();
   const gate = (ms) => [`I (${ms}) boot-preflight: source=2 validation=2 gate=0 key=1 charge=0 configured=1000ms effective=600ms hold=119ms decision=2 reason=3 auth=0`,

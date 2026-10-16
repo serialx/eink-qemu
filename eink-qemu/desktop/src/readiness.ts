@@ -147,8 +147,10 @@ export class Readiness {
   }
 
   /** The panel shows something new (the backends skip blank frames). */
-  screen() {
-    if (!this.awaitRom) this.lastScreenAt = this.now();
+  screen(blank = false) {
+    // A blank panel (before the firmware draws, mid-flash) is not a finished
+    // boot: it drops the quiet-screen candidate until something is drawn.
+    if (!this.awaitRom) this.lastScreenAt = blank ? null : this.now();
   }
 
   /** Called every second or so: decides a quiet screen, which no event marks. */

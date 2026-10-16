@@ -184,6 +184,15 @@ test('Wi-Fi starts without bundled static files, and downloads go to the browser
     network.close();
     assert.ok(lines.some(line => /no bundled static files/.test(line)));
 });
+test('an HTML answer from a development server for a missing catalog counts as no catalog', async () => {
+    const lines = [];
+    const html = async url => String(url).endsWith('index.json')
+        ? new Response('<!doctype html><title>app</title>', {status: 200, headers: {'content-type': 'text/html'}})
+        : localFetch(url);
+    const network = await createBrowserNetwork({assets, fetchResource: html, log: line => lines.push(line)});
+    network.close();
+    assert.ok(lines.some(line => /no bundled static files/.test(line)));
+});
 test('a blocked download returns HTTP failure rather than an empty successful file', {timeout: 20000}, async () => {
     const response = await requestFont(true, base + 'Alef_12.cpfont', {}, async (url, options) => {
         if (String(url).endsWith('.cpfont')) throw new Error('CORS blocked');

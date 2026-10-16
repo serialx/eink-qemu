@@ -47,8 +47,8 @@ function watchLog(lines: string[]) {
   readiness.feed(lines);
   window.bootTimeSeconds = readiness.bootSeconds;
 }
-function watchScreen() {
-  if (sessionLive()) readiness.screen();
+function watchScreen(blank: boolean) {
+  if (sessionLive()) readiness.screen(blank);
 }
 // A quiet screen ends the boot of firmware without a profile; no event marks it.
 setInterval(() => {

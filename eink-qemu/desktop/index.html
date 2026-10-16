@@ -127,7 +127,8 @@
               <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, <span data-only="tauri">on QEMU's user
                 network, so the firmware reaches the internet.</span><span data-only="browser">whose HTTP and HTTPS downloads
                 your browser fetches. Join it from the firmware's own Wi-Fi settings.</span></p>
-              <p data-only="browser">Sites must allow cross-origin downloads. Files this page bundles, such as CrossPoint Reader's
+              <p data-only="browser">Sites must allow cross-origin downloads, and HTTPS needs firmware that
+                accepts the emulator's local certificate (firmware that checks certificates rejects it). Files this page bundles, such as CrossPoint Reader's
                 font catalog when it was packaged, are served from the page itself: nothing goes through a relay server.</p>
               <p class="fine">Applies when the emulator starts. <span data-only="browser"><code>?wifi=off</code> opens the page with it off.</span></p>
             </div>

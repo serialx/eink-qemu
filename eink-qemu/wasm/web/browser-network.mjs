@@ -100,7 +100,10 @@ export async function createBrowserNetwork({assets = new URL('./wifi-assets/', i
     // download goes to the browser's fetch.
     const indexResponse = await fetchResource(new URL('index.json', assetBase)).catch(() => null);
     let routes = {};
-    if (indexResponse?.ok) {
+    // A development server may answer a missing file with its HTML page:
+    // only a JSON answer is a catalog.
+    const isJson = indexResponse?.ok && !/html/i.test(indexResponse.headers?.get?.('content-type') ?? '');
+    if (isJson) {
         routes = (await indexResponse.json()).urls;
         if (!routes || typeof routes !== 'object') throw new Error('Invalid Wi-Fi asset index');
     } else {
