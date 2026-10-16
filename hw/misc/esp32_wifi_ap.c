@@ -74,7 +74,7 @@ static void Esp32_WLAN_beacon_timer(void *opaque)
     struct mac80211_frame *frame;
     Esp32WifiState *s = (Esp32WifiState *)opaque;
     // only send a beacon if we are an access point
-    if((ENABLE_BEACON)&&(s->mode == Esp32_Mode_Station)){
+    if((ENABLE_BEACON)&&s->access_points&&(s->mode == Esp32_Mode_Station)){
       if(s->ap_state!=Esp32_WLAN__STATE_STA_ASSOCIATED) {
         for(int i=0;i<nb_aps;i++){
           int ap = (i + s->beacon_ap)%nb_aps;
@@ -581,7 +581,7 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     }
     access_point_info *ap_info=0;
 
-    if(s->mode == Esp32_Mode_Station){
+    if(s->mode == Esp32_Mode_Station && s->access_points){
         for(int i=0;i<nb_aps;i++)
             if(access_points[i].channel==esp32_wifi_channel){
                 ap_info=&access_points[i];

@@ -546,7 +546,9 @@ Done in `eink-qemu`:
     10.0.2.15, host port 8080 reaches the device's port 80 (`curl localhost:8080`).
   - `X4NET="-nic ..."` overrides both; `drive.py` takes the same `-nic` in `QEMU_EXTRA`.
   A scan finds `PICSimLabWifi` (open, ch 1, the one that connects), `Espressif` and
-  `MasseyWifi`. With no `model=esp32_wifi` NIC the MAC is a stub and a scan finds 0.
+  `MasseyWifi`. With no `model=esp32_wifi` NIC the MAC is a stub and a scan finds 0;
+  `-global esp32_wifi.access-points=off` keeps the radio with no access points (the
+  apps' Wi-Fi off), so a scan finds 0 too.
   Station MAC: the NIC's `mac=` (default 52:54:00:12:34:56) is burned into efuse
   when no efuse file is given; give each sim on one LAN its own `mac=`.
 
