@@ -34,6 +34,17 @@ impl Listener {
     async fn bind() -> std::io::Result<(Listener, String)> {
         #[cfg(unix)]
         {
+            // Sockets of sessions that were killed outright (their owner is gone).
+            for entry in std::fs::read_dir("/tmp").into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let pid = name.strip_prefix("eink-qemu-ctl-").and_then(|n| n.strip_suffix(".sock")).and_then(|n| n.parse::<u32>().ok());
+                let mine = std::fs::symlink_metadata(entry.path()).is_ok_and(|m| std::os::unix::fs::MetadataExt::uid(&m) == unsafe { libc::getuid() });
+                if let (Some(pid), true) = (pid, mine) {
+                    if !eink_core::host::process_alive(pid) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
             let path = PathBuf::from(format!("/tmp/eink-qemu-ctl-{}.sock", std::process::id()));
             let _ = std::fs::remove_file(&path);
             let listener = tokio::net::UnixListener::bind(&path)?;
