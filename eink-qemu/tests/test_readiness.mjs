@@ -199,3 +199,40 @@ test('a reloaded page attached to a running session waits for the next boot', ()
   clock = 61000; r.screen(); clock = 66000; r.tick();
   assert.match(seen.at(-1), /Ready · screen settled/);
 });
+
+// From main: CrossPoint forks without a memory report, and a display that
+// never answers (firmware for another board).
+test('firmware without a memory report settles as Running after Home', () => {
+  const { r, seen, at } = clocked();
+  for (let i = 0; i < 3; i++) r.feed(['[326]   Wait complete: refresh (1 ms)']);
+  assert.match(seen.at(-1), /finishing startup/);
+  at(4999);
+  assert.match(seen.at(-1), /finishing startup/);
+  at(5000);
+  assert.equal(seen.at(-1), 'X4 Pro · Accurate timing · Running · Home drawn in 0.00 s');
+});
+
+test('a memory report before the settle wins, and stop() silences the run', () => {
+  const { r, seen, at } = clocked();
+  for (let i = 0; i < 3; i++) r.feed(['Wait complete: refresh (1 ms)']);
+  r.feed(['[MEM] Free: 1 bytes']);
+  assert.match(seen.at(-1), /Ready · Home drawn/);
+  at(9000);
+  assert.ok(!seen.some((text) => /Running/.test(text)));
+  r.restart();
+  for (let i = 0; i < 3; i++) r.feed(['Wait complete: refresh (1 ms)']);
+  r.stop();
+  const said = seen.length;
+  at(20000);
+  assert.equal(seen.length, said);
+});
+
+test('a panel wait that ran out is not a refresh', () => {
+  const { r, seen } = fresh();
+  r.restart();
+  r.feed(['[30301]   Wait complete:  CMD_SOFT_RESET (30001 ms)']);
+  assert.match(seen.at(-1), /display did not answer the firmware \(a 30 s wait ran out\)/);
+  for (let i = 0; i < 3; i++) r.feed(['[120317]   Wait complete: refresh (29999 ms)']);
+  assert.equal(r.bootSeconds, null);
+  assert.equal(seen.length, 1);
+});

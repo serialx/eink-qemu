@@ -103,7 +103,14 @@ impl Readiness {
         if XTEINK_STOCK.power_wait.is_match(line) {
             self.power_wait = true;
         }
-        if crosspoint.refresh_done.is_match(line) {
+        let ran_out = crosspoint.panel_wait.captures(line).and_then(|c| c[1].parse::<u64>().ok()).filter(|&ms| ms >= crosspoint.wait_ran_out_ms);
+        if let Some(ms) = ran_out {
+            // Not a refresh: the display never answered, as when firmware for
+            // one board drives another's panel.
+            self.boot_failure.get_or_insert_with(|| {
+                format!("the display did not answer the firmware (a {} s panel wait ran out): is this firmware for this board (--machine, --panel)?", ms / 1000)
+            });
+        } else if crosspoint.refresh_done.is_match(line) {
             self.crosspoint = true;
             self.last_draw = Some(now);
             self.milestones += 1;
@@ -136,6 +143,11 @@ impl Readiness {
         }
         if let Some(verdict) = &self.verdict {
             return verdict.clone();
+        }
+        // CrossPoint's Home drawn and no memory report since: a fork that
+        // does not report. It is ready this long after Home.
+        if self.home_at.is_some_and(|t| now - t >= CROSSPOINT.report_wait_s) && !self.sd_failed {
+            return Verdict::Ready("home");
         }
         let rom_quiet = self.last_rom.is_none_or(|t| now - t >= quiet_needed);
         // After a reset, nothing counts until the new boot's ROM banner.
@@ -252,6 +264,28 @@ mod tests {
         r.feed("I (1930) main_task: Calling app_main()", 2.0);
         assert_eq!(r.verdict(Some(4.0), 5.0, 6.0), Verdict::Waiting);
         assert_eq!(r.verdict(Some(5.0), 5.0, 7.0), Verdict::Ready("screen-quiet"));
+    }
+
+    #[test]
+    fn a_fork_without_a_report_is_ready_a_while_after_home() {
+        let mut r = Readiness::new();
+        for line in ["Wait complete: refresh (1 ms)"; 3] {
+            r.feed(line, 3.0);
+        }
+        assert_eq!(r.verdict(None, 5.0, 10.0), Verdict::Waiting);
+        assert_eq!(r.verdict(None, 5.0, 15.0), Verdict::Ready("home"));
+    }
+
+    #[test]
+    fn a_panel_wait_that_ran_out_is_no_refresh_and_fails() {
+        let mut r = Readiness::new();
+        r.feed("[30301]   Wait complete:  CMD_SOFT_RESET (30001 ms)", 1.0);
+        for _ in 0..3 {
+            r.feed("[120317]   Wait complete: refresh (29999 ms)", 2.0);
+        }
+        assert!(r.home_at.is_none());
+        let Verdict::Failed(why) = r.verdict(None, 5.0, 3.0) else { panic!() };
+        assert!(why.contains("30 s panel wait ran out"), "{why}");
     }
 
     #[test]

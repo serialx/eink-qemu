@@ -11,7 +11,10 @@
     "milestones": 3,
     "report": "\\[MEM\\]",
     "quiet_after_draw_s": 3,
-    "sd_failed": "SD card initialization failed"
+    "report_wait_s": 12,
+    "sd_failed": "SD card initialization failed",
+    "panel_wait": "Wait complete:\\s+\\S+\\s+\\((\\d+) ms\\)",
+    "wait_ran_out_ms": 10000
   },
   "metrics": {
     "timestamp": "^\\[(\\d+)\\] ",

@@ -39,6 +39,9 @@ button.file-chip:hover:enabled { background: var(--surface-2); }
 #screen canvas { display: block; image-rendering: pixelated; filter: var(--screen-filter); }
 .bezel:not(:has(canvas, iframe)) { width: min(400px, 100%); min-width: 0; flex-shrink: 0; }
 #screen:not(:has(canvas, iframe)) { width: 100%; aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; overflow-wrap: anywhere; }
+/* Text taller than the panel (a narrow phone) grows it rather than being cut:
+   with overflow visible, aspect-ratio's automatic minimum fits the content. */
+#screen:not(:has(canvas, iframe)) { overflow: visible; }
 
 /* The card is a file on disk: show its path on one line, full path on hover.
    In a browser the line says how the card is kept instead. */
@@ -235,6 +238,8 @@ button.toggle[aria-pressed="true"] { background: var(--brand-tint); border-color
 button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint); border-color: var(--meter); }
 .option:has(.toggle:hover) .tip, .option:has(.toggle:focus-visible) .tip { visibility: visible; opacity: 1; }
 .option:has(.toggle:hover) .tip { transition-delay: .35s; }
+/* Escape hides help that hover or focus shows, until they move on. */
+.option.dismissed .tip, .about.dismissed .about-tip { visibility: hidden !important; opacity: 0 !important; }
 .tip-state { font-weight: 500; color: var(--faint); }
 
 /* Heap tab: looking back at a kept snapshot, and the note without an ELF. */
@@ -254,9 +259,10 @@ button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint)
   button.setup-chip { width: 100%; max-width: none; min-height: 48px; }
   .setup-card { width: min(460px, calc(100vw - 32px)); }
   .toggles { grid-column: 1 / -1; justify-content: space-between; gap: 8px; }
-  .toggles .option { flex: 1; min-height: 0; padding: 0; border: 0; }
-  .toggles .option .tip { right: auto; left: 0; }
-  .toggles .option:last-child .tip { left: auto; right: 0; }
+  /* Help spans the row of toggles, so none reaches past the screen's edge. */
+  .toggles { position: relative; }
+  .toggles .option { flex: 1; min-height: 0; padding: 0; border: 0; position: static; }
+  .toggles .option .tip { left: 0; right: 0; width: auto; }
   button.toggle { width: 100%; height: 44px; border-radius: 10px; }
   .tabs [role=tab] { font: inherit; }
   .output-head { flex-wrap: wrap; }

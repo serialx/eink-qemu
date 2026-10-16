@@ -2,7 +2,8 @@
 # One argument per line, shared by native/Node launchers and smoke tests.
 # Keep the browser's turboProperties in wasm/web/runtime.js in sync.
 set -eu
-if [ "$1" != picco ]; then
+# The X4 Pro and Picco cards sit on the S3's SDMMC host, not on SPI.
+if [ "$1" != x4pro ] && [ "$1" != picco ]; then
     for property in read-access-us read-seq-access-us read-repeat-us read-next-us \
         write-busy-us write-random-busy-us write-repeat-busy-us write-block-busy-us \
         write-stop-busy-us write-stop-decrement-us write-stop-random-extra-us; do

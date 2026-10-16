@@ -140,8 +140,14 @@ another SD image, or a new blank card, from the card menu (the card button in
 the SD panel) replaces the saved card. An explicit ?sd= URL loads that image
 instead of restoring the saved card, and saves it as the new card.
 The full image is stored atomically in IndexedDB, separately for each hosted
-application path. Avoid editing the same card in multiple tabs: the last
-completed save wins.
+application path, and numbered with each save. Tabs of the page share the
+card: an idle tab takes up another tab's save, and a tab whose card is older
+than the saved one (one running firmware, say) stops saving and says so, so
+it never overwrites the newer card. Download its card to keep its changes.
+The whole card lives in memory, so the page takes SD images up to 2 GiB.
+
+The last six firmware files chosen are kept in this browser too: after a
+reload Start runs the last one, and the firmware card lists the others.
 
 The SD card panel is a file explorer for the in-memory card: browse folders,
 upload files (picker or drag-and-drop, folders included), create folders,

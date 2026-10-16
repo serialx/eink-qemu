@@ -223,6 +223,7 @@ static void esp32s3_wifi_realize(DeviceState *dev, Error **errp)
 static const Property esp32s3_wifi_properties[] = {
     DEFINE_NIC_PROPERTIES(Esp32WifiState, conf),
     DEFINE_PROP_UINT32("rx-frame-us", Esp32WifiState, rx_frame_us, 5000),
+    DEFINE_PROP_BOOL("access-points", Esp32WifiState, access_points, true),
 };
 
 static void esp32s3_wifi_class_init(ObjectClass *klass, const void *data)

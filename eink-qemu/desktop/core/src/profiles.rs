@@ -23,6 +23,12 @@ pub struct CrossPoint {
     pub report: Regex,
     /// Seconds after the last refresh that make a report "ready" without Home.
     pub quiet_after_draw_s: f64,
+    /// Seconds after Home that make a fork which never reports ready.
+    pub report_wait_s: f64,
+    /// A panel wait and its guest ms (capture 1); one this long ran out:
+    /// the display never answered, so nothing was drawn.
+    pub panel_wait: Regex,
+    pub wait_ran_out_ms: u64,
     /// Its message for a card it cannot mount.
     pub sd_failed: Regex,
     /// Its log prefix, `[<ms since boot>] `.
@@ -66,7 +72,10 @@ struct CrossPointReady {
     milestones: u32,
     report: String,
     quiet_after_draw_s: f64,
+    report_wait_s: f64,
     sd_failed: String,
+    panel_wait: String,
+    wait_ran_out_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +108,9 @@ pub static CROSSPOINT: LazyLock<CrossPoint> = LazyLock::new(|| {
         milestones: file.ready.milestones,
         report: regex(&file.ready.report),
         quiet_after_draw_s: file.ready.quiet_after_draw_s,
+        report_wait_s: file.ready.report_wait_s,
+        panel_wait: regex(&file.ready.panel_wait),
+        wait_ran_out_ms: file.ready.wait_ran_out_ms,
         sd_failed: regex(&file.ready.sd_failed),
         timestamp: metric("timestamp"),
         page_render: metric("page_render"),

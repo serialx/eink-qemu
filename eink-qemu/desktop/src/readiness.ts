@@ -1,8 +1,10 @@
 /* When a boot is finished, decided as the Rust core decides it
    (core/src/script/readiness.rs). Firmware with a profile in
    eink-qemu/profiles is followed by its log: CrossPoint's boot milestones
-   (completed panel refreshes, then its memory report) and a card it could
-   not mount, the stock X4 Pro firmware's wait for Power. Any other firmware
+   (completed panel refreshes, then its memory report; Running a while after
+   Home for a fork that never reports), a card it could not mount, a panel
+   wait that ran out because the display never answered (firmware for
+   another board), and the stock X4 Pro firmware's wait for Power. Any other firmware
    is ready once its screen has been quiet for 5 s after an update of this
    boot, as long as the ROM is not rebooting it in a loop. ROM messages about
    an image it cannot boot are reported at once. Both front ends feed it the
@@ -15,6 +17,10 @@ const refreshDone = new RegExp(crosspoint.ready.refresh_done);
 const memoryReport = new RegExp(crosspoint.ready.report);
 const sdFailure = new RegExp(crosspoint.ready.sd_failed);
 const powerWait = new RegExp(stock.ready.power_wait);
+// A panel wait and how long it took, in guest time: one that ran out is not a refresh.
+const panelWait = new RegExp(crosspoint.ready.panel_wait);
+/** Host time from CrossPoint's Home to "Running" when no memory report comes. */
+const SETTLE_MS = 5000;
 // ESP-IDF's ROM or second-stage bootloader refusing the image.
 const bootFailure = /No bootable app partitions|invalid segment length|Image hash failed|Failed to verify app image|invalid magic byte|Checksum failure|ota data partition invalid and no factory/;
 /** Quiet screen (and no new ROM banner) for this long makes firmware without a profile ready. */
@@ -40,6 +46,10 @@ export class Readiness {
   private powerWait = false;
   /** Ready, or a card it cannot mount, has been said for this boot. */
   private decided = false;
+  /** CrossPoint's Home without a memory report has been said to run. */
+  private settled = false;
+  /** When CrossPoint's Home was drawn. */
+  private homeAt: number | null = null;
   private failed = false;
   private readonly status: (text: string) => void;
   private readonly device: () => string;
@@ -83,6 +93,13 @@ export class Readiness {
     this.lastScreenAt = null;
     this.powerWait = false;
     this.decided = false;
+    this.settled = false;
+    this.homeAt = null;
+  }
+
+  /** The run ended: nothing more is said about it. */
+  stop() {
+    this.decided = true;
   }
 
   private prefix() { return `${this.device()} · ${this.timing()}`; }
@@ -112,6 +129,14 @@ export class Readiness {
         this.status(`${this.device()} · The ROM cannot boot this image: ${refused[0]}`);
       }
       if (this.failed) continue;
+      const wait = panelWait.exec(line);
+      if (wait && Number(wait[1]) >= crosspoint.ready.wait_ran_out_ms) {
+        // Not a refresh: nothing was drawn. The display never answered, as
+        // when firmware for one board drives another's panel.
+        this.failed = true;
+        this.status(`${this.device()} · The display did not answer the firmware (a ${Math.round(Number(wait[1]) / 1000)} s wait ran out) · is this firmware for this device?`);
+        continue;
+      }
       if (sdFailure.test(line)) this.sdFailed = true;
       // Stock X4 Pro firmware powers itself off unless Power is still held when its app starts.
       if (powerWait.test(line) && this.bootSeconds === null) {
@@ -125,6 +150,7 @@ export class Readiness {
         this.crosspoint = true;
         this.lastDrawAt = this.now();
         if (++this.milestones === crosspoint.ready.milestones) {
+          this.homeAt = this.lastDrawAt;
           this.bootSeconds = (this.lastDrawAt - this.startedAt) / 1000;
           if (!this.sdFailed) this.status(`${this.prefix()} · Home drawn in ${this.bootSeconds.toFixed(2)} s · finishing startup…`);
         }
@@ -155,8 +181,18 @@ export class Readiness {
 
   /** Called every second or so: decides a quiet screen, which no event marks. */
   tick() {
-    if (this.decided || this.failed || this.crosspoint || this.awaitRom || this.powerWait || this.lastScreenAt === null) return;
+    if (this.decided || this.failed || this.awaitRom || this.powerWait) return;
     const now = this.now();
+    if (this.crosspoint) {
+      // Home was drawn a while ago and no memory report came: a CrossPoint
+      // fork that does not report. It runs ([MEM] can still make it Ready).
+      if (this.homeAt !== null && !this.settled && !this.sdFailed && now - this.homeAt >= SETTLE_MS) {
+        this.settled = true;
+        this.status(`${this.prefix()} · Running · Home drawn in ${this.bootSeconds!.toFixed(2)} s`);
+      }
+      return;
+    }
+    if (this.lastScreenAt === null) return;
     if (now - this.lastScreenAt < QUIET_MS || (this.lastRomAt !== null && now - this.lastRomAt < QUIET_MS)) return;
     this.decided = true;
     this.bootSeconds = Math.max(0, this.lastScreenAt - this.startedAt) / 1000;

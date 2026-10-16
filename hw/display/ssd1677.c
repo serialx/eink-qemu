@@ -8,7 +8,8 @@
  * update control 1 (0x21) RAM options, and master activation (0x20), which
  * holds BUSY for "busy-ms" and then shows the panel on a graphic console.
  * Waveforms are not simulated: OTP and monochrome transition LUTs show the
- * BW plane; grayscale LUTs interpret both RAM planes as four gray levels.
+ * BW plane; grayscale LUTs interpret both RAM planes as four gray levels,
+ * or as steps from the shown image when they leave a pixel code undriven.
  * Everything else (voltages, booster, temperature, border) is accepted and
  * ignored.
  *
@@ -68,6 +69,8 @@ struct Ssd1677State {
     uint8_t ctrl1[2];
     uint8_t ctrl2;
     bool gray_lut;
+    bool gray_diff;     /* gray LUT steps the shown image by gray_step[code] */
+    int8_t gray_step[4];
 
     uint8_t ram[2][H][WB];
     uint8_t shown[H][WB * 2];   /* last activated image as 2-bit pixels, packed */
@@ -162,6 +165,51 @@ static bool ssd1677_lut_is_gray(const uint8_t *lut, size_t len)
     return !transition;
 }
 
+/*
+ * A grayscale LUT that applies VSS in every phase of some pixel code is
+ * differential: those pixels keep the shown image and the driven codes move
+ * it instead of setting a level. CrossPoint's anti-aliasing LUT holds code 0,
+ * so the black and white of its B/W frame stay, and lightens its gray pixels
+ * (black in that frame) by 5 VSL phases for code 3 and 9 for code 2. Without
+ * a waveform model, codes are ranked by net phase count per direction and
+ * each rank is one gray level: VSL toward white, VSH1/VSH2 toward black.
+ * Returns false for absolute LUTs, where every code is driven.
+ */
+static bool ssd1677_lut_steps(const uint8_t *lut, size_t len, int8_t step[4])
+{
+    int net[4];
+    bool hold = false;
+
+    if (len < 40) {
+        return false;
+    }
+    for (int r = 0; r < 4; r++) {
+        bool driven = false;
+        net[r] = 0;
+        for (unsigned phase = 0; phase < 40; phase++) {
+            uint8_t vs = (lut[r * 10 + phase / 4] >> (6 - 2 * (phase % 4))) & 3;
+            if (vs) {
+                driven = true;
+                net[r] += vs == 2 ? 1 : -1;
+            }
+        }
+        hold |= !driven;
+    }
+    for (int r = 0; r < 4; r++) {
+        int rank = 0;
+        for (int v = 1; v <= abs(net[r]); v++) {
+            for (int o = 0; o < 4; o++) {
+                if (net[o] == (net[r] > 0 ? v : -v)) {
+                    rank++;
+                    break;
+                }
+            }
+        }
+        step[r] = net[r] > 0 ? rank : -rank;
+    }
+    return hold;
+}
+
 static void ssd1677_activate(Ssd1677State *s)
 {
     uint8_t bw_opt = s->ctrl1[0] & 0xf, red_opt = s->ctrl1[0] >> 4;
@@ -177,11 +225,15 @@ static void ssd1677_activate(Ssd1677State *s)
         for (int xb = 0; xb < WB; xb++) {
             uint8_t bw = ssd1677_opt(bw_opt, s->ram[PLANE_BW][r][xb]);
             uint8_t red = ssd1677_opt(red_opt, s->ram[PLANE_RED][r][xb]);
+            uint16_t old = s->shown[y][xb * 2] << 8 | s->shown[y][xb * 2 + 1];
             uint16_t px = 0;
             for (int b = 7; b >= 0; b--) {
                 int lvl;
                 if (gray) {
                     lvl = (((red >> b) & 1) << 1) | ((bw >> b) & 1);
+                    if (s->gray_diff) {
+                        lvl = MIN(MAX(((old >> 2 * b) & 3) + s->gray_step[lvl], 0), 3);
+                    }
                 } else {
                     lvl = ((bw >> b) & 1) ? 3 : 0;
                 }
@@ -243,6 +295,7 @@ static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
 {
     if (s->cmd == 0x32 && s->nargs) {
         s->gray_lut = ssd1677_lut_is_gray(s->args, s->nargs);
+        s->gray_diff = ssd1677_lut_steps(s->args, s->nargs, s->gray_step);
     }
     s->cmd = c;
     s->nargs = 0;
@@ -272,6 +325,7 @@ static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
         break;
     case 0x32:
         s->gray_lut = true;
+        s->gray_diff = false;
         break;
     }
 }

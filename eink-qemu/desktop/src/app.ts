@@ -87,6 +87,7 @@ function onSession(info: SessionInfo) {
   session = info;
   heapSession(info.state, info.run);
   if (info.state !== 'running') releaseAll();
+  if (info.state === 'idle' || info.state === 'stopping') readiness.stop();
   // A WebView reloaded during startup learns the board here.
   if ((info.state === 'starting' || info.state === 'running') && info.machine && !screen) {
     buttons(info.machine);
@@ -297,6 +298,11 @@ const frontKeys = ['Back', 'Confirm', 'Left', 'Right'];
 // Each held device key has owners (keyboard codes, pointer ids); it is
 // released when the last owner lets go.
 const held = new Map<string, Set<string>>();
+// Whether the keyboard (Tab) moved focus last, rather than a click: a control
+// reached that way keeps Enter, while one just clicked leaves keys to the device.
+let keyboardFocus = false;
+document.addEventListener('pointerdown', () => { keyboardFocus = false; }, true);
+document.addEventListener('keydown', (event) => { if (event.code === 'Tab') keyboardFocus = true; }, true);
 
 function press(name: string, owner: string, down: boolean) {
   if (down && session.state !== 'running') return;
@@ -409,8 +415,10 @@ function deviceKeyboard(event: KeyboardEvent) {
   }
   if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || dialogOpen()) return;
   const target = event.target as HTMLElement;
-  // Typing in a field and the SD card panel keep their keys.
+  // Typing in a field and the SD card panel keep their keys, and a control
+  // reached with Tab keeps Enter.
   if (target.closest('input, textarea, select, .sd, [role=dialog]')) return;
+  if (name === 'Confirm' && keyboardFocus && target.closest('button, a[href], summary, [role=tab], [role=button]')) return;
   if (session.state !== 'running') return;
   event.preventDefault();
   if (!event.repeat) press(name, owner, true);
@@ -464,6 +472,13 @@ function paintCard() {
 function onCard(next: CardInfo | null, changed: boolean) {
   card = next;
   paintCard();
+  if (changed && next && !next.error && !next.busy) {
+    // A card that loads clears what the last one failed with.
+    $('sd-error').textContent = '';
+    if ($('status').textContent!.startsWith('SD image: ') && session.state === 'idle' && !pending) {
+      status(firmware ? 'Start boots the chosen firmware.' : 'Choose a flash image to begin.');
+    }
+  }
   if (changed) {
     sd.cwd = '/';
     void sdRefresh();
@@ -630,6 +645,8 @@ function sdPaint() {
 async function sdRun(action: () => Promise<void>) {
   // One explorer operation at a time; errors show in the panel and the log.
   if (!sdUsable()) return;
+  // Its control is disabled meanwhile, which drops focus: give it back after.
+  const opener = document.activeElement as HTMLElement | null;
   sd.busy = true;
   sdPaint();
   $('sd-error').textContent = '';
@@ -639,6 +656,8 @@ async function sdRun(action: () => Promise<void>) {
   } finally {
     sd.busy = false;
     sdPaint();
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (lost && opener?.isConnected && !(opener as HTMLButtonElement).disabled) opener.focus({ preventScroll: true });
   }
 }
 

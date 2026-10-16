@@ -665,6 +665,10 @@ impl Session {
             "-nic".into(),
             if options.wifi { "user,model=esp32_wifi".into() } else { "hubport,hubid=0,model=esp32_wifi".into() },
         ]);
+        if !options.wifi {
+            // The radio stays, with no access points to find.
+            args.extend(["-global".into(), "esp32_wifi.access-points=off".into()]);
+        }
         args.extend(options.extra.iter().cloned());
         Ok(args)
     }

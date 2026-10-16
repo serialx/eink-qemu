@@ -19,8 +19,12 @@ export interface Flash {
 const chipOf = (bytes: Uint8Array) => bytes[12] | (bytes[13] << 8);
 
 async function bootAsset(name: string): Promise<Uint8Array> {
-  const response = await fetch(`/boot/${name}`);
-  if (!response.ok) throw new Error(`Missing boot asset ${name}; run scripts/prepare-resources.sh.`);
+  const response = await fetch(`./boot/${name}`);
+  if (!response.ok) {
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+    throw new Error(`Could not load the boot file ${name} (HTTP ${response.status}). Reload the page to try again.` +
+      (local ? ' Serving a checkout? Run scripts/prepare-resources.sh first.' : ''));
+  }
   return new Uint8Array(await response.arrayBuffer());
 }
 

@@ -24,6 +24,8 @@ typedef int *qemu_irq;
 #define QEMU_CLOCK_VIRTUAL 0
 #define SSD1677(p) ((Ssd1677State *)(p))
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 typedef struct Ssd1677State Ssd1677State;
 static void qemu_set_irq(qemu_irq irq, int level) { if (irq) *irq = level; }
 static int64_t qemu_clock_get_ms(int clock) { return 0; }
@@ -183,6 +185,22 @@ static void lut_pixels(void)
     command(s, 0x22, (uint8_t[]){0xf7}, 1); /* load monochrome OTP LUT */
     command(s, 0x20, NULL, 0);
     assert(s->shown[0][0] == 0x33);
+    assert(s->shown[0][1] == 0x00);
+    /* CrossPoint's anti-aliasing LUT holds code 0 over the B/W frame and
+     * lightens code 3 by 5 and code 2 by 9 VSL phases; code 1 darkens. */
+    const uint8_t aa[105] = {
+        [10]=0x54,[11]=0x54,[12]=0x40, [20]=0xaa,[21]=0xa0,[22]=0xa8,
+        [30]=0xa2,[31]=0x22,[32]=0x20,
+    };
+    command(s, 0x4e, (uint8_t[]){0,0}, 2);
+    command(s, 0x24, (uint8_t[]){0x05}, 1);
+    command(s, 0x4e, (uint8_t[]){0,0}, 2);
+    command(s, 0x26, (uint8_t[]){0x06}, 1);
+    command(s, 0x32, aa, sizeof(aa));
+    command(s, 0x22, (uint8_t[]){0xcc}, 1);
+    command(s, 0x20, NULL, 0);
+    assert(s->shown[0][0] == 0x33);  /* held: black white black white */
+    assert(s->shown[0][1] == 0x18);  /* black dark-gray light-gray black */
     free(s);
 }
 

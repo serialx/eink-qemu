@@ -401,6 +401,19 @@ smoke: try {
         })()`;
         const homePixels = await evaluate(homeRegion);
         fs.writeFileSync(path.join(evidence, 'web-x4pro-home-region.png'), Buffer.from(homePixels.split(',')[1], 'base64'));
+        // Back at Home means the same rows within one gray level: the panel's
+        // ghosting can leave a few pixels a level off after another screen.
+        const homeData = `(() => {
+            const c = document.createElement('canvas'); c.width = 480; c.height = 180;
+            const g = c.getContext('2d'); g.drawImage(${canvas}, 0, -460);
+            return g.getImageData(0, 0, 480, 180).data;
+        })()`;
+        await evaluate(`(window.smokeHome = ${homeData}, true)`);
+        const atHome = `(() => {
+            const now = ${homeData}, home = window.smokeHome;
+            for (let i = 0; i < now.length; i++) if (Math.abs(now[i] - home[i]) > 1) return false;
+            return true;
+        })()`;
         const logBeforeTouch = await evaluate(consoleText);
         const point = await evaluate(`(() => {
             const frame = document.querySelector('iframe');
@@ -434,7 +447,7 @@ smoke: try {
                     await delay(measurements.turbo ? 40 : 150);
                     await call('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Home', code: 'Home', windowsVirtualKeyCode: 36});
                 }
-                await waitFor(`${homeRegion} === ${JSON.stringify(homePixels)}`);
+                await waitFor(atHome);
                 measurements[`${method.replaceAll('-', '_')}_home_returned_home`] = true;
                 if (method !== 'canvas-keyboard') {
                     const beforeLibrary = await evaluate(`${canvas}.toDataURL()`);
@@ -443,7 +456,7 @@ smoke: try {
                     await call('Input.dispatchMouseEvent', {type: 'mouseReleased', button: 'left', clickCount: 1, ...point});
                     await waitFor(`${canvas}.toDataURL() !== ${JSON.stringify(beforeLibrary)}`);
                     await delay(1500);
-                    if (await evaluate(`${homeRegion} === ${JSON.stringify(homePixels)}`)) {
+                    if (await evaluate(atHome)) {
                         throw new Error('Touch did not reopen Library before testing Home');
                     }
                 }

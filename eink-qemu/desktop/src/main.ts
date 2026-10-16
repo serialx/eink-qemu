@@ -56,8 +56,20 @@ document.addEventListener('click', (event) => {
   if (!(event.target as Element).closest('.option, .about')) closeTips();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.code === 'Escape' && closeTips()) event.preventDefault();
+  if (event.code !== 'Escape') return;
+  let open = closeTips();
+  // Help shown by hover or keyboard focus hides too, until they move on.
+  for (const tip of document.querySelectorAll<HTMLElement>('.tip, .about-tip')) {
+    const holder = tip.closest<HTMLElement>('.option, .about');
+    if (!holder || holder.classList.contains('dismissed') || getComputedStyle(tip).visibility !== 'visible') continue;
+    holder.classList.add('dismissed');
+    open = true;
+  }
+  if (open) event.preventDefault();
 });
+for (const holder of document.querySelectorAll<HTMLElement>('.option, .about')) {
+  for (const type of ['focusout', 'mouseleave']) holder.addEventListener(type, () => holder.classList.remove('dismissed'));
+}
 
 /* One column (a phone): the SD card and the console take turns below the stage. */
 for (const tab of document.querySelectorAll<HTMLElement>('.tabs [role=tab]')) tab.addEventListener('click', () => {

@@ -32,6 +32,9 @@ typedef struct Esp32WifiState {
     struct mac80211_frame *inject_queue;
     int inject_timer_running;
     uint32_t rx_frame_us;
+    /* eink-qemu: the simulated access points beacon and answer; off for a
+     * radio with no network behind it, so scans find nothing. */
+    bool access_points;
     unsigned int inject_sequence_number;
     int beacon_ap;
 
