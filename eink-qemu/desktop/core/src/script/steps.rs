@@ -186,10 +186,11 @@ pub fn parse(tokens: &[String]) -> Result<Vec<Step>, String> {
             continue;
         }
         if kind == "repeat" {
-            let count = number(token, arg, "a count")? as u32;
-            if count == 0 {
-                return Err(format!("`{token}`: the count must be at least 1"));
+            let count = number(token, arg, "a count")?;
+            if count < 1.0 || count.fract() != 0.0 {
+                return Err(format!("`{token}`: the count must be a whole number, at least 1"));
             }
+            let count = count as u32;
             stack.push((count, token.to_string(), Vec::new()));
             continue;
         }
@@ -445,6 +446,8 @@ mod tests {
         assert!(steps(&["wait"]).unwrap_err().contains("usage: wait:SECONDS"));
         assert!(steps(&["wait:1e300"]).unwrap_err().contains("at most"));
         assert!(steps(&["timeout:NaN"]).is_err());
+        assert!(steps(&["repeat:1.9", "end"]).unwrap_err().contains("whole number"));
+        assert!(steps(&["repeat:0", "end"]).unwrap_err().contains("at least 1"));
         assert!(steps(&["shot:page{i}", "wait-quiet", "wait-quiet:3"]).is_ok());
         assert!(steps(&["book.epub"]).unwrap_err().contains("go before the firmware"));
         let parsed = steps(&["expect-shot:p1=ref/p1.png@0,0,10,20@5,5,1,1"]).unwrap();

@@ -309,7 +309,7 @@ jobs:
 
       - name: Test
         run: |
-          node --test ../tests/test_heap_log.mjs ../tests/test_readiness.mjs
+          node --test ../tests/test_heap_log.mjs ../tests/test_readiness.mjs ../tests/test_panel.mjs
           pnpm exec tsc --noEmit
           cargo test --workspace
 

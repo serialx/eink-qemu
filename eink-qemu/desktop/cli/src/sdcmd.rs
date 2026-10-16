@@ -70,6 +70,11 @@ fn exec(command: SdCommand) -> Result<serde_json::Value, (u8, String)> {
     let sd_err = |e: sd::SdError| (EXIT_SETUP, e.message);
     Ok(match command {
         SdCommand::New { image, size } => {
+            // Reserve the path before looking at it, as the desktop app does
+            // for its default card: no other instance can make or open a card
+            // there until this one is written.
+            let locks = crate::launch::shared_locks();
+            let _lock = cards::reserve(&locks, &image).map_err(|e| (EXIT_SETUP, crate::launch::lock_error(&image.display().to_string(), &e.message, &locks)))?;
             if image.exists() {
                 return Err((EXIT_USAGE, format!("{} exists; remove it first or choose another name", image.display())));
             }

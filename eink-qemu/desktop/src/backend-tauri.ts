@@ -7,6 +7,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { Backend, DropHandlers, Screen } from './backend';
 import type { HeapEvents } from './heap-log';
+import { Panel } from './panel';
 import {
   AppError, type Attached, type CardInfo, type FileInfo, type HeapHistoryPoint, type HeapPast, type HeapSite,
   type HeapSnapshot, type HeapStack, type MadeCard, type SdListing, type SessionInfo, type Settings, type Setup,
@@ -102,26 +103,10 @@ let screen: CanvasScreen | null = null;
 let screenUpdated: (blank: boolean) => void = () => {};
 /** Display messages that arrived before the page made a screen. */
 const early: ArrayBuffer[] = [];
-/** Whether a display message shows something: rectangles that are not all
-    one value (the blank panel before the firmware draws, a refresh's flash). */
-function showsSomething(buffer: ArrayBuffer) {
-  const view = new DataView(buffer), bytes = new Uint8Array(buffer);
-  if (view.getUint32(0, true) !== 2) return false;
-  const count = view.getUint32(4, true);
-  let at = 8, first = -1;
-  for (let n = 0; n < count; n++) {
-    const area = view.getUint32(at + 8, true) * view.getUint32(at + 12, true);
-    at += 16;
-    for (let i = at; i < at + area; i++) {
-      if (first < 0) first = bytes[i];
-      else if (bytes[i] !== first) return true;
-    }
-    at += area;
-  }
-  return false;
-}
+/** The panel the display messages have drawn, for whether it is blank. */
+const panel = new Panel();
 function onDisplay(buffer: ArrayBuffer) {
-  screenUpdated(!showsSomething(buffer));
+  screenUpdated(panel.apply(buffer));
   if (screen) { screen.paint(buffer); return; }
   // A size starts the panel over: what came before it is stale.
   if (new DataView(buffer).getUint32(0, true) === 1) early.length = 0;
