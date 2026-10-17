@@ -154,8 +154,8 @@ frames, each giving a float drive per class (+ toward white).
   - **Fast** (inside PTIN/PTOUT; the driver uses a whole-panel partial with
     no 0x90 window): KW/WK get `otp-fast-frames` (10) at full drive toward
     NEW. WW/KK get `otp-hold-drive` (6 per mille) toward their own color.
-  - **Full** (no PTIN): every pixel gets `otp-full-frames` (12) away from
-    NEW, then 12 toward it.
+  - **Full** (no PTIN): every pixel gets `otp-full-frames` (30) away from
+    NEW, then 30 toward it.
 - **N2OCP:** CDI (0x50) byte 0 bit 3 copies NEW to OLD after the refresh.
   The driver's CDI is 0x29 during refresh and 0xA9 idle, both with N2OCP;
   GxEPD2's GDEW075T7 comments the same byte "LUTKW, N2OCP: copy new to old".
@@ -204,18 +204,21 @@ gray pass is the worst case. Scripted runs take about 3 s longer than their
 | `swing-frames` | 6 | frames | full black<->white swing at full drive | vendor gray table (exact 1/3, 2/3) |
 | `rail-soft` | 100 | per mille | exponential zone near each rail | photo 1 (with bloom) |
 | `otp-fast-frames` | 10 | frames | OTP fast stand-in, changed pixels | device shows no menu ghosts |
-| `otp-full-frames` | 12 | frames | OTP full stand-in, each direction | no (just saturates) |
+| `otp-full-frames` | 30 | frames | OTP full stand-in, each direction | no (just saturates) |
 | `otp-hold-drive` | 6 | per mille | held pixels' drive in OTP fast | photo series |
 | `remnant-fast` / `-ms` | 30 / 1000 | per mille / ms | steady-state remnant fraction / time constant | upper bound only (background uniform) |
 | `remnant-slow` / `-ms` | 10 / 30000 | per mille / ms | same, slow | upper bound only |
 | `bloom` | 35 | per mille per neighbor | edge drive loss of driven pixels | photo 1 |
 | `drift` / `drift-s` | 50 / 1800 | per mille / s | max relax toward mid gray / time constant | **no** |
 | `frame-us` | 25000 | us | frame time for remnant/drift | driver logs: DU 27.6 ms, gray 23.8 ms |
-| `busy-ms` | 300 | ms | BUSY low per DRF (unchanged; not frames x frame-us) | no |
+| `busy-ms` | 0 | ms | 0 selects frame/profile timing; nonzero fixes BUSY per DRF | see profile |
 | `portrait` | true | | console orientation | |
 
-Every mechanism is 0 = off. For example, `-global uc8179.bloom=0` gives the
-pure-saturation model.
+The table describes the legacy UC8179 defaults. UC8279 revision `0x68` uses
+measured PLL-dependent frame timing and separate OTP durations; see the
+[X4 Pro calibration](../x4cal/README.md). `busy-ms=0` selects those defaults,
+not zero BUSY time. Setting a ghosting mechanism to 0 disables it. For
+example, `-global uc8179.bloom=0` gives the pure-saturation model.
 
 ## 4. Device measurements and calibration
 
@@ -452,10 +455,11 @@ QEMU_EXTRA="-global uc8179.ghosting=on -global uc8179.bloom=30" eink-qemu/drive.
 5. **The OTP waveform bodies** were never dumped. A full `0xA2` OTP read from
    the device would replace both OTP stand-ins with the real fast/full
    waveforms per temperature range, run through the same engine.
-6. **Not modeled:** the 0x90 partial window, LUTBD (0x25 border), VDHR
-   amplitude, VCOM_DC value.
-7. **`busy-ms`** is still a fixed 300 ms, not frames x frame time. A 50-frame
-   gray pass is ~1.2 s on the device.
+6. **Not modeled:** LUTBD (0x25 border), VDHR amplitude and VCOM_DC value.
+   The 0x90 partial window is honored in the UC8279-0x68 profile only.
+7. **BUSY timing:** `busy-ms=0` uses the frame count and frame time for
+   legacy UC8179; UC8279-0x68 has measured PLL/OTP timing. A nonzero
+   `busy-ms` overrides either profile with a fixed duration.
 8. **Performance:** the per-frame loop over 384k pixels runs under the BQL;
    profile it if UI latency matters. Possible speedups: skip all-zero frames
    with closed-form remnant decay; SIMD.

@@ -420,7 +420,7 @@ official X4 Pro release verification is recorded below.
 
 Wasm Wi-Fi downloads use an in-browser HTTP/TLS adapter and static font assets,
 with no relay or native QEMU dependency; see
-[Wi-Fi and font downloads](eink-qemu/wasm/README.md#wi-fi-and-font-downloads).
+[Wi-Fi and font downloads](eink-qemu/wasm/README.md#wi-fi-and-downloads).
 Browser images consume their full logical size:
 a sparse 1 GiB SD still takes 1 GiB, with extra copies for loading and export.
 Start with the packaged 64 MiB card when possible. The browser saves the SD
@@ -487,7 +487,7 @@ ordering diagnostics, not missing-device NACKs. These X4 Pro runs produce no
 Wire lock/NULL TX warnings. No firmware or peripheral model was changed to
 suppress diagnostics.
 
-## Where it stands (2026-10-08, 1007e firmware)
+## Implemented features and remaining gaps
 
 Machine `-machine x4pro` (in `hw/xtensa/esp32s3.c`: `x4pro_board_init`) boots the
 unmodified `x4-pro-debug` image to the Home screen, takes key presses and renders
@@ -501,12 +501,13 @@ Done in `eink-qemu`:
   interrupts, named lines `pin-in` (drive a pin from outside), `pin-out` (pin level
   to a device), `wake` (light-sleep GPIO wakeup), `rtc-pad` (levels of GPIO0-21,
   the RTC pads, for deep-sleep ext0/ext1 wake). Undriven inputs read 1 (pull-up).
-- `hw/ssi/esp32s3_gpspi.c`: GPSPI2 CPU-mode master (W0..W15 buffer, USR, TRANS_DONE).
-- `hw/display/uc8179.c`: the X4 Pro's UC8179 panel on GPSPI2 with CS/DC/RST and
-  BUSY_N on GPIO, plus the bit-banged SDA reads the firmware uses for its panel
-  probe and OTP. Answers like the real panel (VER, FLG, OTP), so the firmware logs
-  `controller=UC8179 ... promoted=1`. Graphic console shown portrait like the
-  device (`portrait=false` for raw). `hw/display/ssd1677.c` is the SSD1677 of
+- `hw/ssi/esp32s3_gpspi.c`: GPSPI2 master with CPU-buffer and GDMA
+  transfers (USR, TRANS_DONE).
+- `hw/display/uc8179.c`: the X4 Pro's UC8279 revision `0x68` panel by default,
+  or the legacy UC8179 with `X4PANEL=uc8179`. Both use GPSPI2 with CS/DC/RST and
+  BUSY_N on GPIO, plus bit-banged SDA reads for panel identity and OTP.
+  The selected profile supplies its own VER, FLG and OTP responses. The graphic
+  console is shown portrait like the device (`portrait=false` for raw). `hw/display/ssd1677.c` is the SSD1677 of
   the X4 (C3) and the Picco.
 - Every panel model (`uc8179`, `uc8279`, `ssd1677`, at
   `/machine/peripheral/panel`) has read-only QOM properties for scripts and
@@ -517,7 +518,7 @@ Done in `eink-qemu`:
   `refresh-ns` (their summed BUSY time in guest ns). The counts survive guest
   and external resets. A refresh that RST cuts short is not counted (the
   UC8253/UC8279 model keeps BUSY through RST, so its refresh completes).
-- UC8179 ink and ghosting (helper agent; full notes, data and tests in
+- Legacy UC8179 ink and ghosting (full notes, data and tests in
   `eink-qemu/ghosting/README.md`): each refresh (0x12) is simulated frame by frame
   instead of showing the planes, and plays on screen one frame per `frame-us`
   of virtual time (full refreshes flash, fast ones paint in). BUSY lasts the
@@ -627,12 +628,12 @@ USB OTG.
 
 Gaps another firmware is likely to hit (CrossDink doesn't need them yet):
 - GPSPI: hardware CS,
-  command/address/dummy phases, and half-duplex reads on SDA.
+  command/address/dummy phases.
 - GPIO matrix / IO_MUX routing: pins are wired directly, so a peripheral routed to
   a different pin than the X4 Pro's won't reach the device.
-- UC8179: the 0x90 partial window, LUTBD (0x25), VDHR, VCOM_DC value and
-  temperature (TSSET) aren't modeled; the OTP waveforms are stand-ins until the
-  full 0xA2 OTP is dumped.
+- UC8179: the 0x90 partial window is modeled only in the UC8279-0x68 profile.
+  LUTBD (0x25), VDHR, VCOM_DC value and temperature (TSSET) aren't modeled;
+  the OTP waveforms are stand-ins until the full 0xA2 OTP is dumped.
   Open calibration items: `eink-qemu/ghosting/README.md` section 8.
 - Flash encryption and secure boot.
 
@@ -846,39 +847,17 @@ the Turbo settings. `?sleep=off` permits unpaced benchmarks.
 | Wi-Fi | MAC + fake open AP bridged to a QEMU NIC: NAT (`-nic user`, hostfwd) or LAN (`X4BR=br0`) | n/a | done |
 | Sleep | deep sleep + ext0/ext1 GPIO wake, RTC_NOINIT/RTC_DATA memory | RTC_CNTL | done: ext0/ext1 and timer wake, RTC memory kept (`esp32s3_rtc_cntl.c`) |
 
-## Helper agent task: GPSPI2 DMA + hardware CS (current)
+## GPSPI2 follow-up
 
-Goal: firmware that drives the panel with ESP-IDF `spi_master` or Arduino `SPI`
-using DMA and the controller's own CS works like CrossDink's CPU-mode SPI does
-today. Branch `ext/spi-dma` off `main`, PR into `main`. You own
-`hw/ssi/esp32s3_gpspi.c` for this task (and its wiring in `x4pro_board_init`).
+`hw/ssi/esp32s3_gpspi.c` supports GDMA TX/RX transfers; the old
+`wip/spi-dma` draft is obsolete. Command/address/dummy phases and hardware CS0
+remain unimplemented. GDMA uses the system address space, including mapped
+PSRAM; firmware-level PSRAM-buffer coverage is still needed.
 
-Starting point: branch **`wip/spi-dma`** (598cb63) has an untested draft. It
-compiles, but nothing has exercised it: GDMA out/in through the `esp_gdma`
-API (`esp_gdma_get_channel_periph(GDMA_SPI2)`, read/write channel), command,
-address and dummy phases, MOSI-only/MISO-only/full-duplex, a `cs0` output
-(CS0_DIS, CS_KEEP_ACTIVE), and the panel CS = GPIO13 AND SPI CS0. Review it
-against the S3 TRM and IDF `hal/esp32s3/include/hal/spi_ll.h` and fix what's wrong.
-
-1. **DMA**: `spi_master` uses GDMA above 64 bytes (`SPI_DMA_CONF` TX/RX enable,
-   GDMA PERI_SEL = 0 for SPI2). Check `esp_gdma_get_channel_periph`: it also
-   matches any started channel, so a second DMA user (AES/SHA) could be picked.
-   GDMA here only reaches internal DRAM; PSRAM buffers (EDMA) are a known gap:
-   either add PSRAM to the GDMA address space or log a guest error.
-2. **Interrupts and status**: TRANS_DONE plus whatever `spi_master`'s ISR and
-   polling path read (check `spi_ll_usr_is_done`, `SPI_DMA_INT_*`, CMD.UPDATE,
-   CMD.USR clearing). Transactions that queue back-to-back must work.
-3. **Hardware CS**: CS0 goes low per transaction unless disabled or kept
-   active. The GPIO matrix isn't modeled; CS0 is wired to the panel as if routed
-   to GPIO13.
-4. **Test firmware**: a minimal ESP-IDF (or Arduino) app in
-   `eink-qemu/tests/spi-dma/` that inits the X4 Pro panel pins
-   (SCLK 12, MOSI 11, CS 13 as hardware CS, DC 18, RST 14, BUSY_N 6), sends
-   UC8179 init + a 48000-byte DTM2 plane with one DMA transaction, refreshes
-   (0x12), and prints "done". Commit its source and a build script, not the
-   binary. Done when: `drive.py` screenshot shows the test pattern, and
-   CrossDink 1007e still boots to Home with UC8179 promoted and a key press
-   moving the selection (no regressions).
+The planned `eink-qemu/tests/spi-dma/` firmware should exercise ESP-IDF
+`spi_master` DMA and hardware CS with a panel test pattern, with source and a
+build script committed alongside a screenshot check. That firmware is not yet
+in the tree; existing qtests cover descriptor chains and inactive DMA phases.
 
 ## Done helper task (merged): I2C bus + GT911 + BM8563 + CW2017
 
@@ -920,9 +899,11 @@ and confirm no new hang (`info registers -a` PCs keep moving).
 
 ## Don'ts
 
-- Don't modify any firmware (CrossDink, freeink-sdk or others). Don't change the GPIO, UC8179, keys or
-  RTC_CNTL models (owned by the project thread; GPSPI is yours for the SPI DMA task); adding your devices' wiring lines to
-  `x4pro_board_init` is fine. Ask in the PR if you need a hook elsewhere.
-- Don't push to `main` directly. PRs only.
+- Don't modify any firmware (CrossDink, freeink-sdk or others). Keep model and
+  board-wiring changes within the task's agreed scope; coordinate hooks in
+  other devices in the PR.
+- Submit changes through PRs into `main`. Maintainer release version bumps
+  have also landed directly on `main` (for example, `eink-qemu: 0.5.0`,
+  `2c7443b56b`). Task branches still require a PR.
 - No upstream references in PR titles, bodies or commits (no `#N` pointing at other
   repos, no `owner/repo#N`, no "fixes/closes" keywords).

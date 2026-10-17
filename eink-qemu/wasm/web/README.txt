@@ -109,8 +109,8 @@ The Emscripten SDL2 port renders the device's portrait panel. The runtime runs
 QEMU main on a pthread; the page remains responsive. An Emscripten-only guard
 yields in SDL event polling so queued browser input reaches the application
 pthread even while the e-ink screen is idle. The default parallel text console
-is disabled because Emscripten SDL has one canvas. Wi-Fi networking is disabled as in the
-Node wasm launcher.
+is disabled because Emscripten SDL has one canvas. Browser Wi-Fi networking is
+enabled by default; see the Wi-Fi section below for downloads and limitations.
 
 The canvas and runtime iframe retain the native panel resolution: 528x792 for
 X3 and 480x800 for X4/X4 Pro/Picco. The page scales the iframe in whole physical-pixel
