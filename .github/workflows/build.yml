@@ -372,7 +372,9 @@ jobs:
 
       - name: Test
         run: |
-          node --test ../tests/*.mjs
+          # eink-qemu: FAT-tool tests run in the wasm job, which installs their dependencies.
+          shopt -s extglob
+          node --test ../tests/!(test_sd_erase).mjs
           pnpm exec tsc --noEmit
           cargo test --workspace
 
