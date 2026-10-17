@@ -120,8 +120,11 @@ If a narrow window cannot fit even one physical pixel per panel pixel, the
 device section scrolls horizontally. Avoid percentage sizing on the canvas:
 SDL adopts that size and resamples the framebuffer, producing moire in dithering.
 
-Use the on-screen controls or arrows, Enter, Backspace/Esc, and P. X4 Pro also
-has a Home control (keyboard: Home) and accepts pointer/touch input on its canvas.
+Use the on-screen controls or arrows, Enter, Backspace/Esc for Back on X3/X4,
+and P for Power. X4 Pro has a Home control (keyboard: Esc, H or Home) and
+accepts pointer/touch input on its canvas. Picco has no Home key. P holds Power
+while the key is down: hold it for a long press, which many firmwares use to
+sleep or power off. The action and required hold time depend on the firmware.
 Reset resets the machine. Stop pauses
 the guest, copies the current SD image, and removes the iframe and its workers.
 Start then boots again with that SD image. "Save a copy of the SD card" pauses

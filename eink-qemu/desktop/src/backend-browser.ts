@@ -186,7 +186,7 @@ const setupOf = (): Setup => ({
 const devicesOf = (chip: FirmwareInfo['chip']): Machine[] => chip === 'ESP32-C3' ? ['x3', 'x4'] : chip === 'ESP32-S3' ? ['x4pro', 'picco'] : [];
 
 /* The screen: the runtime iframe, which keeps the panel's resolution and is
-   scaled as a whole. SDL inside it takes the pointer and the keyboard. */
+   scaled as a whole. SDL inside it takes the pointer. */
 class FrameScreen implements Screen {
   el: HTMLIFrameElement;
   width: number;
@@ -201,6 +201,19 @@ class FrameScreen implements Screen {
     this.el.title = `${shortNames[machine]} display`;
     // The canvas exists once the runtime page loads; size it then too.
     this.el.addEventListener('load', resized);
+    this.el.addEventListener('load', () => {
+      // Keys typed after touching the canvas use the page's device mapping too.
+      for (const type of ['keydown', 'keyup']) this.el.contentWindow?.addEventListener(type, (event) => {
+        const key = event as KeyboardEvent;
+        if (!key.isTrusted) return; // Backend-generated device events go to SDL.
+        const forwarded = new KeyboardEvent(type, key);
+        this.el.dispatchEvent(forwarded);
+        if (forwarded.defaultPrevented) {
+          key.preventDefault();
+          key.stopImmediatePropagation();
+        }
+      }, true);
+    });
   }
   resize(scale: number, exact: boolean) {
     // Keep SDL's viewport at the panel resolution: resizing it to the layout

@@ -7,6 +7,7 @@ import { choose, confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
 import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
 import { Readiness } from './readiness';
+import { keyboardKey, keyboardHint, keyHint, keyTitle } from './keyboard';
 import { attachSetup, closeSetup, paintSetup } from './setup';
 import { AppError, type CardInfo, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './types';
 
@@ -286,15 +287,6 @@ async function screenshot() {
 
 /* Keys and touch ---------------------------------------------------------- */
 
-const keyboard: Record<string, string> = {
-  Backspace: 'Back', Escape: 'Back', Enter: 'Confirm', NumpadEnter: 'Confirm', ArrowLeft: 'Left', ArrowRight: 'Right',
-  ArrowUp: 'Up', ArrowDown: 'Down', KeyP: 'Power', Home: 'Home',
-};
-const keyHints: Record<string, string> = { Back: 'Esc', Confirm: 'Enter', Left: '←', Right: '→', Up: '↑', Down: '↓', Power: 'P', Home: 'Home' };
-// The X3/X4's four keys below the screen, left to right, are named by what
-// they do in CrossPoint (where they can be remapped); other firmware gives
-// them its own meanings.
-const frontKeys = ['Back', 'Confirm', 'Left', 'Right'];
 // Each held device key has owners (keyboard codes, pointer ids); it is
 // released when the last owner lets go.
 const held = new Map<string, Set<string>>();
@@ -327,8 +319,7 @@ function buttons(machine: Machine) {
   const keys = $('keys');
   keys.replaceChildren();
   keys.dataset.machine = machine;
-  $('key-hint').textContent = machine === 'x3' || machine === 'x4' ? 'Keyboard: arrows · Enter · Esc · P'
-    : machine === 'picco' ? 'Keyboard: ↑ ↓ · P · touch the screen' : 'Keyboard: ↑ ↓ · Home · P · touch the screen';
+  $('key-hint').textContent = keyboardHint(machine);
   const names = machine === 'x3' || machine === 'x4' ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power']
     : machine === 'picco' ? ['Up', 'Down', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
   for (const name of names) {
@@ -336,10 +327,9 @@ function buttons(machine: Machine) {
     element.type = 'button';
     element.textContent = name;
     element.dataset.key = name;
-    const front = machine === 'x3' || machine === 'x4' ? frontKeys.indexOf(name) : -1;
-    if (front >= 0) element.title = `${name} (${keyHints[name]}) · front key ${front + 1} of 4, from the left`;
+    element.title = keyTitle(machine, name);
     // The hint is CSS-generated so the button's text stays the key name.
-    element.dataset.kbd = keyHints[name];
+    element.dataset.kbd = keyHint(machine, name);
     element.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       element.setPointerCapture(event.pointerId);
@@ -405,7 +395,7 @@ function attachTouch(target: HTMLElement, machine: Machine) {
 }
 
 function deviceKeyboard(event: KeyboardEvent) {
-  const name = keyboard[event.code];
+  const name = keyboardKey(session.machine, event.code);
   if (!name) return;
   const owner = `keyboard:${event.code}`;
   // A release belongs to its press, even after focus or modifiers change.
