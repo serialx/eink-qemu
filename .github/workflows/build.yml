@@ -381,7 +381,8 @@ jobs:
       # The resources are prepared already, so only the front end is built.
       - name: Build
         run: |
-          case "$RUNNER_OS" in Windows) bundles=nsis ;; *) bundles=dmg ;; esac
+          # Keep the app for CLI verification; a dmg-only build removes it.
+          case "$RUNNER_OS" in Windows) bundles=nsis ;; *) bundles=app,dmg ;; esac
           pnpm tauri build --bundles "$bundles" \
             --config src-tauri/tauri.bundle.conf.json \
             --config '{"build":{"beforeBuildCommand":"pnpm build:web"}}'
