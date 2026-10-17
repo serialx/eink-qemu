@@ -19,6 +19,8 @@ export interface Capabilities {
   cardOpen: boolean;
   cardNew: boolean;
   cardResize: boolean;
+  cardRecent: boolean;
+  cardSwitchRunning: boolean;
   /** Showing the card in the file manager. */
   cardReveal: boolean;
 }
@@ -89,13 +91,16 @@ export interface Backend {
   touch(x: number, y: number, down: boolean): Promise<void>;
   saveScreenshot(png: Uint8Array, name: string): Promise<string | null>;
 
+  recentCards(): Promise<CardInfo[]>;
+  useRecentCard(path: string): Promise<CardInfo>;
+  eraseCard(): Promise<void>;
   pickOpenCard(): Promise<CardInfo | null>;
   pickNewCard(size: number): Promise<MadeCard | null>;
   resizeCard(size: number): Promise<MadeCard>;
   pickCopyCard(): Promise<string | null>;
   revealCard(): Promise<void>;
   sdList(path: string): Promise<SdListing>;
-  sdPickSources(): Promise<string[]>;
+  sdPickSources(folders?: boolean): Promise<string[]>;
   sdPlanUpload(dir: string, sources: string[]): Promise<UploadPlan>;
   sdUpload(dir: string, sources: string[], confirmed: string[]): Promise<UploadPlan>;
   sdPickExport(path: string): Promise<string | null>;

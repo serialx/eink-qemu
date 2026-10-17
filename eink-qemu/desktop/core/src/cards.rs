@@ -20,6 +20,19 @@ pub struct Card {
     pub lock: StdMutex<Reservation>,
 }
 
+impl Card {
+    pub fn verify(&self) -> Result<(), AppError> {
+        let reservation = self.lock.lock().unwrap();
+        let held = reservation.identity.as_ref().map(|(key, _)| key);
+        let current = identity_key(&self.path);
+        if current.as_ref().is_some_and(|key| Some(key) == held) {
+            Ok(())
+        } else {
+            Err(AppError::new("ESTALE", "The SD card file changed outside eink-qemu. Open it again before using it."))
+        }
+    }
+}
+
 /// The lock directory the desktop app uses (its data directory's `locks`),
 /// so a card has one owner across the app and the command-line tool. The
 /// path follows Tauri's app_data_dir for the app's identifier.

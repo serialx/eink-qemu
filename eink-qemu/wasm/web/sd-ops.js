@@ -52,6 +52,9 @@ function sdExecute(image, op, args) {
     case 'remove':
         fs.remove(args.path);
         return {};
+    case 'erase':
+        fs.erase();
+        return {};
     default:
         throw new Error(`Unknown SD operation ${op}`);
     }

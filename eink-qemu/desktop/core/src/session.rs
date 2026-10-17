@@ -11,7 +11,7 @@ use crate::sd::SdError;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -178,7 +178,6 @@ struct Run {
     gate: Arc<Mutex<()>>,
     kill: StdMutex<Option<oneshot::Sender<()>>>,
     exited: watch::Receiver<Option<String>>,
-    stopping: AtomicBool,
     /// The heaptrace plugin's log, or why this run does not record allocations.
     trace: Result<PathBuf, String>,
     /// Heap pool starts found so far (see heap.rs).
@@ -234,6 +233,8 @@ pub struct Session {
     log_file: Arc<StdMutex<Option<std::fs::File>>>,
     screen: StdMutex<Option<Framebuffer>>,
     card: StdMutex<Option<Card>>,
+    /// Retained until a switch commits or QEMU is confirmed stopped.
+    pending_card: StdMutex<Option<Card>>,
     /// Deep sleep (the VM suspended, from QMP's SUSPEND and WAKEUP events):
     /// since when, and the time asleep before that in this run.
     asleep: StdMutex<(Option<Instant>, Duration)>,
@@ -392,6 +393,7 @@ impl Session {
             log_file,
             screen: StdMutex::new(None),
             card: StdMutex::new(card),
+            pending_card: StdMutex::new(None),
             asleep: StdMutex::new((None, Duration::ZERO)),
         })
     }
@@ -455,17 +457,61 @@ impl Session {
         self.card.lock().unwrap().as_ref().map(|card| card.path.clone())
     }
 
+    fn checked_card_path(&self) -> Result<PathBuf, AppError> {
+        if self.pending_card.lock().unwrap().is_some() {
+            return Err(AppError::busy());
+        }
+        let card = self.card.lock().unwrap();
+        let card = card.as_ref().ok_or_else(AppError::no_card)?;
+        card.verify()?;
+        Ok(card.path.clone())
+    }
+
     /// Make `card` the card in use, after `persist` has recorded it; both
     /// happen under the operations lock, so no start slips in between.
     pub async fn select_card(&self, card: Card, persist: impl FnOnce(&Path) -> Result<(), AppError>) -> Result<(), AppError> {
         let _ops = self.ops.lock().await;
-        if self.info().state != "idle" {
-            return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
+        if self.pending_card.lock().unwrap().is_some() {
+            return Err(AppError::busy());
         }
-        persist(&card.path)?;
-        let previous = self.card.lock().unwrap().replace(card);
-        drop(previous);
-        Ok(())
+        card.verify()?;
+        match self.info().state {
+            "idle" => {
+                persist(&card.path)?;
+                self.card.lock().unwrap().replace(card);
+                Ok(())
+            }
+            "running" => {
+                let run = self.current().ok_or_else(AppError::busy)?;
+                {
+                    let _gate = run.gate.lock().await;
+                    let _ = run.paused.send(true);
+                }
+                let path = card.path.clone();
+                self.pending_card.lock().unwrap().replace(card);
+                let changed: Result<(), AppError> = async {
+                    run.qmp.execute("stop", None).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    run.qmp.execute("blockdev-change-medium", Some(json!({
+                        "device": "sd-card", "filename": path, "format": "raw"
+                    }))).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    self.reset_device(&run).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    run.qmp.execute("cont", None).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    // No fallible work after committing the selection. On error,
+                    // keep both reservations until finish confirms QEMU exited.
+                    persist(&path)?;
+                    self.card.lock().unwrap().replace(self.pending_card.lock().unwrap().take().unwrap());
+                    self.events.sd_reset();
+                    Ok(())
+                }.await;
+                if let Err(error) = &changed {
+                    // A failed media change may have removed the old medium.
+                    self.finish(&run, Exit { kind: "failed", reason: Some(format!("Changing the SD card failed: {}", error.message)) }).await;
+                }
+                if changed.is_ok() { let _ = run.paused.send(false); }
+                changed
+            }
+            _ => Err(AppError::busy()),
+        }
     }
 
     /// Run `action` while idle with the operations lock held, so no start or
@@ -476,6 +522,7 @@ impl Session {
             return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
         }
         let card = self.card.lock().unwrap();
+        if let Some(card) = card.as_ref() { card.verify()?; }
         action(card.as_ref())
     }
 
@@ -588,9 +635,9 @@ impl Session {
         self.set(|_| {});
         let _ops = self.ops.lock().await;
         *self.screen.lock().unwrap() = None;
-        let result = match self.card_path() {
-            Some(card) => self.launch(id, &options, flash, &card, trace, cancel_rx).await,
-            None => Err((Exit { kind: "failed", reason: Some(AppError::no_card().message) }, AppError::no_card())),
+        let result = match self.checked_card_path() {
+            Ok(card) => self.launch(id, &options, flash, &card, trace, cancel_rx).await,
+            Err(error) => Err((Exit { kind: "failed", reason: Some(error.message.clone()) }, error)),
         };
         self.shared.lock().unwrap().cancel = None;
         match result {
@@ -647,7 +694,7 @@ impl Session {
         }
         args.extend([
             "-drive".into(), format!("file={},if=mtd,format=raw", escape(&flash.to_string_lossy())),
-            "-drive".into(), format!("file={},if=sd,format=raw", escape(&card.to_string_lossy())),
+            "-drive".into(), format!("file={},if=sd,format=raw,id=sd-card", escape(&card.to_string_lossy())),
             "-chardev".into(), "stdio,id=cdc,mux=off".into(),
         ]);
         match options.console.as_deref().unwrap_or("usb") {
@@ -773,9 +820,14 @@ impl Session {
                         child.wait().await
                     }
                 };
-                let status = describe(status);
-                let _ = exit_tx.send(Some(status.clone()));
-                let _ = faults.send(format!("QEMU exited ({status})."));
+                match status {
+                    Ok(status) => {
+                        let status = describe(Ok(status));
+                        let _ = exit_tx.send(Some(status.clone()));
+                        let _ = faults.send(format!("QEMU exited ({status})."));
+                    }
+                    Err(error) => { let _ = faults.send(format!("Could not confirm QEMU's exit: {error}")); }
+                }
             });
         }
         let kill = StdMutex::new(Some(kill_tx));
@@ -871,7 +923,6 @@ impl Session {
             gate: gate.clone(),
             kill,
             exited,
-            stopping: AtomicBool::new(false),
             trace,
             pools: Mutex::new(heap::Pools::new()),
             command: command_line,
@@ -931,13 +982,12 @@ impl Session {
                 }
             });
         }
-        // The first fault (QEMU exit, monitor or display loss) ends the run.
-        // It waits for the operations lock, so a fault during startup is
-        // handled once start has published the run.
+        // Faults wait for start to publish the run. Keep watching after an
+        // unconfirmed stop so a later process exit can release reservations.
         {
             let session = self.clone();
             tokio::spawn(async move {
-                if let Some(reason) = faults.recv().await {
+                while let Some(reason) = faults.recv().await {
                     session.fault(id, reason).await;
                 }
             });
@@ -950,7 +1000,7 @@ impl Session {
         let run = {
             let shared = self.shared.lock().unwrap();
             match &shared.run {
-                Some(run) if run.id == id && !run.stopping.load(Ordering::SeqCst) => run.clone(),
+                Some(run) if run.id == id => run.clone(),
                 _ => return,
             }
         };
@@ -964,16 +1014,17 @@ impl Session {
 
     /// End `run` (the caller holds `ops`). Asks QEMU to quit, then kills it.
     async fn finish(&self, run: &Arc<Run>, exit: Exit) {
-        if run.stopping.swap(true, Ordering::SeqCst) {
-            return;
-        }
         let is_current = matches!(&self.shared.lock().unwrap().run, Some(current) if current.id == run.id);
         if !is_current {
             return;
         }
         self.set(|info| info.state = "stopping");
+        if !terminate(Some(&run.qmp), &run.kill, &run.exited).await {
+            self.log("QEMU has not confirmed its exit. Card operations remain disabled and card reservations are retained until it exits.");
+            return;
+        }
         let _ = run.paused.send(false);
-        terminate(Some(&run.qmp), &run.kill, &run.exited).await;
+        self.pending_card.lock().unwrap().take();
         self.shared.lock().unwrap().run = None;
         self.set(|info| {
             info.state = "idle";
@@ -1033,12 +1084,16 @@ impl Session {
         F: FnOnce(&Path) -> Result<T, SdError> + Send + 'static,
     {
         let _ops = self.ops.lock().await;
-        let card = self.card_path().ok_or_else(AppError::no_card)?;
+        let card = self.checked_card_path()?;
         let state = self.info().state;
         let blocking = |card: PathBuf| async move {
             tokio::task::spawn_blocking(move || op(&card))
                 .await
-                .unwrap_or_else(|_| Err(SdError::new("EIO", "The SD operation panicked.")))
+                .unwrap_or_else(|_| {
+                    let mut error = SdError::new("EIO", "The SD operation panicked.");
+                    error.changed = mutates;
+                    Err(error)
+                })
         };
         match state {
             "idle" => blocking(card).await.map_err(AppError::from),
@@ -1075,13 +1130,13 @@ impl Session {
                     run.qmp.execute("cont", None).await.map(|_| ())
                 }
                 .await;
-                let _ = run.paused.send(false);
                 if let Err(error) = resumed {
                     self.log(format!("SD operation stopped the emulator: {error}"));
                     self.finish(&run, Exit { kind: "failed", reason: Some(format!("SD operation failed: {error}")) }).await;
                     result?;
                     return Err(AppError::new("EQEMU", error));
                 }
+                let _ = run.paused.send(false);
                 result.map_err(AppError::from)
             }
             _ => Err(AppError::busy()),
@@ -1151,24 +1206,26 @@ impl heap::Guest for QmpGuest<'_> {
 }
 
 /// Ask QEMU to quit (when a monitor is given), then kill it if it lingers.
-async fn terminate(qmp: Option<&Qmp>, kill: &StdMutex<Option<oneshot::Sender<()>>>, exited: &watch::Receiver<Option<String>>) {
+async fn terminate(qmp: Option<&Qmp>, kill: &StdMutex<Option<oneshot::Sender<()>>>, exited: &watch::Receiver<Option<String>>) -> bool {
     let mut exited = exited.clone();
     if exited.borrow().is_some() {
-        return;
+        return true;
     }
     if let Some(qmp) = qmp {
         let quit = qmp.clone();
         tokio::spawn(async move {
             let _ = quit.execute("quit", None).await;
         });
-        if tokio::time::timeout(QUIT_TIMEOUT, exited.wait_for(|s| s.is_some())).await.is_ok() {
-            return;
+        if matches!(tokio::time::timeout(QUIT_TIMEOUT, exited.wait_for(|s| s.is_some())).await, Ok(Ok(_))) {
+            return true;
         }
     }
     if let Some(kill) = kill.lock().unwrap().take() {
         let _ = kill.send(());
     }
     let _ = tokio::time::timeout(QUIT_TIMEOUT, exited.wait_for(|s| s.is_some())).await;
+    let confirmed = exited.borrow().is_some();
+    confirmed
 }
 
 fn qcode(key: &str) -> Option<&'static str> {
@@ -1282,3 +1339,6 @@ mod path_tests {
         assert_eq!(paths.plugins, Path::new(r"C:\Users\QA User\eink-qemu\qemu\plugins"));
     }
 }
+
+#[cfg(test)]
+mod card_tests;

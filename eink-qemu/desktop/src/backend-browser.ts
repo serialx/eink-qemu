@@ -96,7 +96,7 @@ async function fileOf(ref: string): Promise<File> {
 
 /* Hidden file inputs, one per purpose, so a picker is one element automation
    can set files on. A pick waits for the input's next change or cancel. */
-const inputs = { firmware: 'flash-file', card: 'sd-file', sd: 'sd-files' } as const;
+const inputs = { firmware: 'flash-file', card: 'sd-file', sd: 'sd-files', folders: 'sd-folders' } as const;
 function input(id: string, accept: string, multiple: boolean) {
   let element = document.getElementById(id) as HTMLInputElement | null;
   if (!element) {
@@ -110,6 +110,7 @@ function input(id: string, accept: string, multiple: boolean) {
   }
   element.accept = accept;
   element.multiple = multiple;
+  element.webkitdirectory = id === inputs.folders;
   return element;
 }
 function pick(id: string, accept: string, multiple = false): Promise<File[]> {
@@ -544,7 +545,10 @@ async function collect(refsList: string[]): Promise<Item[]> {
   }
   for (const ref of refsList) {
     const source = sourceOf(ref);
-    if (source.kind === 'file') items.push({ path: source.file.name, file: source.file });
+    if (source.kind === 'file') {
+      const path = source.file.webkitRelativePath || source.file.name;
+      if (!path.split('/').slice(1).some((name) => name.startsWith('.'))) items.push({ path, file: source.file });
+    }
     else if (source.kind === 'entry') await walk(source.entry, '');
   }
   return items;
@@ -582,7 +586,7 @@ function dropped(transfer: DataTransfer): FileRef[] {
 }
 
 export const browser: Backend = {
-  can: { heap: false, cardOpen: true, cardNew: true, cardResize: false, cardReveal: false },
+  can: { heap: false, cardOpen: true, cardNew: true, cardResize: false, cardRecent: false, cardSwitchRunning: false, cardReveal: false },
   cardSizes: [{ size: 64 * MiB, label: '64 MiB', note: 'The blank card bundled with this page' }],
   cardDefaultSize: 64 * MiB,
   cardSizeNote: 'The card lives in this browser: a card takes its full size in memory, so the bundled blank card is small. Open an SD image for a bigger one.',
@@ -731,6 +735,9 @@ export const browser: Backend = {
     return null;
   },
 
+  recentCards: async () => [],
+  useRecentCard: () => notSupported('Recent cards'),
+  eraseCard: () => sdCall<void>('erase'),
   async pickOpenCard() {
     const [file] = await pick(inputs.card, '.img');
     if (!file) return null;
@@ -762,8 +769,8 @@ export const browser: Backend = {
       entries: result.entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir, mtime: e.mtime ? e.mtime.getTime() : null })),
     };
   },
-  async sdPickSources() {
-    const files = await pick(inputs.sd, '', true);
+  async sdPickSources(folders = false) {
+    const files = await pick(folders ? inputs.folders : inputs.sd, '', true);
     return files.map((file) => register({ kind: 'file', file }).ref);
   },
   async sdPlanUpload(dir, refsList): Promise<UploadPlan> {
@@ -772,11 +779,14 @@ export const browser: Backend = {
     const { replaced } = await plan(dir, items);
     return { files: items.length, bytes: items.reduce((sum, { file }) => sum + file.size, 0), conflicts: replaced };
   },
-  async sdUpload(dir, refsList): Promise<UploadPlan> {
+  async sdUpload(dir, refsList, confirmed): Promise<UploadPlan> {
     const items = plans.get(refsList.join('\n')) ?? await collect(refsList);
     plans.delete(refsList.join('\n'));
     // Checked again: the firmware may have written to the card since the plan.
-    const { dirs, files, needed, free } = await plan(dir, items);
+    const { dirs, files, needed, free, replaced } = await plan(dir, items);
+    if (replaced.some((path) => !confirmed.some((name) => name.toUpperCase() === path.toUpperCase()))) {
+      throw new AppError('EEXIST', 'The files on the SD card changed. Try the upload again to confirm replacements.');
+    }
     if (needed > free) throw new AppError('ENOSPC', `Not enough space: ${(needed / MiB).toFixed(1)} MiB more is needed, ${(free / MiB).toFixed(1)} MiB is free.`);
     const writes = await Promise.all(files.map(async ({ path, file }) => ({ path, bytes: new Uint8Array(await file.arrayBuffer()) })));
     await sdCall('write', { dirs, files: writes }, writes.map(({ bytes }) => bytes.buffer));

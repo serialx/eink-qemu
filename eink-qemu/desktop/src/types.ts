@@ -27,7 +27,7 @@ export interface Settings {
 export interface FileInfo { path: string; name: string; size: number }
 /** The open SD card: a file on disk, or (in a browser) the card saved in the
     browser, with a note on how it is kept and whether that failed. */
-export interface CardInfo extends FileInfo { note?: string; error?: boolean; /** Still being loaded: the explorer waits. */ busy?: boolean }
+export interface CardInfo extends FileInfo { isDefault?: boolean; note?: string; error?: boolean; /** Still being loaded: the explorer waits. */ busy?: boolean }
 export interface FirmwareInfo extends FileInfo {
   /** The folder holding it (home as ~), and that folder's own name. */
   folder: string; parent: string;

@@ -267,3 +267,9 @@ button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint)
   .tabs [role=tab] { font: inherit; }
   .output-head { flex-wrap: wrap; }
 }
+
+.sd-card-note { margin: 0; padding: 0 16px 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.card-recent { display: flex; flex-direction: column; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.card-recent button { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.card-recent[hidden] { display: none; }

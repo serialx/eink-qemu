@@ -1693,3 +1693,103 @@ fn copies_stay_sparse() {
     sd::export(&copy, "/a.bin", &dest).unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data(4, 2_000_000));
 }
+
+#[test]
+fn erase_formats_an_empty_card_in_place() {
+    use std::io::{Read, Write};
+    let card = Card::new();
+    let host = card.host("erase");
+    write(&host.join("books/deep/book.epub"), &data(23, 200_000));
+    upload_all(&card.image, "/", &[host.join("books")]).unwrap();
+    sd::mkdir(&card.image, "/empty").unwrap();
+    let size = fs::metadata(&card.image).unwrap().len();
+    let cluster = partition_cluster(&card.image);
+    // Keep a QEMU-like descriptor open, including stale bytes in free space.
+    let mut opened = fs::OpenOptions::new().read(true).write(true).open(&card.image).unwrap();
+    opened.seek(SeekFrom::End(-512)).unwrap();
+    opened.write_all(&[0xa5; 512]).unwrap();
+    sd::erase(&card.image).unwrap();
+    assert_eq!(opened.metadata().unwrap().len(), size);
+    assert_eq!(fs::metadata(&card.image).unwrap().len(), size);
+    assert_eq!(partition_cluster(&card.image), cluster);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(opened.metadata().unwrap().ino(), fs::metadata(&card.image).unwrap().ino());
+    }
+    let mut sector = [0xff; 512];
+    opened.seek(SeekFrom::End(-512)).unwrap();
+    opened.read_exact(&mut sector).unwrap();
+    assert_eq!(sector, [0; 512], "the existing descriptor sees cleared data");
+    opened.seek(SeekFrom::Start(0)).unwrap();
+    opened.read_exact(&mut sector).unwrap();
+    assert_eq!(&sector[510..], &[0x55, 0xaa]);
+    assert_eq!(sector[450], 0x0c);
+    assert_eq!(u32::from_le_bytes(sector[454..458].try_into().unwrap()), 2048);
+    let listing = card.list("/");
+    assert_eq!(listing.fs_type, "FAT32");
+    assert!(listing.entries.is_empty());
+    assert_eq!(listing.free + cluster, listing.total);
+    assert!(on_disk(&card.image) < 4 * 1024 * 1024);
+    sound(&card);
+    sd::mkdir(&card.image, "/usable").unwrap();
+    sound(&card);
+}
+
+#[test]
+fn erase_preserves_large_sparse_size_and_stock_clusters() {
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("sd.img");
+    sd::create_card(&image, sd::DEFAULT_CARD).unwrap();
+    sd::mkdir(&image, "/gone").unwrap();
+    sd::erase(&image).unwrap();
+    assert_eq!(fs::metadata(&image).unwrap().len(), sd::DEFAULT_CARD);
+    assert_eq!(partition_cluster(&image), 32 * 1024);
+    assert!(on_disk(&image) < 16 * 1024 * 1024);
+    let listing = sd::list(&image, "/").unwrap();
+    assert!(listing.entries.is_empty());
+    assert_eq!(listing.free + 32 * 1024, listing.total);
+    assert_eq!(sd::lost_clusters(&image).unwrap(), 0);
+}
+
+#[test]
+fn erase_keeps_fallback_clusters_and_adds_an_mbr_to_bare_volumes() {
+    let card = Card::new();
+    let mut file = fs::OpenOptions::new().read(true).write(true).truncate(true).open(&card.image).unwrap();
+    file.set_len(sd::FALLBACK_CARD).unwrap();
+    fatfs::format_volume(&mut file, fatfs::FormatVolumeOptions::new()
+        .fat_type(fatfs::FatType::Fat32).bytes_per_cluster(1024)).unwrap();
+    sd::mkdir(&card.image, "/gone").unwrap();
+    sd::erase(&card.image).unwrap();
+    assert_eq!(fs::metadata(&card.image).unwrap().len(), sd::FALLBACK_CARD);
+    assert_eq!(partition_cluster(&card.image), 1024);
+    assert!(card.list("/").entries.is_empty());
+    sound(&card);
+}
+
+#[test]
+fn erase_rejects_unformattable_cards_without_changes() {
+    let card = formatted(fatfs::FatType::Fat16, 32 << 20);
+    let before = fs::read(&card.image).unwrap();
+    let error = sd::erase(&card.image).unwrap_err();
+    assert!(!error.changed, "{error:?}");
+    assert_eq!(fs::read(&card.image).unwrap(), before);
+    fs::write(&card.image, b"not a card").unwrap();
+    let error = sd::erase(&card.image).unwrap_err();
+    assert!(!error.changed);
+    assert_eq!(fs::read(&card.image).unwrap(), b"not a card");
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn erase_partial_writes_require_the_session_to_stop() {
+    for bytes in [0, 512, 70_000] {
+        let card = Card::new();
+        sd::fail_commit_after(Some(bytes));
+        let result = sd::erase(&card.image);
+        sd::fail_commit_after(None);
+        let error = result.unwrap_err();
+        assert!(error.changed, "{bytes}: {error:?}");
+        assert_eq!(error.code, "EIO");
+    }
+}

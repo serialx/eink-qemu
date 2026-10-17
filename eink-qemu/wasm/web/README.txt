@@ -143,8 +143,11 @@ site data removes the saved card, and the browser may evict it when storage
 is scarce. Save a copy for a portable backup. If storage is unavailable
 or full, a warning appears and the card remains usable in memory. Opening
 another SD image, or a new blank card, from the card menu (the card button in
-the SD panel) replaces the saved card. An explicit ?sd= URL loads that image
-instead of restoring the saved card, and saves it as the new card.
+the SD panel) replaces the saved card. Erase card… asks for confirmation and
+empties the current image, keeping its size and cluster size; it saves the
+empty card in this browser and resets a running device. There is one stored
+card, so the browser has no recent-card list. An explicit ?sd= URL loads
+that image instead of restoring the saved card, and saves it as the new card.
 The full image is stored atomically in IndexedDB, separately for each hosted
 application path, and numbered with each save. Tabs of the page share the
 card: an idle tab takes up another tab's save, and a tab whose card is older
@@ -156,8 +159,8 @@ The last six firmware files chosen are kept in this browser too: after a
 reload Start runs the last one, and the firmware card lists the others.
 
 The SD card panel is a file explorer for the in-memory card: browse folders,
-upload files (picker or drag-and-drop, folders included), create folders,
-rename, delete, and download single files. It works before the first Start
+upload files or folders (Upload, Upload folder, or drag-and-drop), create
+folders, rename, delete, and download single files. It works before the first Start
 (the blank card or the picked image loads as soon as the page opens), while the
 emulator runs, and after Stop. fat.js (plain JavaScript, no dependencies)
 edits the FAT32 image in place; exFAT, FAT12 and FAT16 cards are reported as
@@ -190,7 +193,8 @@ host connection, matching the browser with Wi-Fi downloads off.
 The acceptance tests below drive the page's own controls. File pickers are
 hidden inputs the page waits on once a button asks for a file (#flash-file
 after Choose… in the firmware card, #sd-file after "Open SD image…" in the
-card menu, #sd-files after Upload), which the tests set through DevTools.
+card menu, #sd-files after Upload, #sd-folders after Upload folder), which
+the tests set through DevTools.
 window.einkQemu exposes the explorer's operations and the card for them, and
 window.bootTimeSeconds the measured boot.
 

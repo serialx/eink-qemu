@@ -74,7 +74,7 @@ function paintControls() {
   button('start').disabled = !idle;
   button('stop').disabled = !(running || session.state === 'starting');
   button('reset').disabled = !running;
-  button('sd').disabled = !idle;
+  button('sd').disabled = pending || sd.busy || (!idle && !running);
   const live = running || session.state === 'starting';
   for (const id of ['zoom-in', 'zoom-out', 'zoom-level', 'screenshot']) ($(id) as HTMLButtonElement).disabled = !live || !screen;
   if (live && screen) resizeScreen();
@@ -130,7 +130,7 @@ async function start() {
     return;
   }
   if (!card) {
-    fail('No SD card is open. Open an SD image or make a new card from the card menu.');
+    button('sd').focus();
     return;
   }
   pending = true;
@@ -461,6 +461,7 @@ function paintCard() {
   line.title = card?.path || '';
   line.classList.toggle('error', !card || !!card.error);
   $('sd-reveal').hidden = !card || !api.can.cardReveal;
+  $('sd-small-card').hidden = !card?.isDefault || card.size > 64 * 1024 ** 2;
 }
 function onCard(next: CardInfo | null, changed: boolean) {
   card = next;
@@ -474,7 +475,7 @@ function onCard(next: CardInfo | null, changed: boolean) {
   }
   if (changed) {
     sd.cwd = '/';
-    void sdRefresh();
+    return sdRefresh();
   } else sdPaint();
 }
 
@@ -482,29 +483,44 @@ const MiB = 1024 ** 2, GiB = 1024 ** 3;
 const sizeText = (bytes: number) => bytes % GiB === 0 ? `${bytes / GiB} GiB` : `${Math.round(bytes / MiB)} MiB`;
 
 async function cardMenu() {
-  if (session.state !== 'idle' || pending) return;
+  if (!sdUsable()) return;
   // A press on the button closed the open menu; its click must not reopen it.
   if (menuJustClosed) { menuJustClosed = false; return; }
-  const choice = await chooseCardAction();
   try {
+    const recent = api.can.cardRecent ? await api.recentCards() : [];
+    const choice = await chooseCardAction(recent);
     if (choice === 'resize') { await resizeCard(); return; }
-    let chosen: CardInfo | null = null;
-    if (choice === 'open') chosen = await api.pickOpenCard();
-    else if (choice === 'new') {
-      let size = api.cardDefaultSize;
-      if (api.cardSizes.length > 1) {
-        const picked = await choose('New blank card', api.cardSizeNote,
-          api.cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(api.cardDefaultSize), 'Choose where…');
-        if (!picked) return;
-        size = Number(picked);
-      }
-      const made = await api.pickNewCard(size);
-      if (!made) return;
-      chosen = made.card;
-      if (made.made.note) status(made.made.note);
+    if (choice === 'erase') {
+      if (!card || !await confirm(`Erase ${card.name}?`, 'All files and folders on this card will be deleted. Its size stays the same.', 'Erase card', true)) return;
+      await sdRun(async () => {
+        await api.eraseCard();
+        sd.cwd = '/';
+        await sdRefresh();
+        sdStatusFlash('The SD card is empty');
+      });
+      return;
     }
-    if (!chosen) return;
-    onCard(chosen, true);
+    if (!choice) return;
+    await sdRun(async () => {
+      let chosen: CardInfo | null = null;
+      if (choice?.startsWith('recent:')) chosen = await api.useRecentCard(choice.slice(7));
+      else if (choice === 'open') chosen = await api.pickOpenCard();
+      else if (choice === 'new') {
+        let size = api.cardDefaultSize;
+        if (api.cardSizes.length > 1) {
+          const picked = await choose('New blank card', api.cardSizeNote,
+            api.cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(api.cardDefaultSize), 'Choose where…');
+          if (!picked) return;
+          size = Number(picked);
+        }
+        const made = await api.pickNewCard(size);
+        if (!made) return;
+        chosen = made.card;
+        if (made.made.note) status(made.made.note);
+      }
+      if (!chosen) return;
+      await onCard(chosen, true);
+    });
   } catch (error) { sdError(error); }
 }
 
@@ -535,14 +551,30 @@ async function resizeCard() {
 }
 
 let menuJustClosed = false;
-function chooseCardAction(): Promise<'open' | 'new' | 'resize' | null> {
+function chooseCardAction(recent: CardInfo[]): Promise<string | null> {
   return new Promise((resolve) => {
     const menu = $('card-menu');
     const anchor = button('sd');
     menu.hidden = false;
-    menu.querySelector<HTMLButtonElement>('[data-card="resize"]')!.disabled = !card;
+    menu.querySelector<HTMLButtonElement>('[data-card="resize"]')!.disabled = !card || session.state !== 'idle';
+    menu.querySelector<HTMLButtonElement>('[data-card="new"]')!.disabled = session.state !== 'idle';
+    menu.querySelector<HTMLButtonElement>('[data-card="open"]')!.disabled = session.state !== 'idle' && !api.can.cardSwitchRunning;
+    menu.querySelector<HTMLButtonElement>('[data-card="erase"]')!.disabled = !card || !sd.ready;
+    const list = $('card-recent');
+    list.replaceChildren();
+    list.hidden = !api.can.cardRecent;
+    for (const entry of recent) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitem');
+      item.dataset.card = `recent:${entry.path}`;
+      item.textContent = entry.isDefault ? 'Default card' : entry.name;
+      item.title = entry.path;
+      item.disabled = entry.path === card?.path;
+      list.append(item);
+    }
     const items = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled):not([hidden])')];
-    const close = (value: 'open' | 'new' | 'resize' | null) => {
+    const close = (value: string | null) => {
       menu.hidden = true;
       document.removeEventListener('pointerdown', outside, true);
       document.removeEventListener('keydown', keys, true);
@@ -569,9 +601,7 @@ function chooseCardAction(): Promise<'open' | 'new' | 'resize' | null> {
         items[(move + items.length) % items.length].focus();
       }
     };
-    menu.querySelector<HTMLButtonElement>('[data-card="open"]')!.onclick = () => close('open');
-    menu.querySelector<HTMLButtonElement>('[data-card="new"]')!.onclick = () => close('new');
-    menu.querySelector<HTMLButtonElement>('[data-card="resize"]')!.onclick = () => close('resize');
+    for (const item of menu.querySelectorAll<HTMLButtonElement>('button[data-card]')) item.onclick = () => close(item.dataset.card!);
     anchor.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', keys, true);
@@ -632,6 +662,7 @@ function sdPaint() {
     const needsListing = element.id !== 'sd-refresh' && element.id !== 'download';
     element.disabled = !on || element.hasAttribute('aria-current') || (needsListing && !sd.ready) || (!card && element.id === 'download');
   }
+  button('sd').disabled = !on;
   sdPanel.classList.toggle('busy', sd.busy);
 }
 
@@ -969,6 +1000,9 @@ export async function boot(backend: Backend) {
   button('sd-refresh').addEventListener('click', () => void sdRun(() => sdRefresh()));
   button('sd-upload').addEventListener('click', () => void sdRun(async () => {
     await sdUpload(await api.sdPickSources());
+  }));
+  button('sd-upload-folder').addEventListener('click', () => void sdRun(async () => {
+    await sdUpload(await api.sdPickSources(true));
   }));
   button('sd-mkdir').addEventListener('click', () => void sdRun(async () => {
     const name = await prompt('New folder name', '', 'Create');
