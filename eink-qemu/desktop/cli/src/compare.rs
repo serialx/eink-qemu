@@ -171,14 +171,18 @@ fn summarize(dir: &Path, a: (&str, &Path, &Path), b: (&str, &Path, &Path)) -> Va
         by
     };
     let (va, vb) = (values(&ra), values(&rb));
+    // Every step and value either side logged: one only the candidate logs
+    // (new or renamed) is a row too, empty on the side without it.
+    let mut pairs: Vec<(&String, &String)> = va.iter().chain(&vb).flat_map(|(text, keys)| keys.keys().map(move |key| (text, key))).collect();
+    pairs.sort();
+    pairs.dedup();
+    let list = |side: &BTreeMap<String, BTreeMap<String, Vec<f64>>>, text: &str, key: &str| side.get(text).and_then(|k| k.get(key)).cloned().unwrap_or_default();
+    let sum = |l: &[f64]| (!l.is_empty()).then(|| l.iter().sum::<f64>());
     let mut value_rows = Vec::new();
-    for (text, keys) in &va {
-        for (key, list) in keys {
-            let mut la = list.clone();
-            let mut lb = vb.get(text).and_then(|k| k.get(key)).cloned().unwrap_or_default();
-            let (sa, sb): (f64, f64) = (la.iter().sum(), lb.iter().sum());
-            value_rows.push(json!({"step": text, "value": key, "n": [la.len(), lb.len()], "median": [median(&mut la), median(&mut lb)], "sum": [sa, sb]}));
-        }
+    for (text, key) in pairs {
+        let (mut la, mut lb) = (list(&va, text, key), list(&vb, text, key));
+        let (sa, sb) = (sum(&la), sum(&lb));
+        value_rows.push(json!({"step": text, "value": key, "n": [la.len(), lb.len()], "median": [median(&mut la), median(&mut lb)], "sum": [sa, sb]}));
     }
 
     // Heaps by name.
@@ -437,4 +441,32 @@ pub fn markdown(s: &Value) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_dir(name: &str, records: &[Value]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("eink-qemu-compare-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.jsonl"), records.iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn values_only_the_candidate_logs_are_compared_too() {
+        let step = |values: Value| json!({"type": "step", "step": "wait-log", "text": "wait-log:Page render", "ok": true, "values": values});
+        let a = run_dir("a", &[step(json!({"render_ms": 10}))]);
+        let b = run_dir("b", &[step(json!({"render_ms": 12, "total_ms": 20}))]);
+        let summary = summarize(&std::env::temp_dir(), ("a", Path::new("a.bin"), &a), ("b", Path::new("b.bin"), &b));
+        let _ = (std::fs::remove_dir_all(&a), std::fs::remove_dir_all(&b));
+        let rows = summary["values"].as_array().unwrap();
+        let row = |key: &str| rows.iter().find(|r| r["value"] == key).cloned().unwrap_or_default();
+        assert_eq!(row("render_ms")["median"], json!([10.0, 12.0]));
+        assert_eq!(row("total_ms")["n"], json!([0, 1]));
+        assert_eq!(row("total_ms")["median"], json!([null, 20.0]));
+        assert_eq!(row("total_ms")["sum"], json!([null, 20.0]));
+        assert!(markdown(&summary).contains("`wait-log:Page render` total_ms median (n=0/1) | - | 20 |"));
+    }
 }
