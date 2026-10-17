@@ -31,15 +31,25 @@ startup, JIT activity and the panel; X3 also checks the X4 Pro blank-flash ROM.
 `run-node.sh` copies flash but writes the supplied SD directly. Use copies.
 Evidence defaults to `build-wasm/evidence/smoke` in either mode.
 `package-web.sh` packages existing binaries without rebuilding, copies the
-C3/S3 bootloaders and licenses, and generates the partition table and C3 NVS
-seed with the Python helpers in `eink-qemu/`.
+C3/S3 bootloaders and licenses, and generates the partition tables and
+CrossPoint's NVS entry with the Python helpers in `eink-qemu/`.
 
-The browser accepts an official CrossPoint release app `.bin` or a 16 MiB
-flash dump through its picker or `?flash=<url>`. Use
-`crosspoint-<ver>-x3-x4.bin` for X3, `crosspoint-<ver>-x4pro.bin` for X4 Pro.
-Download apps from the [CrossPoint releases](https://github.com/crosspoint-reader/crosspoint-reader/releases).
-App images are composed in browser memory with the bundled boot assets;
-no esptool or PlatformIO is needed. Full flash dumps pass through unchanged.
+The browser accepts any ESP32-C3 or ESP32-S3 firmware through its picker or
+`?flash=<url>`: an app `.bin`, a merged `.bin`, a 16 MiB flash dump, or an
+official X4 Pro `.xota` update. For example, `crosspoint-<ver>-x3-x4.bin` for
+the X3 and `crosspoint-<ver>-x4pro.bin` for the X4 Pro from the
+[CrossPoint releases](https://github.com/crosspoint-reader/crosspoint-reader/releases).
+App images are composed in browser memory with the bundled boot assets and
+the Arduino-ESP32 16 MB partition table (the Picco's own layout on the Picco);
+no esptool or PlatformIO is needed. CrossPoint's NVS entry (its cached X3/X4
+detection) goes only into C3 apps that carry its strings, as its profile in
+[eink-qemu/profiles](../profiles/README.md) says. Merged images and full
+flash dumps pass through unchanged.
+
+The page says a boot is finished as the CLI does: firmware with a profile
+(CrossPoint's refresh milestones and memory report) by its log, any other
+firmware once its screen has been quiet for 5 s, unless the ROM keeps
+rebooting it.
 The browser smoke test accepts `PICKER_FLASH=<app.bin>` or
 `RELEASE_APP=<local-app.bin>` for a URL input, verifies composition status,
 and compares SHA256 against `mkflash.py` output before checking Home and controls. Set
@@ -149,11 +159,15 @@ wake and complete boot-latency calibration remain open. X4 Pro uses
 `icount shift=0` with measured CPU, SDMMC and SPI defaults. This X4 Pro verification used `MEMORY64=2`;
 `MEMORY64=1` and Safari/Firefox were not retested with these fixes.
 
-## Wi-Fi and font downloads
+## Wi-Fi and downloads
 
-The browser can download fonts through the firmware's normal **Manage Fonts**
-flow without a relay, native QEMU, or a running backend. Build and serve the
-static package:
+The browser gives the firmware an open Wi-Fi network whose HTTP and HTTPS
+downloads the page fetches, without a relay, native QEMU, or a running
+backend. A package can also bundle static files that answer requests for
+their upstream URLs from the page itself: by default CrossPoint Reader's font
+catalog, so its **Manage Fonts** downloader works. The bundle is optional;
+without it the network still starts and every download goes through the
+browser's fetch. Build and serve the static package:
 
 ```sh
 eink-qemu/wasm/build.sh --web
@@ -170,7 +184,9 @@ service worker. `?wifi=off` disables networking.
 Packaging builds a separate wasm32 module using pinned lwIP 2.2.1 and mbedTLS
 3.6.7 sources, then downloads the font assets and license notices. Both QEMU
 address modes use the same network module. Initial preparation needs internet
-access; later packaging reuses the local assets and dependency archives.
+access; later packaging reuses the local assets and dependency archives. If
+the fonts cannot be prepared, packaging warns and leaves them out;
+`WIFI_ASSETS=none` packages none.
 Emscripten, CMake, Ninja, OpenSSL, curl, and Python 3 are required to build it.
 
 The default catalog includes Alef, Literata, Noto Sans Extended, and Pretendard.
@@ -205,9 +221,9 @@ servers, arbitrary TCP/UDP protocols, and forwarding guest credentials are not
 supported. Missing or blocked downloads return an HTTP error, not an empty
 successful file.
 
-The local TLS endpoint uses an untrusted, self-signed certificate. CrossPoint
-1.6.5's wolfSSL downloader already disables certificate verification, allowing
-this to work without firmware patches. Firmware that verifies certificates or
+The local TLS endpoint uses an untrusted, self-signed certificate. Firmware
+that does not verify certificates, such as CrossPoint 1.6.5's wolfSSL
+downloader, works without patches. Firmware that verifies certificates or
 pins keys will reject it. Real HTTPS fetches still use the browser's certificate
 verification; no browser certificate or security setting needs changing.
 

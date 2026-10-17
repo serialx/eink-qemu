@@ -1,4 +1,4 @@
-/* Heap view: the running firmware's heaps (src-tauri/src/heap.rs), polled
+/* Heap view: the running firmware's heaps (core/src/heap.rs), polled
    while the Heap tab is open. A free-memory trend for internal RAM, then each
    heap as a map wrapped into rows of a chosen size, every block drawn to
    scale and coloured by the function that allocated it; a card folds to a

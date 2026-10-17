@@ -7,7 +7,7 @@ async function boot(machine, panel, turbo = false, wifi = false) {
     const listeners = {}, scripts = [];
     const window = {addEventListener: (name, fn) => { listeners[name] = fn; }};
     const parent = {location: {search: ''}, postMessage() {}};
-    const context = vm.createContext({window, parent, TextDecoder, URLSearchParams,
+    const context = vm.createContext({window, parent, TextDecoder, URLSearchParams, clearTimeout() {},
         location: {origin: 'http://localhost'},
         document: {querySelector: () => ({}), addEventListener() {},
             createElement: () => ({}), body: {append: script => scripts.push(script.src)}}});
@@ -33,6 +33,45 @@ test('turbo overrides measured panel power and refresh waits', async () => {
     const {args} = await boot('x4pro', 'uc8279-68', true);
     assert.ok(args.includes('dwc_sdmmc.timing=off'));
     for (const name of ['pon-ms', 'pof-ms', 'busy-ms']) assert.ok(args.includes(`uc8179.${name}=1`));
+});
+
+test('new pixels on the canvas tell the page; repaints and blank frames do not', async () => {
+    const sent = [], timers = [], canvas = {};
+    class CanvasRenderingContext2D { putImageData() {} }
+    const context = vm.createContext({window: {addEventListener() {}}, TextDecoder, URLSearchParams,
+        parent: {location: {search: ''}, postMessage: message => sent.push(message.type === 'screen' ? `screen:${message.blank ? 'blank' : 'drawn'}` : message.type)},
+        location: {origin: 'http://localhost'}, CanvasRenderingContext2D, Uint32Array,
+        setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout: id => { if (id) timers[id - 1] = () => {}; },
+        document: {querySelector: () => canvas, addEventListener() {}, createElement: () => ({}), body: {append() {}}}});
+    vm.runInContext(readFileSync(new URL('./runtime.js', import.meta.url), 'utf8'), context);
+    const ctx = Object.assign(new CanvasRenderingContext2D(), {canvas});
+    const frame = (fill, ink = fill) => { const data = new Uint8ClampedArray(64).fill(fill); data.fill(ink, 0, 4); return {data}; };
+    const flush = () => timers.splice(0).forEach(fn => fn());
+    const screens = () => sent.filter(type => type === 'screen:drawn').length;
+    ctx.putImageData(frame(255), 0, 0); flush();
+    assert.equal(screens(), 0, 'the blank panel before the firmware draws');
+    ctx.putImageData(frame(255, 0), 0, 0); flush();
+    ctx.putImageData(frame(255, 0), 0, 0); flush();
+    assert.equal(screens(), 1);
+    // Another canvas is not the panel.
+    CanvasRenderingContext2D.prototype.putImageData.call({canvas: {}}, frame(255, 7), 0, 0); flush();
+    ctx.putImageData(frame(0), 0, 0); flush();
+    ctx.putImageData(frame(255, 9), 0, 0); flush();
+    assert.equal(screens(), 2);
+    // A blank frame is said at once and cancels a drawn notice still pending.
+    sent.length = 0;
+    ctx.putImageData(frame(255, 1), 0, 0);
+    ctx.putImageData(frame(0), 0, 0); flush();
+    assert.deepEqual(sent.filter(t => t.startsWith('screen')), ['screen:blank']);
+    // A new boot forgets the last frame: its first draw counts even when it
+    // repeats the last boot's image.
+    ctx.putImageData(frame(255, 5), 0, 0); flush();
+    const drawn = screens();
+    ctx.putImageData(frame(255, 5), 0, 0); flush();
+    assert.equal(screens(), drawn);
+    context.output('ESP-ROM:esp32s3-20210327');
+    ctx.putImageData(frame(255, 5), 0, 0); flush();
+    assert.equal(screens(), drawn + 1);
 });
 
 test('turbo SPI card timings go only to the boards with an SPI card', async () => {

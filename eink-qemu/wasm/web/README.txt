@@ -32,18 +32,21 @@ http://localhost:1421/ with the isolation headers (EINK_WEB_DIST names the
 package; the default is build-wasm-32limit/web-dist).
 
 Open http://127.0.0.1:8000 and choose the firmware (the chip at the top of the
-page, or the button on the empty screen): an official CrossPoint release app
+page, or the button on the empty screen): any ESP32-C3 or ESP32-S3 app
 .bin, merged firmware .bin, an X4 Pro .xota update, or a 16 MiB flash dump;
 choosing the firmware starts the emulator (Start reruns it after Stop). The
 firmware card shows the file, the devices that take its chip, the X4 Pro's
 display panel and, in the desktop app, the ELF for the Heap tab; the browser
 has no Heap tab, since reading the guest's memory needs native QEMU. Wi-Fi,
-Ghosting and Turbo are the icon toggles beside Start. Release assets:
+Ghosting and Turbo are the icon toggles beside Start. CrossPoint Reader's
+release assets, for example:
   X3/X4:  crosspoint-<ver>-x3-x4.bin
   X4 Pro: crosspoint-<ver>-x4pro.bin
   https://github.com/crosspoint-reader/crosspoint-reader/releases
-The browser composes release apps into 16 MiB flash using bundled C3/S3
-bootloaders, the selected board's partition table and the X3-only NVS device seed.
+The browser composes app images into 16 MiB flash using bundled C3/S3
+bootloaders and the Arduino-ESP32 16 MB partition table (the Picco's own
+layout on the Picco). CrossPoint's NVS entry, its cached X3/X4 detection, is
+added only to X3 apps that carry its strings (eink-qemu/profiles/crosspoint.json).
 App bytes stay unchanged. No esptool or PlatformIO is needed. Boot asset
 provenance and licenses are in eink-qemu/boot/README.md (boot-provenance.md in
 the package). Unsupported chips, invalid headers and apps exceeding the selected board partition
@@ -166,7 +169,8 @@ still needs 1 GiB in the browser, and exporting needs another copy. A 64 MiB
 card is a useful starting point. A first boot with books can spend substantial
 time generating cover thumbnails after Home first appears. The status remains
 'finishing startup' until the CrossPoint memory log checkpoint used by smoke.sh.
-Other firmware may not print those CrossPoint-specific progress messages.
+Firmware without a profile in eink-qemu/profiles is Ready once its screen has
+been quiet for 5 s (as in the CLI), unless the ROM keeps rebooting it.
 
 TRMNL X4 acceptance uses the same server and isolated Chrome setup below:
   TRMNL_FIRMWARE=/absolute/path/FW1.8.17.bin \
@@ -264,13 +268,15 @@ Then repeat the smoke command using port 8001 and EXPECT_SERVICE_WORKER=1.
 The test requires a controlling service worker and cross-origin isolation before boot. Page-load-to-Home timing includes
 the initial reload; home_milestone_s is measured from image loading after reload.
 
-Wi-Fi / font downloads
----------------------
-Leave the Wi-Fi switch on and join PICSimLabWifi inside the
-firmware's Settings > Reader > Manage Fonts flow. Downloads run entirely in
-the browser using the prepared wifi-assets directory. No relay is needed.
-Installed fonts are saved with the SD card in this browser. Use Download SD
-image to export a copy. ?wifi=off disables Wi-Fi.
+Wi-Fi / downloads
+-----------------
+Leave the Wi-Fi switch on and join PICSimLabWifi from the firmware's own
+Wi-Fi settings. Downloads run entirely in the browser; no relay is needed.
+A package may bundle a wifi-assets directory (by default CrossPoint Reader's
+font catalog, for its Settings > Reader > Manage Fonts flow) whose files
+answer requests for their upstream URLs; without it, every download goes
+through the browser's fetch. Files the firmware saves stay on the SD card in
+this browser. Use Download SD image to export a copy. ?wifi=off disables Wi-Fi.
 
 The default catalog contains Alef, Literata, Noto Sans Extended, and Pretendard.
 To change it, run prepare-wifi-assets.py with repeated --family arguments, then
@@ -278,8 +284,9 @@ package-web.sh. Font license notices are in wifi-assets/licenses. lwIP and
 mbedTLS notices are included alongside the emulator.
 
 This is an HTTP download adapter, not general internet access. Guest HTTPS
-terminates locally with an untrusted certificate; CrossPoint 1.6.5's wolfSSL
-downloader accepts it without firmware changes. Firmware requiring a trusted
+terminates locally with an untrusted certificate; firmware that does not
+verify certificates, such as CrossPoint 1.6.5's wolfSSL downloader, accepts it
+without changes. Firmware requiring a trusted
 certificate will reject it. Other GET/HEAD downloads depend on the source's
 CORS policy. Uploads, incoming servers, and arbitrary TCP/UDP are unsupported.
 

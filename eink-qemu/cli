@@ -1,0 +1,15 @@
+#!/bin/sh
+# Run eink-qemu's command-line tool from a checkout, building it first when
+# its sources changed (cargo checks that in well under a second).
+#   eink-qemu/cli run .pio/build/default ready shot:home
+# The tool itself is eink-qemu/desktop/target/debug/eink-qemu; see
+# eink-qemu/desktop/cli/README.md.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+manifest=$here/desktop/Cargo.toml
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "eink-qemu/cli: cargo is needed to build the tool (https://rustup.rs)" >&2
+    exit 3
+fi
+cargo build --quiet --manifest-path "$manifest" -p eink-qemu-cli >&2
+exec "$here/desktop/target/debug/eink-qemu" "$@"

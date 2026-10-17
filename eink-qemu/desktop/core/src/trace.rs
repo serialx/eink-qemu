@@ -185,6 +185,30 @@ impl Sites {
     }
 }
 
+/// One allocation site's activity in a window (`Trace::window`).
+#[derive(Debug, Clone, Serialize)]
+pub struct SiteWindow {
+    /// Index into `Sites::names`; -1 when the stack had no site.
+    pub site: i32,
+    pub allocs: u64,
+    pub alloc_bytes: u64,
+    /// Blocks allocated in the window and freed in it.
+    pub freed: u64,
+    pub freed_bytes: u64,
+    /// Blocks allocated in the window and still live at its end.
+    pub kept: u64,
+    pub kept_bytes: u64,
+    /// Blocks allocated before the window and freed in it.
+    pub older_freed: u64,
+    pub older_freed_bytes: u64,
+}
+
+impl SiteWindow {
+    fn new(site: i32) -> Self {
+        SiteWindow { site, allocs: 0, alloc_bytes: 0, freed: 0, freed_bytes: 0, kept: 0, kept_bytes: 0, older_freed: 0, older_freed_bytes: 0 }
+    }
+}
+
 /// The plugin's log: after an 8-byte "HTRC" v2 header, records of u16 kind,
 /// u16 frame count, u32 pointer, u32 size, u32 old pointer, u64 microseconds
 /// since the epoch, then the return addresses. Kept as columns, with each
@@ -337,6 +361,62 @@ impl Trace {
             "siteStart": sites,
             "sites": names.get(sites..).unwrap_or_default(),
         })
+    }
+
+    /// What happened between host times `from` and `to` (microseconds
+    /// since the epoch, the log's clock), by allocation site: blocks
+    /// allocated in the window, those of them still live at its end, and
+    /// older blocks freed in it (attributed to the site that allocated them).
+    pub fn window(&self, from: u64, to: u64) -> Vec<SiteWindow> {
+        let mut by_site: HashMap<i32, SiteWindow> = HashMap::new();
+        // pointer -> (size, site, allocated inside the window)
+        let mut live: HashMap<u32, (u32, i32, bool)> = HashMap::new();
+        for i in 0..self.t.len() {
+            let t = self.t[i];
+            if t > to {
+                break;
+            }
+            let inside = t >= from;
+            let site = self.stack_site.get(self.stack[i] as usize).copied().unwrap_or(-1);
+            let (kind, ptr, size, old) = (self.kind[i], self.ptr[i], self.size[i], self.old[i]);
+            let mut release = |p: u32, by_site: &mut HashMap<i32, SiteWindow>| {
+                if let Some((bytes, owner, new)) = live.remove(&p) {
+                    if inside {
+                        let w = by_site.entry(owner).or_insert_with(|| SiteWindow::new(owner));
+                        if new {
+                            w.freed += 1;
+                            w.freed_bytes += u64::from(bytes);
+                        } else {
+                            w.older_freed += 1;
+                            w.older_freed_bytes += u64::from(bytes);
+                        }
+                    }
+                }
+            };
+            if kind == FREE {
+                release(ptr, &mut by_site);
+                continue;
+            }
+            if kind == REALLOC {
+                release(old, &mut by_site);
+            }
+            live.insert(ptr, (size, site, inside));
+            if inside {
+                let w = by_site.entry(site).or_insert_with(|| SiteWindow::new(site));
+                w.allocs += 1;
+                w.alloc_bytes += u64::from(size);
+            }
+        }
+        for (bytes, site, new) in live.values() {
+            if *new {
+                let w = by_site.entry(*site).or_insert_with(|| SiteWindow::new(*site));
+                w.kept += 1;
+                w.kept_bytes += u64::from(*bytes);
+            }
+        }
+        let mut sites: Vec<SiteWindow> = by_site.into_values().collect();
+        sites.sort_by(|a, b| b.kept_bytes.cmp(&a.kept_bytes).then(b.alloc_bytes.cmp(&a.alloc_bytes)));
+        sites
     }
 
     pub fn stack(&self, id: usize) -> Option<&[u32]> {

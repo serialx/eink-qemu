@@ -10,49 +10,16 @@ publish = false
 name = "eink_qemu_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# fatfs 0.3.6 with eink-qemu fixes (vendor/fatfs/EINK-QEMU.md): folders it
-# creates are valid FAT, and new FAT32 root clusters are zeroed.
-[patch.crates-io]
-fatfs = { path = "vendor/fatfs" }
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+eink-core = { path = "../core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["process", "net", "io-util", "sync", "time", "macros", "rt-multi-thread", "fs", "signal"] }
-fatfs = "0.3.6"
-fscommon = "0.1.1"
-flate2 = "1"
 tempfile = "3"
-unicode-normalization = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tokio = { version = "1", features = ["process", "net", "io-util", "sync", "time", "macros", "rt-multi-thread", "fs", "signal"] }
 dunce = "1"
-sha2 = "0.10"
-addr2line = "0.25"
-regex = "1"
-
-# SD card edits run in this crate and fatfs; keep debug builds responsive.
-[profile.dev.package.eink-qemu-desktop]
-opt-level = 2
-
-[profile.dev.package.fatfs]
-opt-level = 3
-
-# Choosing a firmware hashes its ELF (often 80 MB) to match the two.
-[profile.dev.package.sha2]
-opt-level = 3
-
-[profile.release]
-codegen-units = 1
-lto = true
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl"] }

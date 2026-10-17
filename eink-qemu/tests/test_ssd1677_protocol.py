@@ -29,6 +29,7 @@ typedef int *qemu_irq;
 typedef struct Ssd1677State Ssd1677State;
 static void qemu_set_irq(qemu_irq irq, int level) { if (irq) *irq = level; }
 static int64_t qemu_clock_get_ms(int clock) { return 0; }
+static int64_t qemu_clock_get_ns(int clock) { return 0; }
 static void timer_mod(QEMUTimer *timer, int64_t deadline) {}
 static void timer_del(QEMUTimer *timer) {}
 static uint8_t revbit8(uint8_t v) {

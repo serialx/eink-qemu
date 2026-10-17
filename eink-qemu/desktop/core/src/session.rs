@@ -1,7 +1,9 @@
 //! One emulator run at a time: spawns qemu-system-*, listens for its QMP and
-//! eink display connections, streams the console and the panel to the
-//! WebView, and brackets SD card edits and heap snapshots with stop / cont.
+//! eink display connections, hands the console and the panel to its
+//! `Events` (the desktop's WebView, or the command-line tool), and brackets
+//! SD card edits and heap snapshots with stop / cont.
 
+use crate::cards::Card;
 use crate::display;
 use crate::heap::{self, HeapError};
 use crate::qmp::Qmp;
@@ -11,11 +13,26 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
-use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
+
+/// Where a session's output goes. The desktop forwards it to the WebView;
+/// the command-line tool records it. Called from the session's tasks: keep
+/// each call short and never call back into the session from it.
+pub trait Events: Send + Sync + 'static {
+    /// The session changed state (every change, in order).
+    fn session(&self, _info: &SessionInfo) {}
+    /// An SD card change reset the running guest.
+    fn sd_reset(&self) {}
+    /// Console lines (the firmware's log, QEMU's own output and the
+    /// session's notes), batched; at most `LOG_QUEUE` wait, beyond which
+    /// lines are dropped and a line says how many.
+    fn logs(&self, _lines: Vec<String>) {}
+    /// A display message (`display::MSG_SIZE` or `display::MSG_FRAME`), sent
+    /// while the screen lock is held, so it is ordered with `with_screen`.
+    fn display(&self, _message: &[u8]) {}
+}
 
 /// An error for the WebView: a code (fat.js codes for the SD card, EBUSY,
 /// EQEMU, …) and a message for people.
@@ -75,7 +92,7 @@ pub struct SessionInfo {
     pub seq: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartOptions {
     pub machine: String,
@@ -83,6 +100,22 @@ pub struct StartOptions {
     pub wifi: bool,
     pub turbo: bool,
     pub ghosting: bool,
+    /// Whether the panel animates refreshes (X3 and X4 Pro); None keeps
+    /// QEMU's default, which animates.
+    #[serde(default)]
+    pub animate: Option<bool>,
+    /// How long the board holds Power pressed at a cold boot, in guest ms
+    /// (firmware that turns itself off unless Power is held); None keeps
+    /// the board's default (1500).
+    #[serde(default)]
+    pub power_hold_ms: Option<u32>,
+    /// Where the firmware log comes from: "usb" (USB Serial/JTAG, the
+    /// default; ESP-IDF mirrors its console there by default) or "uart0".
+    #[serde(default)]
+    pub console: Option<String>,
+    /// More QEMU arguments, appended as given.
+    #[serde(default)]
+    pub extra: Vec<String>,
 }
 
 /// Where the QEMU binaries are, the -L data directory when packaged, and
@@ -120,30 +153,15 @@ impl QemuPaths {
     }
 }
 
-/// Locks that give this app instance exclusive use of a host file (see
-/// `reserve` in lib.rs). Held, never read.
-pub struct Reservation {
-    #[allow(dead_code)]
-    pub(crate) path: std::fs::File,
-    /// The current identity's key and lock; replaced when the file is.
-    pub(crate) identity: Option<(String, std::fs::File)>,
-}
-
-/// The open SD card and the reservation that makes this instance its only user.
-pub struct Card {
-    pub path: PathBuf,
-    pub lock: StdMutex<Reservation>,
-}
-
-const TURBO_ARGS: &str = include_str!("../resources/turbo-args.json");
+const TURBO_ARGS: &str = include_str!(concat!(env!("OUT_DIR"), "/turbo-args.json"));
 // A fresh x64 executable on Windows ARM can spend tens of seconds in the
 // Windows loader before reaching main. Leave room for that cold start and
 // QEMU initialization; cancellation and process exits still resolve early.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 90 } else { 30 });
 const QUIT_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_INTERVAL: Duration = Duration::from_millis(30);
-/// Console lines waiting for the WebView; beyond this, lines are dropped.
-const LOG_QUEUE: usize = 20_000;
+/// Console lines waiting for the events sink; beyond this, lines are dropped.
+pub const LOG_QUEUE: usize = 20_000;
 /// Longer console lines are split.
 const MAX_LINE: usize = 16 * 1024;
 const RUN_PREFIX: &str = "eink-qemu-";
@@ -165,6 +183,8 @@ struct Run {
     trace: Result<PathBuf, String>,
     /// Heap pool starts found so far (see heap.rs).
     pools: Mutex<heap::Pools>,
+    /// The QEMU binary and its arguments.
+    command: Vec<String>,
     dir: tempfile::TempDir,
 }
 
@@ -191,14 +211,15 @@ pub struct HeapRead {
     pub trace: Result<PathBuf, String>,
 }
 
-struct Framebuffer {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
+/// The panel as last drawn: 8-bit gray, row by row.
+pub struct Framebuffer {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 pub struct Session {
-    app: AppHandle,
+    events: Arc<dyn Events>,
     qemu: QemuPaths,
     /// Serialises start, stop, reset, faults and SD card operations.
     ops: Mutex<()>,
@@ -206,11 +227,16 @@ pub struct Session {
     runs: AtomicU64,
     log_tx: mpsc::Sender<String>,
     dropped: Arc<AtomicU64>,
+    /// Console lines read so far, and how many of them reached `Events::logs`
+    /// (or were dropped): `log_barrier` waits for the second to catch up.
+    ingested: AtomicU64,
+    delivered: Arc<AtomicU64>,
     log_file: Arc<StdMutex<Option<std::fs::File>>>,
-    logs: Arc<StdMutex<Option<Channel<Vec<String>>>>>,
-    frames: StdMutex<Option<Channel<InvokeResponseBody>>>,
     screen: StdMutex<Option<Framebuffer>>,
     card: StdMutex<Option<Card>>,
+    /// Deep sleep (the VM suspended, from QMP's SUSPEND and WAKEUP events):
+    /// since when, and the time asleep before that in this run.
+    asleep: StdMutex<(Option<Instant>, Duration)>,
 }
 
 fn escape(value: &str) -> String {
@@ -309,21 +335,23 @@ fn scavenge_run_dirs() {
 }
 
 impl Session {
-    pub fn new(app: AppHandle, qemu: QemuPaths, card: Option<Card>) -> Arc<Session> {
+    /// A session; call from inside a Tokio runtime, which runs its tasks.
+    pub fn new(events: Arc<dyn Events>, qemu: QemuPaths, card: Option<Card>) -> Arc<Session> {
         scavenge_run_dirs();
         let (log_tx, mut log_rx) = mpsc::channel::<String>(LOG_QUEUE);
-        let logs: Arc<StdMutex<Option<Channel<Vec<String>>>>> = Arc::default();
         let dropped = Arc::new(AtomicU64::new(0));
+        let delivered = Arc::new(AtomicU64::new(0));
         // EINK_QEMU_LOG: also append console lines to a file (tests).
         let log_file = Arc::new(StdMutex::new(std::env::var_os("EINK_QEMU_LOG").and_then(|path| {
             std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
         })));
         {
-            let sink = logs.clone();
+            let sink = events.clone();
             let dropped = dropped.clone();
+            let delivered = delivered.clone();
             let file = log_file.clone();
             // Console lines are batched so a chatty firmware costs one IPC message per tick.
-            tauri::async_runtime::spawn(async move {
+            tokio::spawn(async move {
                 let mut batch = Vec::new();
                 while log_rx.recv_many(&mut batch, 4096).await > 0 {
                     tokio::time::sleep(LOG_INTERVAL).await;
@@ -334,6 +362,7 @@ impl Session {
                         }
                     }
                     let lost = dropped.swap(0, Ordering::Relaxed);
+                    let received = batch.len() as u64;
                     if lost > 0 {
                         batch.push(format!("[eink-qemu: {lost} console lines dropped while the console was busy]"));
                     }
@@ -341,15 +370,13 @@ impl Session {
                         use std::io::Write;
                         let _ = file.write_all((batch.join("\n") + "\n").as_bytes());
                     }
-                    if let Some(channel) = sink.lock().unwrap().as_ref() {
-                        let _ = channel.send(std::mem::take(&mut batch));
-                    }
-                    batch.clear();
+                    sink.logs(std::mem::take(&mut batch));
+                    delivered.fetch_add(received + lost, Ordering::SeqCst);
                 }
             });
         }
         Arc::new(Session {
-            app,
+            events,
             qemu: qemu.normalized(),
             ops: Mutex::new(()),
             shared: StdMutex::new(Shared {
@@ -360,17 +387,50 @@ impl Session {
             runs: AtomicU64::new(0),
             log_tx,
             dropped,
+            ingested: AtomicU64::new(0),
+            delivered,
             log_file,
-            logs,
-            frames: StdMutex::new(None),
             screen: StdMutex::new(None),
             card: StdMutex::new(card),
+            asleep: StdMutex::new((None, Duration::ZERO)),
         })
     }
 
+    /// Whether the guest is in deep sleep: QEMU suspended the VM, and its
+    /// clock stands still until a wake source (or a reset) resumes it.
+    pub fn asleep(&self) -> bool {
+        self.asleep.lock().unwrap().0.is_some()
+    }
+
+    /// Host time the guest has spent in deep sleep in this run.
+    pub fn asleep_for(&self) -> Duration {
+        let asleep = self.asleep.lock().unwrap();
+        asleep.1 + asleep.0.map(|t| t.elapsed()).unwrap_or_default()
+    }
+
+    fn set_asleep(&self, now: bool) {
+        let mut asleep = self.asleep.lock().unwrap();
+        match (asleep.0, now) {
+            (None, true) => asleep.0 = Some(Instant::now()),
+            (Some(since), false) => *asleep = (None, asleep.1 + since.elapsed()),
+            _ => {}
+        }
+    }
+
     pub fn log(&self, line: impl Into<String>) {
+        self.ingested.fetch_add(1, Ordering::SeqCst);
         if self.log_tx.try_send(line.into()).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Wait (at most `limit`) until every console line read so far has been
+    /// handed to `Events::logs`, so what follows is ordered after it.
+    pub async fn log_barrier(&self, limit: Duration) {
+        let target = self.ingested.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        while self.delivered.load(Ordering::SeqCst) < target && started.elapsed() < limit {
+            tokio::time::sleep(Duration::from_millis(3)).await;
         }
     }
 
@@ -419,24 +479,39 @@ impl Session {
         action(card.as_ref())
     }
 
-    /// Connect a (possibly reloaded) WebView: console lines and display
-    /// messages go to these channels. The current screen is sent at once.
-    pub fn attach(&self, logs: Channel<Vec<String>>, frames: Channel<InvokeResponseBody>) {
-        *self.logs.lock().unwrap() = Some(logs);
-        // The screen lock is held until the channel is swapped, so no
-        // update falls between the snapshot and the new channel.
+    /// Run `f` on the current screen with the screen lock held: no display
+    /// message reaches `Events::display` while it runs, so a WebView that
+    /// attaches can take the screen and its channel without a gap.
+    pub fn with_screen<T>(&self, f: impl FnOnce(Option<&Framebuffer>) -> T) -> T {
         let screen = self.screen.lock().unwrap();
-        if let Some(screen) = screen.as_ref() {
-            let _ = frames.send(InvokeResponseBody::Raw(display::size_message(screen.width, screen.height)));
-            let mut frame = Vec::with_capacity(24 + screen.pixels.len());
-            for value in [display::MSG_FRAME, 1, 0, 0, screen.width, screen.height] {
-                frame.extend_from_slice(&value.to_le_bytes());
-            }
-            frame.extend_from_slice(&screen.pixels);
-            let _ = frames.send(InvokeResponseBody::Raw(frame));
-        }
-        *self.frames.lock().unwrap() = Some(frames);
-        drop(screen);
+        f(screen.as_ref())
+    }
+
+    /// A copy of the current screen.
+    pub fn screen(&self) -> Option<Framebuffer> {
+        self.with_screen(|screen| screen.map(|s| Framebuffer { width: s.width, height: s.height, pixels: s.pixels.clone() }))
+    }
+
+    /// The running QEMU's command line (binary first).
+    pub fn command(&self) -> Option<Vec<String>> {
+        self.current().map(|run| run.command.clone())
+    }
+
+    /// The running board ("x3", "x4", "x4pro", "picco").
+    pub fn machine(&self) -> Option<String> {
+        self.current().map(|run| run.machine.clone())
+    }
+
+    /// The current run's heaptrace log, or why it has none.
+    pub fn trace_log(&self) -> Option<Result<PathBuf, String>> {
+        self.current().map(|run| run.trace.clone())
+    }
+
+    /// A QMP command on the running QEMU. Errors when idle; QEMU's own
+    /// errors come back as EQMP.
+    pub async fn qmp(&self, name: &str, arguments: Option<Value>) -> Result<Value, AppError> {
+        let run = self.current().ok_or_else(|| AppError::new("EIDLE", "The emulator is not running."))?;
+        run.qmp.execute(name, arguments).await.map_err(|e| AppError::new("EQMP", e))
     }
 
     fn set(&self, update: impl FnOnce(&mut SessionInfo)) {
@@ -446,7 +521,7 @@ impl Session {
             shared.info.seq += 1;
             shared.info.clone()
         };
-        let _ = self.app.emit("session", info);
+        self.events.session(&info);
     }
 
     fn current(&self) -> Option<Arc<Run>> {
@@ -486,9 +561,7 @@ impl Session {
                 }
             }
         }
-        if let Some(frames) = self.frames.lock().unwrap().as_ref() {
-            let _ = frames.send(InvokeResponseBody::Raw(message));
-        }
+        self.events.display(&message);
         drop(screen);
     }
 
@@ -501,6 +574,7 @@ impl Session {
                 return Err(AppError::busy());
             }
             id = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+            *self.asleep.lock().unwrap() = (None, Duration::ZERO);
             shared.cancel = Some(cancel_tx);
             shared.info = SessionInfo {
                 state: "starting",
@@ -561,17 +635,30 @@ impl Session {
         }
         if machine != "x4" && machine != "picco" {
             // uc8279-68, the default X4 Pro panel, is a UC8179 subtype.
-            args.extend([
-                "-global".into(),
-                format!("{}.ghosting={}", if machine == "x3" { "uc8279" } else { "uc8179" }, if options.ghosting { "on" } else { "off" }),
-            ]);
+            let panel = if machine == "x3" { "uc8279" } else { "uc8179" };
+            args.extend(["-global".into(), format!("{panel}.ghosting={}", if options.ghosting { "on" } else { "off" })]);
+            if let Some(animate) = options.animate {
+                args.extend(["-global".into(), format!("{panel}.animate={}", if animate { "on" } else { "off" })]);
+            }
+        }
+        if let Some(ms) = options.power_hold_ms {
+            let keys = if machine == "x3" || machine == "x4" { "x3-keys" } else { "x4pro-keys" };
+            args.extend(["-global".into(), format!("{keys}.power-boot-ms={ms}")]);
         }
         args.extend([
             "-drive".into(), format!("file={},if=mtd,format=raw", escape(&flash.to_string_lossy())),
             "-drive".into(), format!("file={},if=sd,format=raw", escape(&card.to_string_lossy())),
             "-chardev".into(), "stdio,id=cdc,mux=off".into(),
-            "-serial".into(), "null".into(),
-            "-global".into(), "driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc".into(),
+        ]);
+        match options.console.as_deref().unwrap_or("usb") {
+            "usb" => args.extend([
+                "-serial".into(), "null".into(),
+                "-global".into(), "driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc".into(),
+            ]),
+            "uart0" => args.extend(["-serial".into(), "chardev:cdc".into()]),
+            other => return Err(AppError::new("EQEMU", format!("Unknown console {other}; use usb or uart0."))),
+        }
+        args.extend([
             "-chardev".into(), format!("socket,id=qmp,{qmp}"),
             "-object".into(), "monitor-qmp,id=qmp-monitor,chardev=qmp".into(),
             "-display".into(), format!("eink,addr={}", escape(display)),
@@ -582,6 +669,7 @@ impl Session {
             // The radio stays, with no access points to find.
             args.extend(["-global".into(), "esp32_wifi.access-points=off".into()]);
         }
+        args.extend(options.extra.iter().cloned());
         Ok(args)
     }
 
@@ -635,6 +723,7 @@ impl Session {
             binary.file_name().unwrap_or_default().to_string_lossy(),
             args.join(" ")
         ));
+        let command_line: Vec<String> = std::iter::once(binary.to_string_lossy().into_owned()).chain(args.iter().cloned()).collect();
 
         let mut command = tokio::process::Command::new(&binary);
         command
@@ -712,8 +801,11 @@ impl Session {
                 let session = self.clone();
                 tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
-                        if event["event"] == "SHUTDOWN" {
-                            session.log("Guest shut down.");
+                        match event["event"].as_str() {
+                            Some("SHUTDOWN") => session.log("Guest shut down."),
+                            Some("SUSPEND") => session.set_asleep(true),
+                            Some("WAKEUP" | "RESET") => session.set_asleep(false),
+                            _ => {}
                         }
                     }
                 });
@@ -782,6 +874,7 @@ impl Session {
             stopping: AtomicBool::new(false),
             trace,
             pools: Mutex::new(heap::Pools::new()),
+            command: command_line,
             dir,
         });
         // Device input in arrival order, so a release never overtakes its
@@ -977,7 +1070,7 @@ impl Session {
                 let resumed = async {
                     if changed {
                         self.reset_device(&run).await?;
-                        let _ = self.app.emit("sd-reset", ());
+                        self.events.sd_reset();
                     }
                     run.qmp.execute("cont", None).await.map(|_| ())
                 }
@@ -1028,35 +1121,6 @@ impl Session {
     /// Stop the emulator before the app exits.
     pub async fn shutdown(self: &Arc<Self>) {
         let _ = self.stop().await;
-    }
-}
-
-#[cfg(test)]
-mod path_tests {
-    use super::*;
-
-    #[test]
-    fn ordinary_qemu_paths_are_preserved() {
-        let paths = QemuPaths {
-            bin: "qemu/bin".into(), share: Some("qemu/share".into()),
-            plugins: "qemu/plugins".into(),
-        }.normalized();
-        assert_eq!(paths.bin, Path::new("qemu/bin"));
-        assert_eq!(paths.share.as_deref(), Some(Path::new("qemu/share")));
-        assert_eq!(paths.plugins, Path::new("qemu/plugins"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn packaged_qemu_paths_do_not_use_verbatim_dos_paths() {
-        let paths = QemuPaths {
-            bin: r"\\?\C:\Users\QA User\eink-qemu\qemu\bin".into(),
-            share: Some(r"\\?\C:\Users\QA User\eink-qemu\qemu\share".into()),
-            plugins: r"\\?\C:\Users\QA User\eink-qemu\qemu\plugins".into(),
-        }.normalized();
-        assert_eq!(paths.binary("x3"), Path::new(r"C:\Users\QA User\eink-qemu\qemu\bin\qemu-system-riscv32.exe"));
-        assert_eq!(paths.share.as_deref(), Some(Path::new(r"C:\Users\QA User\eink-qemu\qemu\share")));
-        assert_eq!(paths.plugins, Path::new(r"C:\Users\QA User\eink-qemu\qemu\plugins"));
     }
 }
 
@@ -1187,5 +1251,34 @@ impl Listener {
                 Ok(Stream::Tcp(stream))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_qemu_paths_are_preserved() {
+        let paths = QemuPaths {
+            bin: "qemu/bin".into(), share: Some("qemu/share".into()),
+            plugins: "qemu/plugins".into(),
+        }.normalized();
+        assert_eq!(paths.bin, Path::new("qemu/bin"));
+        assert_eq!(paths.share.as_deref(), Some(Path::new("qemu/share")));
+        assert_eq!(paths.plugins, Path::new("qemu/plugins"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn packaged_qemu_paths_do_not_use_verbatim_dos_paths() {
+        let paths = QemuPaths {
+            bin: r"\\?\C:\Users\QA User\eink-qemu\qemu\bin".into(),
+            share: Some(r"\\?\C:\Users\QA User\eink-qemu\qemu\share".into()),
+            plugins: r"\\?\C:\Users\QA User\eink-qemu\qemu\plugins".into(),
+        }.normalized();
+        assert_eq!(paths.binary("x3"), Path::new(r"C:\Users\QA User\eink-qemu\qemu\bin\qemu-system-riscv32.exe"));
+        assert_eq!(paths.share.as_deref(), Some(Path::new(r"C:\Users\QA User\eink-qemu\qemu\share")));
+        assert_eq!(paths.plugins, Path::new(r"C:\Users\QA User\eink-qemu\qemu\plugins"));
     }
 }

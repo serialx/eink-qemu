@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// A file's identity: device and inode on Unix, volume serial and file
 /// index on Windows. Hard links to one file share it.
-pub(crate) fn file_identity(path: &Path) -> Option<(u64, u64)> {
+pub fn file_identity(path: &Path) -> Option<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -34,7 +34,7 @@ pub(crate) fn file_identity(path: &Path) -> Option<(u64, u64)> {
 
 /// Whether a process with this id exists. Errs towards true: a directory
 /// whose owner might be alive is left alone.
-pub(crate) fn process_alive(pid: u32) -> bool {
+pub fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         let Ok(pid) = libc::pid_t::try_from(pid) else { return true };

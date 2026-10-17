@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare static font downloads; never runs as a proxy or runtime server."""
+"""Prepare static font downloads; never runs as a proxy or runtime server.
+
+The browser page's Wi-Fi answers requests for these upstream URLs from the
+page itself. The default catalog is CrossPoint Reader's font downloader's;
+the files are an optional extra (package-web.sh leaves them out when they
+cannot be prepared), since the page's Wi-Fi works without them."""
 import argparse
 import concurrent.futures
 import hashlib

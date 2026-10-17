@@ -94,10 +94,21 @@ export async function createBrowserNetwork({assets = new URL('./wifi-assets/', i
     const sessions = new Map(), frames = [];
     let bytes = 0, closed = false, stack, timer;
     const assetBase = new URL(assets);
-    const indexResponse = await fetchResource(new URL('index.json', assetBase));
-    if (!indexResponse.ok) throw new Error('Font assets are missing. Run prepare-wifi-assets.py before packaging.');
-    const routes = (await indexResponse.json()).urls;
-    if (!routes || typeof routes !== 'object') throw new Error('Invalid Wi-Fi asset index');
+    // Static mirrors are optional: a package may bundle files (CrossPoint
+    // Reader's font catalog, prepare-wifi-assets.py) that the guest's
+    // requests for their upstream URLs are answered from. Without them every
+    // download goes to the browser's fetch.
+    const indexResponse = await fetchResource(new URL('index.json', assetBase)).catch(() => null);
+    let routes = {};
+    // A development server may answer a missing file with its HTML page:
+    // only a JSON answer is a catalog.
+    const isJson = indexResponse?.ok && !/html/i.test(indexResponse.headers?.get?.('content-type') ?? '');
+    if (isJson) {
+        routes = (await indexResponse.json()).urls;
+        if (!routes || typeof routes !== 'object') throw new Error('Invalid Wi-Fi asset index');
+    } else {
+        log('Browser Wi-Fi: no bundled static files; downloads go through the browser');
+    }
     function shutdownSession(id) {
         const session = sessions.get(id);
         if (!session) return;

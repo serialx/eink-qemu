@@ -6,25 +6,20 @@
 //! window's drop event. Commands that take a host path from the WebView
 //! accept only those recorded paths.
 
-mod display;
-mod firmware;
-mod heap;
-mod heapview;
-mod trace;
-mod host;
-mod qmp;
-pub mod sd;
-mod session;
 mod settings;
 
+use eink_core::cards::{card_key, identity_key, open_card, reserve, reserve_path, validate_card, Card};
+use eink_core::script::automation::{Automation, Finalizer};
+use eink_core::script::events::RunEvents;
+use eink_core::session::{self, AppError, Events, QemuPaths, Session, SessionInfo, StartOptions};
+use eink_core::{display, firmware, heap, heapview, sd};
 use serde::Serialize;
-use session::{AppError, Card, QemuPaths, Reservation, Session, SessionInfo, StartOptions};
 use settings::{Settings, SettingsPatch};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request, Response};
-use tauri::{DragDropEvent, Manager, RunEvent, State, WindowEvent};
+use tauri::{DragDropEvent, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
@@ -34,8 +29,47 @@ const MAX_FIRMWARE: u64 = 64 * 1024 * 1024;
 const MAX_SCREENSHOT: usize = 64 * 1024 * 1024;
 const MAX_GRANTS: usize = 20_000;
 
+/// The session's output, forwarded to the WebView: events, and the channels
+/// of the WebView that attached last.
+struct DesktopEvents {
+    app: tauri::AppHandle,
+    logs: Mutex<Option<Channel<Vec<String>>>>,
+    frames: Mutex<Option<Channel<InvokeResponseBody>>>,
+    /// A scripted run's recorder (`eink-qemu run --gui`), which sees everything too.
+    run: Option<Arc<RunEvents>>,
+}
+
+impl Events for DesktopEvents {
+    fn session(&self, info: &SessionInfo) {
+        let _ = self.app.emit("session", info);
+        if let Some(run) = &self.run {
+            run.session(info);
+        }
+    }
+    fn sd_reset(&self) {
+        let _ = self.app.emit("sd-reset", ());
+    }
+    fn logs(&self, lines: Vec<String>) {
+        if let Some(run) = &self.run {
+            run.logs(lines.clone());
+        }
+        if let Some(channel) = self.logs.lock().unwrap().as_ref() {
+            let _ = channel.send(lines);
+        }
+    }
+    fn display(&self, message: &[u8]) {
+        if let Some(run) = &self.run {
+            run.display(message);
+        }
+        if let Some(frames) = self.frames.lock().unwrap().as_ref() {
+            let _ = frames.send(InvokeResponseBody::Raw(message.to_vec()));
+        }
+    }
+}
+
 struct App {
     session: Arc<Session>,
+    events: Arc<DesktopEvents>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
     locks: PathBuf,
@@ -45,6 +79,8 @@ struct App {
     problems: Mutex<Vec<String>>,
     /// The heap view: ELF, symbols, allocation log, history.
     heap: tokio::sync::Mutex<heapview::HeapView>,
+    /// A scripted run's finalizer (`eink-qemu run --gui`), run before the app quits.
+    automation: Arc<Mutex<Option<Finalizer>>>,
 }
 
 impl App {
@@ -113,107 +149,15 @@ fn file_info(path: &Path) -> Option<FileInfo> {
 /// The lock directory shared by every instance of this user, whatever data
 /// directory each uses, so a card has one owner across instances.
 fn locks_dir(app: &tauri::AppHandle) -> PathBuf {
+    // The command-line tool's override (for a sandbox), so the two can still
+    // share one directory when both are started with it.
+    if let Some(dir) = std::env::var_os("EINK_QEMU_LOCKS").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("eink-qemu"))
         .join("locks")
-}
-
-/// A stable name for a card path, also before the file exists.
-fn card_key(path: &Path) -> PathBuf {
-    if let Ok(path) = dunce::canonicalize(path) {
-        return path;
-    }
-    match (path.parent().and_then(|p| dunce::canonicalize(p).ok()), path.file_name()) {
-        (Some(parent), Some(name)) => parent.join(name),
-        _ => path.to_path_buf(),
-    }
-}
-
-/// The lock file for one key (a path or a file identity).
-fn lock_file(locks: &Path, key: &str) -> Result<std::fs::File, AppError> {
-    std::fs::create_dir_all(locks)?;
-    // FNV-1a: a fixed hash, so every build names a key's lock file alike.
-    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(locks.join(format!("{hash:016x}.lock")))?;
-    Ok(file)
-}
-
-/// A file's identity, so hard links to one card share one owner.
-fn identity_key(path: &Path) -> Option<String> {
-    host::file_identity(path).map(|(device, file)| format!("id:{device}:{file}"))
-}
-
-/// Exclusive use of a host file among all eink-qemu instances of this user:
-/// a lock on its path (also before it exists) and, when it exists, on its
-/// identity. Cards hold one while open; writes to a host file hold one for
-/// the whole write, so they can never land on an open card.
-fn reserve(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
-    let mut reservation = reserve_path(locks, path)?;
-    reservation.refresh(locks, path)?;
-    Ok(reservation)
-}
-
-/// Only the path lock: for a hard link to the card this instance already
-/// owns, whose identity lock it holds.
-fn reserve_path(locks: &Path, path: &Path) -> Result<Reservation, AppError> {
-    let mut key = format!("path:{}", card_key(path).display());
-    if cfg!(windows) {
-        // NTFS names ignore case, so C:\Card.img and c:\card.img are one card.
-        key = key.to_lowercase();
-    }
-    let file = try_lock(locks, &key, path)?;
-    Ok(Reservation { path: file, identity: None })
-}
-
-fn try_lock(locks: &Path, key: &str, path: &Path) -> Result<std::fs::File, AppError> {
-    let file = lock_file(locks, key)?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(AppError::new(
-            "EBUSY",
-            format!("{} is an SD card open in eink-qemu.", path.display()),
-        )),
-        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
-    }
-}
-
-impl Reservation {
-    /// Lock the file's current identity (after it was created or replaced),
-    /// releasing the identity of a file it replaced.
-    fn refresh(&mut self, locks: &Path, path: &Path) -> Result<(), AppError> {
-        let Some(id) = identity_key(path) else { return Ok(()) };
-        if self.identity.as_ref().is_some_and(|(held, _)| *held == id) {
-            return Ok(());
-        }
-        let file = try_lock(locks, &id, path)?;
-        self.identity = Some((id, file));
-        Ok(())
-    }
-}
-
-/// Check that `path` looks like an SD image and return its canonical form.
-fn validate_card(path: &Path) -> Result<PathBuf, AppError> {
-    let path = dunce::canonicalize(path)
-        .map_err(|_| AppError::new("ENOENT", format!("{} does not exist.", path.display())))?;
-    let meta = std::fs::metadata(&path)?;
-    if !meta.is_file() {
-        return Err(AppError::new("EINVAL", "Choose an SD image file."));
-    }
-    if meta.len() == 0 || meta.len() % 512 != 0 {
-        return Err(AppError::new("EINVAL", "SD image must contain a whole number of 512-byte sectors."));
-    }
-    Ok(path)
-}
-
-fn open_card(locks: &Path, path: &Path) -> Result<Card, AppError> {
-    let path = validate_card(path)?;
-    let lock = reserve(locks, &path)?;
-    Ok(Card { path, lock: lock.into() })
 }
 
 fn check_firmware(path: &Path) -> Result<FileInfo, AppError> {
@@ -277,7 +221,21 @@ fn attach(
     logs: Channel<Vec<String>>,
     frames: Channel<InvokeResponseBody>,
 ) -> Attached {
-    app.session.attach(logs, frames);
+    *app.events.logs.lock().unwrap() = Some(logs);
+    // The screen lock is held until the channel is swapped, so no update
+    // falls between the snapshot and the new channel.
+    app.session.with_screen(|screen| {
+        if let Some(screen) = screen {
+            let _ = frames.send(InvokeResponseBody::Raw(display::size_message(screen.width, screen.height)));
+            let mut frame = Vec::with_capacity(24 + screen.pixels.len());
+            for value in [display::MSG_FRAME, 1, 0, 0, screen.width, screen.height] {
+                frame.extend_from_slice(&value.to_le_bytes());
+            }
+            frame.extend_from_slice(&screen.pixels);
+            let _ = frames.send(InvokeResponseBody::Raw(frame));
+        }
+        *app.events.frames.lock().unwrap() = Some(frames);
+    });
     let settings = app.settings.lock().unwrap().clone();
     let firmware = settings.firmware.as_deref().and_then(|path| check_firmware(path).ok());
     let elf = settings.elf.as_deref().and_then(file_info);
@@ -998,22 +956,62 @@ pub fn run() {
             let mut problems = Vec::new();
             let mut settings = Settings::load(&settings_path, &mut problems);
             let locks = locks_dir(app.handle());
-            let card = startup_card(&mut settings, &data, &locks, &mut problems);
+            // EINK_QEMU_AUTOMATION: a scripted run from `eink-qemu run --gui`
+            // (with EINK_QEMU_DATA_DIR in its run directory): its card, its
+            // firmware, and its steps once the session is up.
+            let automation = match std::env::var_os("EINK_QEMU_AUTOMATION") {
+                Some(path) => Some(Automation::load(Path::new(&path)).map_err(|e| format!("EINK_QEMU_AUTOMATION: {e}"))?),
+                None => None,
+            };
+            let run_events = match &automation {
+                Some(spec) => Some(Arc::new(RunEvents::new(&spec.dir, false)?)),
+                None => None,
+            };
+            let card = match &automation {
+                Some(spec) => {
+                    settings.firmware = Some(spec.firmware.clone());
+                    settings.device = spec.machine.clone();
+                    settings.elf = spec.elf.clone();
+                    settings.turbo = spec.options.turbo;
+                    settings.ghosting = spec.options.ghosting;
+                    settings.wifi = spec.options.wifi;
+                    settings.panel = spec.options.panel.clone();
+                    settings.card = Some(spec.card.clone());
+                    Some(open_card(&locks, &spec.card).map_err(|e| e.message)?)
+                }
+                None => startup_card(&mut settings, &data, &locks, &mut problems),
+            };
             if let Some(firmware) = settings.firmware.as_deref() {
                 if let Err(error) = check_firmware(firmware) {
                     problems.push(format!("The firmware {} cannot be used: {}", firmware.display(), error.message));
                 }
             }
-            let session = Session::new(app.handle().clone(), qemu_paths(app.handle()), card);
+            let events = Arc::new(DesktopEvents { app: app.handle().clone(), logs: Mutex::default(), frames: Mutex::default(), run: run_events.clone() });
+            let paths = qemu_paths(app.handle());
+            // The session's tasks run on Tauri's Tokio runtime.
+            let session = tauri::async_runtime::block_on({
+                let events = events.clone();
+                async move { Session::new(events, paths, card) }
+            });
+            let finalizer: Arc<Mutex<Option<Finalizer>>> = Arc::default();
+            if let (Some(spec), Some(run_events)) = (automation, run_events) {
+                let session = session.clone();
+                let finalizer = finalizer.clone();
+                tauri::async_runtime::spawn(async move {
+                    eink_core::script::automation::run(session, run_events, spec, finalizer).await;
+                });
+            }
             let _ = settings.save(&settings_path);
             app.manage(App {
                 session,
+                events,
                 settings: Mutex::new(settings),
                 settings_path,
                 locks,
                 grants: Mutex::default(),
                 problems: Mutex::new(problems),
                 heap: Default::default(),
+                automation: finalizer,
             });
             // SIGTERM and SIGINT quit like the menu does, so QEMU stops and
             // the run directory is removed.
@@ -1092,65 +1090,12 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             if let Some(app) = handle.try_state::<App>() {
+                if let Some(finalizer) = app.automation.lock().unwrap().as_ref() {
+                    finalizer.finalize();
+                }
                 let session = app.session.clone();
                 tauri::async_runtime::block_on(session.shutdown());
             }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_reserved_card_cannot_be_reserved_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let locks = dir.path().join("locks");
-        let card = dir.path().join("card.img");
-        std::fs::write(&card, vec![0u8; 1024]).unwrap();
-        let first = reserve(&locks, &card).unwrap();
-        assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
-        drop(first);
-        assert!(reserve(&locks, &card).is_ok());
-    }
-
-    #[test]
-    fn hard_links_share_one_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let locks = dir.path().join("locks");
-        let card = dir.path().join("card.img");
-        let alias = dir.path().join("alias.img");
-        std::fs::write(&card, vec![0u8; 1024]).unwrap();
-        std::fs::hard_link(&card, &alias).unwrap();
-        let _owner = reserve(&locks, &card).unwrap();
-        assert_eq!(reserve(&locks, &alias).err().unwrap().code, "EBUSY");
-    }
-
-    #[test]
-    fn a_replaced_card_releases_its_old_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let locks = dir.path().join("locks");
-        let card = dir.path().join("card.img");
-        let old_alias = dir.path().join("old.img");
-        std::fs::write(&card, vec![0u8; 1024]).unwrap();
-        std::fs::hard_link(&card, &old_alias).unwrap();
-        let mut owner = reserve(&locks, &card).unwrap();
-        // Replace the card with a new file, as a blank card does.
-        let fresh = dir.path().join("fresh.tmp");
-        std::fs::write(&fresh, vec![1u8; 1024]).unwrap();
-        std::fs::rename(&fresh, &card).unwrap();
-        owner.refresh(&locks, &card).unwrap();
-        assert!(reserve(&locks, &old_alias).is_ok(), "the replaced file is no longer the card");
-        assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
-    }
-
-    #[test]
-    fn a_path_is_reserved_before_it_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let locks = dir.path().join("locks");
-        let card = dir.path().join("new.img");
-        let _creator = reserve(&locks, &card).unwrap();
-        assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
-    }
 }

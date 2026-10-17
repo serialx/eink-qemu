@@ -18,6 +18,7 @@
  * (at your option) any later version.
  */
 #include "qemu/osdep.h"
+#include "qapi/visitor.h"
 #include "qemu/log.h"
 #include "qemu/bitops.h"
 #include "qemu/module.h"
@@ -46,6 +47,10 @@ struct Ssd1677State {
     QEMUTimer busy_timer;
     uint32_t busy_ms;
     bool portrait;      /* turn 90 degrees clockwise, as the X4 is held */
+    bool refreshing;    /* BUSY belongs to a master activation */
+    int64_t refresh_start_ns;
+    uint64_t refreshes; /* completed activations, and their BUSY time, since start */
+    uint64_t refresh_ns;
 
     bool dc;            /* 1 = data */
     bool sclk;
@@ -74,6 +79,7 @@ struct Ssd1677State {
 
 static void ssd1677_set_busy(Ssd1677State *s, uint32_t ms)
 {
+    s->refreshing = false;
     qemu_set_irq(s->busy, 1);
     timer_mod(&s->busy_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + ms);
 }
@@ -81,6 +87,11 @@ static void ssd1677_set_busy(Ssd1677State *s, uint32_t ms)
 static void ssd1677_busy_done(void *opaque)
 {
     Ssd1677State *s = opaque;
+    if (s->refreshing) {
+        s->refreshing = false;
+        s->refreshes++;
+        s->refresh_ns += qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->refresh_start_ns;
+    }
     qemu_set_irq(s->busy, 0);
 }
 
@@ -303,6 +314,14 @@ static void ssd1677_command_start(Ssd1677State *s, uint8_t c)
     case 0x20:  /* master activation */
         ssd1677_activate(s);
         ssd1677_set_busy(s, s->busy_ms);
+        /*
+         * Count it as a refresh only when update control 2 includes the
+         * display stage (bit 2): 0xc0, 0x03 or 0x91 only switch the clock
+         * and analog supply or load a LUT. 0 is the model's value before
+         * any 0x22 (the datasheet's power-on value, 0xff, includes it).
+         */
+        s->refreshing = s->ctrl2 == 0 || (s->ctrl2 & 0x04);
+        s->refresh_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         break;
     case 0x32:
         s->gray_lut = true;
@@ -443,6 +462,7 @@ static void ssd1677_set_rst(void *opaque, int n, int level)
     if (!level) {
         s->in_reset = true;
         timer_del(&s->busy_timer);
+        s->refreshing = false;  /* cut short: not a completed refresh */
         qemu_set_irq(s->busy, 0);
         s->bits = 0;
         s->read_pos = 0;
@@ -514,6 +534,25 @@ static const Property ssd1677_properties[] = {
     DEFINE_PROP_BOOL("portrait", Ssd1677State, portrait, true),
 };
 
+static bool ssd1677_get_busy(Object *obj, Error **errp)
+{
+    return timer_pending(&SSD1677(obj)->busy_timer);
+}
+
+static void ssd1677_get_refreshes(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    uint64_t n = SSD1677(obj)->refreshes;
+    visit_type_uint64(v, name, &n, errp);
+}
+
+static void ssd1677_get_refresh_ns(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+    uint64_t ns = SSD1677(obj)->refresh_ns;
+    visit_type_uint64(v, name, &ns, errp);
+}
+
 static void ssd1677_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -524,6 +563,13 @@ static void ssd1677_class_init(ObjectClass *klass, const void *data)
     k->set_cs = ssd1677_set_cs;
     k->cs_polarity = SSI_CS_LOW;
     device_class_set_props(dc, ssd1677_properties);
+    /* Read-only BUSY state, for test drivers waiting for a refresh to end. */
+    object_class_property_add_bool(klass, "busy", ssd1677_get_busy, NULL);
+    /* Completed refreshes and their total BUSY time, for firmware-neutral metrics. */
+    object_class_property_add(klass, "refreshes", "uint64",
+                              ssd1677_get_refreshes, NULL, NULL, NULL);
+    object_class_property_add(klass, "refresh-ns", "uint64",
+                              ssd1677_get_refresh_ns, NULL, NULL, NULL);
 }
 
 static const TypeInfo ssd1677_info = {

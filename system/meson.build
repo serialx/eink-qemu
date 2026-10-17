@@ -12,6 +12,7 @@ system_ss.add(files(
   'dma-helpers.c',
   'exit-with-parent.c',
   'globals.c',
+  'guest-clock.c',
   'ioport.c',
   'ram-block-attributes.c',
   'ram-discard-manager.c',

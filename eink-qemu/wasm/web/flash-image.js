@@ -1,4 +1,7 @@
-/* Compose board-specific app images and preserve merged ESP flash images. */
+/* Compose board-specific app images and preserve merged ESP flash images.
+   App images go into a bundled partition table: Arduino-ESP32's 16 MB
+   default (boot/partitions.csv) or the stock BOOX Picco layout. An NVS image
+   is written only when the caller passes one (CrossPoint's, firmware.ts). */
 'use strict';
 globalThis.FlashImage = (() => {
     function selectMachine(chip, selected = 'auto') {
@@ -23,7 +26,7 @@ globalThis.FlashImage = (() => {
             otaOffset: picco ? 0x15000 : 0xe000,
             bootAsset: `bootloader-${c3 ? 'esp32c3' : 'esp32s3'}.bin`,
             partitionAsset: picco ? 'partitions-picco.bin' : 'partitions.bin',
-            nvsAsset: machine === 'x3' ? 'nvs-x3.bin' : null
+            partitionTable: picco ? 'the stock BOOX Picco partition table' : 'the Arduino-ESP32 16 MB partition table'
         });
     }
     function readPartitions(bytes, offset = 0) {
@@ -50,21 +53,21 @@ globalThis.FlashImage = (() => {
         partitions = new Uint8Array(partitions);
         nvs = nvs == null ? null : new Uint8Array(nvs);
         if (boot.length < 24 || boot.length > 0x8000 || boot[0] !== 0xe9 ||
-            (boot[12] | boot[13] << 8) !== chip || partitions.length !== 0xc00 ||
-            (layout.nvsAsset ? !nvs || nvs.length !== 0x5000 : nvs !== null)) {
+            (boot[12] | boot[13] << 8) !== chip || partitions.length !== 0xc00) {
             throw new Error('Invalid bundled boot assets. Run package-web.sh to regenerate the distribution.');
         }
         const entries = readPartitions(partitions);
+        const nvsPartition = entries.find(p => p.type === 1 && p.subtype === 2);
         if (!entries.some(p => p.type === 0 && p.subtype === 0x10 &&
                 p.offset === layout.appOffset && p.size === layout.appSize) ||
             !entries.some(p => p.type === 1 && p.subtype === 0 && p.offset === layout.otaOffset && p.size === 0x2000) ||
-            (nvs && !entries.some(p => p.type === 1 && p.subtype === 2 && p.offset === 0x9000 && p.size === nvs.length))) {
+            (nvs && nvsPartition?.size !== nvs.length)) {
             throw new Error(`Bundled partition table does not match ${machine}.`);
         }
         const flash = new Uint8Array(0x1000000).fill(0xff);
         flash.set(boot, 0);
         flash.set(partitions, 0x8000);
-        if (nvs) flash.set(nvs, 0x9000);
+        if (nvs) flash.set(nvs, nvsPartition.offset);
         if (machine === 'picco' || selectOta) {
             // Select valid ota_0; Picco's factory recovery slot remains erased.
             const view = new DataView(flash.buffer);
@@ -91,5 +94,18 @@ globalThis.FlashImage = (() => {
         flash.set(bytes);
         return flash;
     }
-    return Object.freeze({expandMerged, selectMachine, appLayout, composeApp});
+    /** Whether every string occurs in `bytes` followed by a NUL, as C strings
+        are stored in an app image (how a firmware profile recognises its app). */
+    function hasCStrings(bytes, strings) {
+        const encoder = new TextEncoder();
+        return strings.every(text => {
+            const needle = [...encoder.encode(text), 0];
+            for (let at = bytes.indexOf(needle[0]); at >= 0 && at + needle.length <= bytes.length;
+                at = bytes.indexOf(needle[0], at + 1)) {
+                if (needle.every((byte, i) => bytes[at + i] === byte)) return true;
+            }
+            return false;
+        });
+    }
+    return Object.freeze({expandMerged, selectMachine, appLayout, composeApp, hasCStrings});
 })();

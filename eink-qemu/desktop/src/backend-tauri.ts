@@ -7,6 +7,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { Backend, DropHandlers, Screen } from './backend';
 import type { HeapEvents } from './heap-log';
+import { Panel } from './panel';
 import {
   AppError, type Attached, type CardInfo, type FileInfo, type HeapHistoryPoint, type HeapPast, type HeapSite,
   type HeapSnapshot, type HeapStack, type MadeCard, type SdListing, type SessionInfo, type Settings, type Setup,
@@ -25,7 +26,7 @@ async function call<T>(command: string, args?: Record<string, unknown> | Uint8Ar
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 let platform = '';
 
-/* The screen: a canvas at the panel's resolution. src-tauri/src/display.rs
+/* The screen: a canvas at the panel's resolution. core/src/display.rs
    sends one raw binary channel message per flush: `u32 1, width, height`
    for a size, or `u32 2, count` followed by each rect's x, y, w, h and gray8
    pixels. Rust keeps a copy of the panel and sends it first on attach, which
@@ -99,9 +100,13 @@ class CanvasScreen implements Screen {
 }
 
 let screen: CanvasScreen | null = null;
+let screenUpdated: (blank: boolean) => void = () => {};
 /** Display messages that arrived before the page made a screen. */
 const early: ArrayBuffer[] = [];
+/** The panel the display messages have drawn, for whether it is blank. */
+const panel = new Panel();
 function onDisplay(buffer: ArrayBuffer) {
+  screenUpdated(panel.apply(buffer));
   if (screen) { screen.paint(buffer); return; }
   // A size starts the panel over: what came before it is stale.
   if (new DataView(buffer).getUint32(0, true) === 1) early.length = 0;
@@ -129,6 +134,7 @@ export const tauri: Backend = {
     const logs = new Channel<string[]>();
     logs.onmessage = (lines) => handlers.log(lines);
     const frames = new Channel<ArrayBuffer>();
+    screenUpdated = blank => handlers.screen(blank);
     frames.onmessage = onDisplay;
     const state = await call<Attached>('attach', { logs, frames });
     platform = state.platform;

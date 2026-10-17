@@ -4,7 +4,7 @@
    stack markup. Nothing here knows which page it is on. */
 import type { Heap, HeapFrame, HeapStack } from './types';
 
-/** A block's flags (src-tauri/src/heap.rs). */
+/** A block's flags (core/src/heap.rs). */
 export const FREE = 1, POISONED = 2, CORRUPT = 4;
 export const ROW = 10;           // css px per map row, the gap included
 export const GAP = 2;            // css px between rows

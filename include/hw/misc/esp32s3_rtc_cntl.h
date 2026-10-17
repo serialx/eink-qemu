@@ -58,10 +58,14 @@ typedef enum Esp32s3SlowClkSel {
     ESP32_SLOW_CLK_8MD256 = 2
 } Esp32s3SlowClkSel;
 
+#define ESP32S3_RTCIO_SIZE 0x400
+#define ESP32S3_RTC_PAD_COUNT 22
+
 typedef struct Esp32s3RtcCntlState {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+    MemoryRegion rtcio_iomem;   /* RTC IO block, DR_REG_RTCIO_BASE (mmio 1) */
     qemu_irq irq;
     qemu_irq dig_reset_req;
     qemu_irq cpu_reset_req[ESP32S3_CPU_COUNT];
@@ -99,9 +103,30 @@ typedef struct Esp32s3RtcCntlState {
     int64_t sleep_start_ns;
     bool gpio_wake;
     QEMUTimer sleep_timer;
+
+    /* eink-qemu: deep-sleep EXT0/EXT1 wake on the RTC pads, and boot signals */
+    uint32_t ext_wakeup_conf;
+    uint32_t ext_wakeup1;           /* EXT1 pad mask */
+    uint32_t ext_wakeup1_status;    /* pads that woke the chip by EXT1 */
+    uint32_t pad_level;             /* RTC pads 0-21 (GPIO0-21) */
+    uint32_t rtcio[ESP32S3_RTCIO_SIZE / 4];
+    qemu_irq boot[2];
 } Esp32s3RtcCntlState;
 
 #define ESP32S3_RTC_GPIO_WAKE "gpio-wake"
+/* Named GPIO in: levels of the RTC pads (RTC IO n is GPIO n, 0-21). */
+#define ESP32S3_RTC_PAD "rtc-pad"
+/*
+ * Named GPIO out, pulsed by esp32s3_rtc_cntl_boot(): line 0 on a cold
+ * power-on (QEMU start, an external reset), line 1 on a digital reset that
+ * ends a deep-sleep wake by a pad (EXT0, EXT1 or GPIO). Boards hold Power
+ * from these.
+ */
+#define ESP32S3_RTC_BOOT "boot"
+#define ESP32S3_RTC_BOOT_POWER_ON 0
+#define ESP32S3_RTC_BOOT_PAD_WAKE 1
+
+void esp32s3_rtc_cntl_boot(Esp32s3RtcCntlState *s, bool power_on, bool digital);
 
 REG32(RTC_CNTL_OPTIONS0, 0x00)
     FIELD(RTC_CNTL_OPTIONS0, SW_SYS_RESET, 31, 1)

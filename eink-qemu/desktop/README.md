@@ -25,14 +25,17 @@ pnpm tauri dev
 
 `pnpm dev` and `pnpm build` first run `scripts/prepare-resources.sh`, which
 needs Python 3. It writes the boot assets for composing release apps to
-`public/boot/`, and the turbo overrides to `src-tauri/resources/`, which the
-Rust binary embeds. SD cards are formatted in Rust, so no FAT tools are needed.
+`public/boot/`. SD cards are formatted in Rust, so no FAT tools are needed.
 
-Checks (after `sh scripts/prepare-resources.sh`, which the Rust build needs):
+The Rust code is a Cargo workspace: `src-tauri` is the app, `core` the
+emulator session, display reader, heaps, SD cards and flash images it shares
+with the command-line tool in `cli` (see [cli/README.md](cli/README.md)).
+
+Checks:
 
 ```sh
-pnpm exec tsc --noEmit                         # front end
-cargo test --manifest-path src-tauri/Cargo.toml  # display reader, locks, heaps, SD card
+pnpm exec tsc --noEmit    # front end
+cargo test --workspace    # display reader, locks, heaps, SD card, flash, CLI
 ```
 
 `pnpm dev` alone serves the front end in a browser at

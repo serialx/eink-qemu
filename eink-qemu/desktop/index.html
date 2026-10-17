@@ -125,10 +125,11 @@
             <div id="wifi-help" class="tip" role="tooltip">
               <strong>Wi-Fi <span class="tip-state"></span></strong>
               <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, <span data-only="tauri">on QEMU's user
-                network, so the firmware reaches the internet and its font downloader works.</span><span data-only="browser">so the firmware's
-                font downloader works. On the device open Settings › Reader › Manage Fonts and join it.</span></p>
-              <p data-only="browser">The fonts come from a catalog bundled with this page and are served by your browser:
-                nothing goes through a relay server. Installed fonts are saved on the SD card.</p>
+                network, so the firmware reaches the internet.</span><span data-only="browser">whose HTTP and HTTPS downloads
+                your browser fetches. Join it from the firmware's own Wi-Fi settings.</span></p>
+              <p data-only="browser">Sites must allow cross-origin downloads, and HTTPS needs firmware that
+                accepts the emulator's local certificate (firmware that checks certificates rejects it). Files this page bundles, such as CrossPoint Reader's
+                font catalog when it was packaged, are served from the page itself: nothing goes through a relay server.</p>
               <p class="fine">Off, the reader finds no networks. Applies when the emulator starts. <span data-only="browser"><code>?wifi=off</code> opens the page with it off.</span></p>
             </div>
           </div>
@@ -219,10 +220,11 @@
           <div id="screen">
             <div class="intro">
               <h2>Choose firmware to begin</h2>
-              <p>Pick <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> for the X3/X4 or <code>crosspoint-&lt;ver&gt;-x4pro.bin</code>
-                for the X4 Pro from the <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases" target="_blank" rel="noopener">CrossPoint releases</a>,
-                an official X4 Pro <code>.xota</code> update, a merged <code>.bin</code>, or a 16 MiB flash dump.
-                The device follows from the firmware; for the X3, or TRMNL firmware on the X4, pick it in the
+              <p>Pick an ESP32-C3 or ESP32-S3 firmware: an app <code>.bin</code> (it goes into the Arduino-ESP32 16 MB
+                partition table), a merged <code>.bin</code>, a 16 MiB flash dump, or an official X4 Pro <code>.xota</code> update.
+                For example, <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> or <code>-x4pro.bin</code> from the
+                <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases" target="_blank" rel="noopener">CrossPoint Reader releases</a>.
+                An S3 image runs on the X4 Pro unless you pick the Picco; for a C3 image pick the X3 or the X4 in the
                 firmware card. Drop the file here or choose it; loading it starts the emulator.</p>
               <button class="button" type="button" data-for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</button>
               <p class="fine" data-only="tauri">The SD card is an image file on disk. A blank 16 GiB FAT32 card is created on first run; it takes a few MiB until files are written.</p>

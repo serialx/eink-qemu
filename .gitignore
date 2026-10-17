@@ -25,3 +25,7 @@ GTAGS
 /build-wasm/
 /build-wasm-32limit/
 /build-wasm-deps/
+
+# eink-qemu: command-line tool runs and local QA workspaces
+eink-qemu-out/
+*.local/

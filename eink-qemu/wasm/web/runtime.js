@@ -16,6 +16,48 @@ const canvas = document.querySelector('canvas');
 // trips Emscripten's BigInt-to-string conversion. Saves happen before unload.
 window.addEventListener('beforeunload', event => event.stopImmediatePropagation(), {capture: true});
 const send = (type, extra = {}) => parent.postMessage({type, ...extra}, location.origin);
+// The page decides that firmware without a profile has booted once its
+// screen stays quiet, so it hears when the panel shows something new. SDL's
+// software renderer presents each frame with putImageData on this canvas; a
+// fingerprint of the pixels skips repaints of an unchanged frame. A blank
+// frame (one value throughout: the panel before the firmware draws, a
+// refresh's flash) is reported at once, so the page drops a quiet-screen
+// verdict it was about to reach; a drawn one at most every 100 ms. A new
+// boot (reset, or the ROM's banner) forgets the fingerprint, so its first
+// draw counts even when it repeats the last boot's image.
+let screenPrint = 0, screenTimer = 0;
+function screenChanged(blank) {
+    if (blank) {
+        clearTimeout(screenTimer);
+        screenTimer = 0;
+        send('screen', {blank: true});
+    } else {
+        screenTimer ||= setTimeout(() => { screenTimer = 0; send('screen', {blank: false}); }, 100);
+    }
+}
+function newBoot() {
+    screenPrint = 0;
+    clearTimeout(screenTimer);
+    screenTimer = 0;
+}
+if (typeof CanvasRenderingContext2D === 'function') {
+    const putImageData = CanvasRenderingContext2D.prototype.putImageData;
+    CanvasRenderingContext2D.prototype.putImageData = function (image, ...rest) {
+        if (this.canvas === canvas && image?.data) {
+            const words = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.byteLength >> 2);
+            let hash = 2166136261, blank = true;
+            for (let i = 0; i < words.length; i++) {
+                hash = Math.imul(hash ^ words[i], 16777619);
+                blank &&= words[i] === words[0];
+            }
+            if (hash !== screenPrint) {
+                screenPrint = hash;
+                screenChanged(blank);
+            }
+        }
+        return putImageData.call(this, image, ...rest);
+    };
+}
 const keyCodes = {ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
     Enter: 13, Backspace: 8, Escape: 27, KeyP: 80, Home: 36};
 // Home is a capacitive key on the GT911, separate from the GPIO buttons.
@@ -55,6 +97,7 @@ function turboProperties(machine) {
     return properties.flatMap(property => ['-global', property]);
 }
 function output(line) {
+    if (line.startsWith('ESP-ROM:')) newBoot();
     send('log', {line});
 }
 // Lines the monitor prints: prompts, echo of the page's own commands and
@@ -159,6 +202,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
             keyCode: keyCodes[data.code], which: keyCodes[data.code], bubbles: true
         }));
     } else if (data.type === 'reset') {
+        newBoot();
         homeKey(false);
         window.Module?.browserNetwork?.reset();
         command('system_reset');
@@ -167,6 +211,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
     } else if (data.type === 'sd') {
         sdOperation(data);
     } else if (data.type === 'boot') {
+        newBoot();
         const {machine, panel = 'uc8279-68', flash, sd, rom, wifi = true, turbo = false, ghosting = true} = data;
         machineType = machine;
         // Picco distinguishes taps from long presses in guest time. Keep its

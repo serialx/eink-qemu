@@ -1280,6 +1280,7 @@
     'filter-redirector',
     'filter-replay',
     'filter-rewriter',
+    'guest-clock',
     { 'name': 'igvm-cfg',
       'if': 'CONFIG_IGVM' },
     'input-barrier',

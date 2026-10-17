@@ -207,7 +207,9 @@ static void esp32s3_cpu_reset(void* opaque, int n, int level)
 static void esp32s3_soc_reset(DeviceState *dev)
 {
     Esp32s3SocState *s = ESP32S3_SOC(dev);
-    if (s->requested_reset == 0) {
+    /* No reset requested by the guest: QEMU start or an external reset. */
+    bool power_on = s->requested_reset == 0;
+    if (power_on) {
         s->requested_reset = ESP32S3_SOC_RESET_ALL;
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_PERIPH) {
@@ -233,6 +235,8 @@ static void esp32s3_soc_reset(DeviceState *dev)
         s->rtc_cntl.options0_reg &= ~0xf;
         device_cold_reset(DEVICE(&s->clock));
     }
+    esp32s3_rtc_cntl_boot(&s->rtc_cntl, power_on,
+                          s->requested_reset & ESP32S3_SOC_RESET_PERIPH);
     s->requested_reset = 0;
 }
 
@@ -434,6 +438,9 @@ static void esp32s3_soc_realize(DeviceState *dev, Error **errp)
 
     qdev_realize(DEVICE(&s->rtc_cntl), &s->rtc_bus, &error_fatal);
     esp32s3_soc_add_periph_device(sys_mem, &s->rtc_cntl, DR_REG_RTCCNTL_BASE);
+    /* The RTC IO block (EXT0 pad select, pad levels) belongs to the same device. */
+    memory_region_add_subregion_overlap(sys_mem, DR_REG_RTCIO_BASE,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->rtc_cntl), 1), 1);
 
     qdev_connect_gpio_out_named(DEVICE(&s->rtc_cntl), ESP32S3_RTC_DIG_RESET_GPIO, 0,
                                 qdev_get_gpio_in_named(dev, ESP32S3_RTC_DIG_RESET_GPIO, 0));
@@ -820,6 +827,10 @@ static void esp32s3_machine_init(MachineState *machine)
                            qdev_get_gpio_in(intmatrix_dev, ETS_GPIO_INTR_SOURCE));
         qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32S3_GPIO_WAKE, 0,
                                     qdev_get_gpio_in_named(DEVICE(&ss->rtc_cntl), ESP32S3_RTC_GPIO_WAKE, 0));
+        for (int i = 0; i < ESP32S3_GPIO_RTC_PAD_COUNT; i++) {
+            qdev_connect_gpio_out_named(DEVICE(&ss->gpio), ESP32S3_GPIO_RTC_PAD, i,
+                                        qdev_get_gpio_in_named(DEVICE(&ss->rtc_cntl), ESP32S3_RTC_PAD, i));
+        }
     }
 
     {
@@ -1157,6 +1168,15 @@ static DeviceState *x4pro_add_i2c(I2CBus *bus, const char *type, uint8_t addr)
     return DEVICE(dev);
 }
 
+/* The keys hold Power after a cold power-on, or after a wake by the Power pad. */
+static void x4pro_connect_boot(Esp32s3SocState *ss, DeviceState *keys)
+{
+    for (int i = 0; i < 2; i++) {
+        qdev_connect_gpio_out_named(DEVICE(&ss->rtc_cntl), ESP32S3_RTC_BOOT, i,
+                                    qdev_get_gpio_in_named(keys, "boot", i));
+    }
+}
+
 /*
  * Xteink X4 Pro board: UC8279/UC8179 panel on GPSPI2 (CS 13, DC 18, RST 14,
  * BUSY_N 6 through GPIO; SCLK 12 and SDA 11 also bit-banged for reads), the
@@ -1189,6 +1209,7 @@ static void x4pro_board_init(Esp32s3SocState *ss, DeviceState *spi2)
     for (int k = 0; k < ARRAY_SIZE(key_pins); k++) {
         qdev_connect_gpio_out(keys, k, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, key_pins[k]));
     }
+    x4pro_connect_boot(ss, keys);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(keys), &error_fatal);
 
     DeviceState *i2c0 = DEVICE(object_resolve_path_component(OBJECT(ss), "i2c0"));
@@ -1286,6 +1307,7 @@ static void picco_board_init(Esp32s3SocState *ss, DeviceState *spi2)
     for (int k = 0; k < ARRAY_SIZE(key_pins); k++) {
         qdev_connect_gpio_out(keys, k, qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, key_pins[k]));
     }
+    x4pro_connect_boot(ss, keys);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(keys), &error_fatal);
     qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 5), 1);
     qemu_set_irq(qdev_get_gpio_in_named(gpio, ESP32S3_GPIO_IN, 6), 0);

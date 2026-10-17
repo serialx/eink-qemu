@@ -78,10 +78,10 @@ test('Picco is an explicit S3 board with its own composition assets', () => {
     assert.throws(() => FlashImage.selectMachine(5, 'picco'), /conflicts/);
     assert.deepEqual(FlashImage.appLayout('picco'), {
         appOffset: 0xe0000, appSize: 0xe70000, otaOffset: 0x15000,
-        bootAsset: 'bootloader-esp32s3.bin', partitionAsset: 'partitions-picco.bin', nvsAsset: null
+        bootAsset: 'bootloader-esp32s3.bin', partitionAsset: 'partitions-picco.bin',
+        partitionTable: 'the stock BOOX Picco partition table'
     });
-    assert.equal(FlashImage.appLayout('x3').nvsAsset, 'nvs-x3.bin');
-    assert.equal(FlashImage.appLayout('x4').nvsAsset, null);
+    assert.equal(FlashImage.appLayout('x3').partitionTable, 'the Arduino-ESP32 16 MB partition table');
     assert.equal(FlashImage.appLayout('x4pro').appOffset, 0x10000);
     assert.throws(() => FlashImage.appLayout('unknown'), /Unknown device/);
 });
@@ -108,7 +108,7 @@ test('composition validates app capacity and bundled assets', () => {
     assert.throws(() => FlashImage.composeApp(app(), {...options, boot: app(5)}), /boot assets/);
     assert.throws(() => FlashImage.composeApp(app(), {...options, partitions: table()}), /partition/);
 });
-test('CrossPoint and XOTA composition retain existing offsets and boot selection', () => {
+test('app composition retains existing offsets and boot selection', () => {
     const bytes = app(), options = {machine: 'x4pro', boot: app(), partitions: table()};
     const flash = FlashImage.composeApp(bytes, options);
     assert.deepEqual(flash.subarray(0x10000, 0x10000 + bytes.length), bytes);
@@ -118,6 +118,23 @@ test('CrossPoint and XOTA composition retain existing offsets and boot selection
     const nvs = new Uint8Array(0x5000).fill(0x37);
     const x3 = FlashImage.composeApp(app(5), {machine: 'x3', boot: app(5), partitions: table(), nvs});
     assert.deepEqual(x3.subarray(0x9000, 0xe000), nvs);
+});
+test('NVS is written only when given, and must fit the table\'s NVS partition', () => {
+    const options = {machine: 'x3', boot: app(5), partitions: table()};
+    const plain = FlashImage.composeApp(app(5), options);
+    assert.ok(plain.subarray(0x9000, 0xe000).every(byte => byte === 255));
+    assert.throws(() => FlashImage.composeApp(app(5), {...options, nvs: new Uint8Array(0x4000)}), /partition table/);
+    const picco = FlashImage.composeApp(app(), {machine: 'picco', boot: app(), partitions: table(true),
+        nvs: new Uint8Array(0xc000).fill(1)});
+    assert.equal(picco[0x9000], 1);
+});
+test('C strings are found only whole, with their terminating NUL', () => {
+    const bytes = new TextEncoder().encode('xx\0cphw\0dev_det\0cphwx');
+    assert.ok(FlashImage.hasCStrings(bytes, ['cphw', 'dev_det']));
+    assert.ok(FlashImage.hasCStrings(bytes, []));
+    assert.ok(!FlashImage.hasCStrings(bytes, ['cphwx']));
+    assert.ok(!FlashImage.hasCStrings(bytes, ['cphw', 'missing']));
+    assert.ok(!FlashImage.hasCStrings(new Uint8Array([0x63, 0x70, 0x68, 0x77]), ['cphw']));
 });
 test('merged Picco images preserve a populated recovery slot and original OTA selection', () => {
     const bytes = app(), flash = FlashImage.composeApp(bytes, {
