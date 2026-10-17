@@ -115,6 +115,9 @@ typedef struct mac80211_frame {
     struct mac80211_frame *next_frame;
 }  QEMU_PACKED mac80211_frame;
 
+/* The fields following the wire data are host-only bookkeeping. */
+#define IEEE80211_FRAME_CAPACITY offsetof(mac80211_frame, frame_length)
+
 typedef struct access_point_info {
     const char *ssid;
     int channel;

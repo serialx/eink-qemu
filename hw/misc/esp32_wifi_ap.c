@@ -32,6 +32,7 @@
 #include "qemu/osdep.h"
 #include "net/net.h"
 #include "qemu/timer.h"
+#include "qemu/log.h"
 
 #include "hw/core/irq.h"
 #include "hw/misc/esp32_wifi.h"
@@ -302,6 +303,11 @@ void Esp32_WLAN_insert_frame(Esp32WifiState *s, struct mac80211_frame *frame)
 {
     struct mac80211_frame *i_frame;
 
+    if (frame->frame_length > IEEE80211_FRAME_CAPACITY - 4 ||
+        s->inject_queue_size >= Esp32_WLAN__MAX_INJECT_QUEUE_SIZE) {
+        g_free(frame);
+        return;
+    }
     insertCRC(frame);
     if(DEBUG) {
         ANSI_FG_HCOLOR(GREEN);
@@ -341,7 +347,7 @@ static _Bool Esp32_WLAN_can_receive(NetClientState *ncs)
         return 0;
     }
     */
-    if (s->inject_queue_size > Esp32_WLAN__MAX_INJECT_QUEUE_SIZE) {
+    if (s->inject_queue_size >= Esp32_WLAN__MAX_INJECT_QUEUE_SIZE) {
         // overload, please give me some time...
         return 0;
     }
@@ -400,16 +406,34 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           unsigned char ethernet_frame[1518];
           struct mac80211_frame *reply = NULL;
 
+            if (size < 14 + 4) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Wi-Fi short encapsulated action frame\n");
+                g_free(frame);
+                return size;
+            }
+
           //discard packages from others channels
-          if((buf[12] & 0x0F) != esp32_wifi_channel) return -1;
+            if ((buf[12] & 0x0F) != esp32_wifi_channel) {
+                g_free(frame);
+                return size;
+            }
           //discard packages originated from the same mac address
-          if(!memcmp(&buf[6],s->macaddr,6)) return -1;
+            if (!memcmp(&buf[6], s->macaddr, 6)) {
+                g_free(frame);
+                return size;
+            }
           //check destination
-          if((memcmp(&buf[0],BROADCAST,6))&&(memcmp(&buf[0],s->macaddr,6))) return -1;
+            if (memcmp(&buf[0], BROADCAST, 6) &&
+                memcmp(&buf[0], s->macaddr, 6)) {
+                g_free(frame);
+                return size;
+            }
 
           //action frame
           Esp32_WLAN_init_ap_frame(s, frame);
-          memcpy(frame->data_and_fcs, buf+14, size-14);
+          /* Encapsulation includes FCS; insertion supplies a replacement. */
+          memcpy(frame->data_and_fcs, buf + 14, size - 14 - 4);
           memcpy(frame->destination_address, &buf[0], 6);
           memcpy(frame->source_address, &buf[6], 6);
           memset(frame->bssid_address, 0xff, 6);
@@ -417,7 +441,7 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           frame->frame_control.sub_type= IEEE80211_TYPE_MGT_SUBTYPE_ACTION;
           frame->frame_control.flags=  ((buf[12] & 0xF0) == IEEE80211_ENCAPSULATED_PROTECTED) ? 0x40 : 00;
           frame->duration_id= 0 ;
-          frame->frame_length-=12;
+          frame->frame_length = IEEE80211_HEADER_SIZE + size - 14 - 4;
           Esp32_WLAN_insert_frame(s, frame);
 
 
@@ -460,6 +484,7 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
            */
           qemu_send_packet(qemu_get_queue(s->nic), ethernet_frame, ethernet_frame_size);
 
+          g_free(reply);
           return size;
         }
 
@@ -467,11 +492,20 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
         {
 
           //discard packages from others channels
-          if((buf[12] & 0x0F) != esp32_wifi_channel) return -1;
+            if ((buf[12] & 0x0F) != esp32_wifi_channel) {
+                g_free(frame);
+                return size;
+            }
           //discard packages originated from the same mac address
-          if(!memcmp(&buf[6],s->macaddr,6)) return -1;
+            if (!memcmp(&buf[6], s->macaddr, 6)) {
+                g_free(frame);
+                return size;
+            }
           //check destination
-          if(memcmp(&buf[0],s->macaddr,6)) return -1;
+            if (memcmp(&buf[0], s->macaddr, 6)) {
+                g_free(frame);
+                return size;
+            }
 
           Esp32_WLAN_Set_Packet_Status(ESP32_PHYA_ACK);
           timer_mod_anticipate(s->wait_ack_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -493,6 +527,7 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           }
           infoprint(frame);
           //ACK is not inserted in DMA
+          g_free(frame);
           return size;
         }
         Esp32_WLAN_init_ap_frame(s, frame);
@@ -511,6 +546,17 @@ static NetClientInfo net_info = {
 };
 
 void Esp32_WLAN_reset_ap(Esp32WifiState *s) {
+    while (s->inject_queue) {
+        mac80211_frame *frame = s->inject_queue;
+        s->inject_queue = frame->next_frame;
+        g_free(frame);
+    }
+    if (s->inject_timer) {
+        timer_del(s->inject_timer);
+    }
+    if (s->wait_ack_timer) {
+        timer_del(s->wait_ack_timer);
+    }
     esp32_wifi_channel = 0;
     s->ap_state = Esp32_WLAN__STATE_NOT_AUTHENTICATED;
     s->beacon_ap=0;
@@ -559,6 +605,42 @@ static void send_single_frame(Esp32WifiState *s, struct mac80211_frame *frame, s
     Esp32_WLAN_insert_frame(s, reply);
 }
 
+static bool esp32_wlan_frame_valid(const mac80211_frame *frame)
+{
+    size_t length = frame->frame_length;
+    size_t body;
+
+    if (length < 2 || length > IEEE80211_FRAME_CAPACITY) {
+        return false;
+    }
+    if (frame->frame_control.type == IEEE80211_TYPE_CTL) {
+        return length >= 10;
+    }
+    if (length < IEEE80211_HEADER_SIZE) {
+        return false;
+    }
+    body = length - IEEE80211_HEADER_SIZE;
+    if (frame->frame_control.type == IEEE80211_TYPE_MGT) {
+        switch (frame->frame_control.sub_type) {
+        case IEEE80211_TYPE_MGT_SUBTYPE_BEACON:
+        case IEEE80211_TYPE_MGT_SUBTYPE_PROBE_RESP:
+            return body >= 14 && frame->data_and_fcs[12] == 0 &&
+                   frame->data_and_fcs[13] <= 32 &&
+                   frame->data_and_fcs[13] <= body - 14;
+        case IEEE80211_TYPE_MGT_SUBTYPE_AUTHENTICATION:
+        case IEEE80211_TYPE_MGT_SUBTYPE_ASSOCIATION_RESP:
+            return body >= 6;
+        case IEEE80211_TYPE_MGT_SUBTYPE_ACTION:
+            return body >= 4;
+        default:
+            break;
+        }
+    } else if (frame->frame_control.type == IEEE80211_TYPE_DATA) {
+        return body >= 8 + 4;
+    }
+    return true;
+}
+
 void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
 {
     struct mac80211_frame *reply = NULL;
@@ -567,6 +649,11 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     unsigned long ethernet_frame_size;
     unsigned char ethernet_frame[1518];
 
+    if (!esp32_wlan_frame_valid(frame)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Wi-Fi malformed frame: %u bytes\n",
+                      frame->frame_length);
+        return;
+    }
 
     if(DEBUG){
         if((ENABLE_BEACON)||!((frame->frame_control.type == IEEE80211_TYPE_MGT)&&(frame->frame_control.sub_type == IEEE80211_TYPE_MGT_SUBTYPE_BEACON))){
@@ -594,7 +681,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
         switch(frame->frame_control.sub_type) {
             case IEEE80211_TYPE_MGT_SUBTYPE_BEACON:
                 if(s->ap_state==Esp32_WLAN__STATE_NOT_AUTHENTICATED || s->ap_state==Esp32_WLAN__STATE_AUTHENTICATED) {
-                    strncpy(ssid,(char *)frame->data_and_fcs+14,frame->data_and_fcs[13]);
+                    memcpy(ssid, frame->data_and_fcs + 14,
+                           frame->data_and_fcs[13]);
+                    ssid[frame->data_and_fcs[13]] = '\0';
                     if(DEBUG) printf("beacon from %s\n",ssid);
                     dummy_ap.ssid=ssid;
                     dummy_ap.channel = esp32_wifi_channel;
@@ -627,8 +716,11 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
                 // add packet content
                 ethernet_frame_size = frame->frame_length -IEEE80211_HEADER_SIZE;
 
-                if (ethernet_frame_size > sizeof(ethernet_frame)) {
-                    ethernet_frame_size = sizeof(ethernet_frame);
+                if (ethernet_frame_size > sizeof(ethernet_frame) - 14) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "Wi-Fi Ethernet payload too long: %lu\n",
+                                  ethernet_frame_size);
+                    return;
                 }
                 memcpy(&ethernet_frame[14], &frame->data_and_fcs[0], ethernet_frame_size);
                 // add size of ethernet header
@@ -647,7 +739,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
                 break;
             case IEEE80211_TYPE_MGT_SUBTYPE_PROBE_RESP:
                 ap_info=&dummy_ap;
-                strncpy(ssid,(char *)frame->data_and_fcs+14,frame->data_and_fcs[13]);
+                memcpy(ssid, frame->data_and_fcs + 14,
+                       frame->data_and_fcs[13]);
+                ssid[frame->data_and_fcs[13]] = '\0';
                 if(DEBUG) printf("probe resp from %s\n",ssid);
                 dummy_ap.ssid=ssid;
                 s->ap_state=Esp32_WLAN__STATE_STA_NOT_AUTHENTICATED;
@@ -720,6 +814,11 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     if ((frame->frame_control.type == IEEE80211_TYPE_DATA) &&
         (frame->frame_control.sub_type == IEEE80211_TYPE_DATA_SUBTYPE_DATA)) {
         if(s->ap_state == Esp32_WLAN__STATE_STA_DHCP) {
+            if (frame->frame_length < IEEE80211_HEADER_SIZE + 8 +
+                sizeof(dhcp_request_t) + 3 + 4) {
+                qemu_log_mask(LOG_GUEST_ERROR, "Wi-Fi short DHCP frame\n");
+                return;
+            }
             dhcp_request_t *req=(dhcp_request_t *)&frame->data_and_fcs[8];
             // check for a dhcp offer
             if(req->dhcp.bp_options[0]==0x35 && req->dhcp.bp_options[2]==0x2) {
@@ -767,10 +866,11 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             // add packet content
             ethernet_frame_size = frame->frame_length - IEEE80211_HEADER_SIZE - 4 - 8;
 
-            // for some reason, the packet is 22 bytes too small (??)
-            ethernet_frame_size += 22;
-            if (ethernet_frame_size > sizeof(ethernet_frame)) {
-                ethernet_frame_size = sizeof(ethernet_frame);
+            if (ethernet_frame_size > sizeof(ethernet_frame) - 14) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Wi-Fi Ethernet payload too long: %lu\n",
+                              ethernet_frame_size);
+                return;
             }
             memcpy(&ethernet_frame[14], &frame->data_and_fcs[8], ethernet_frame_size);
             // add size of ethernet header

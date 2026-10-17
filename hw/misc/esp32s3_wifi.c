@@ -124,13 +124,31 @@ static void esp32s3_wifi_write(void *opaque, hwaddr addr, uint64_t value,
         case A_S3_WIFI_DMA_OUTLINK:
             if (value & 0xc0000000) {
                 // do a DMA transfer to the hardware from esp32 memory
-                mac80211_frame frame;
-                dma_list_item item;
+                mac80211_frame frame = { 0 };
+                dma_list_item item = { 0 };
                 unsigned memaddr = (0x3fc00000 | (value & 0xfffff));
-                address_space_read(&address_space_memory, memaddr,
-                            MEMTXATTRS_UNSPECIFIED, &item, 12);
-                address_space_read(&address_space_memory, item.address,
-                            MEMTXATTRS_UNSPECIFIED, &frame, item.length);
+                if (address_space_read(&address_space_memory, memaddr,
+                        MEMTXATTRS_UNSPECIFIED, &item,
+                        sizeof(item)) != MEMTX_OK) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "Wi-Fi TX descriptor read failed\n");
+                    set_interrupt(s, 0x80);
+                    break;
+                }
+                if (item.length > IEEE80211_FRAME_CAPACITY) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "Wi-Fi TX frame too long: %u\n", item.length);
+                    set_interrupt(s, 0x80);
+                    break;
+                }
+                if (address_space_read(&address_space_memory, item.address,
+                        MEMTXATTRS_UNSPECIFIED, &frame,
+                        item.length) != MEMTX_OK) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "Wi-Fi TX buffer read failed\n");
+                    set_interrupt(s, 0x80);
+                    break;
+                }
                 // frame from esp32 to ap
                 frame.frame_length=item.length;
                 frame.next_frame=0;
@@ -148,9 +166,27 @@ static int match_mac_address(uint8_t *a1,uint8_t *a2) {
 }
 // frame from ap to esp32
 void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame,int length, int signal_strength) {
+    dma_list_item item = { 0 };
+    size_t total;
+
     if(s->dma_inlink_address==0) return;
-    uint8_t *header=malloc(sizeof(wifi_pkt_rx_ctrl_c3_t)+length);
-    memset(header,0,sizeof(wifi_pkt_rx_ctrl_c3_t)+length);
+    if (length < IEEE80211_HEADER_SIZE || length > IEEE80211_FRAME_CAPACITY) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Wi-Fi invalid RX frame length: %d\n",
+                      length);
+        return;
+    }
+    total = sizeof(wifi_pkt_rx_ctrl_c3_t) + length;
+    if (address_space_read(&address_space_memory, s->dma_inlink_ptr,
+            MEMTXATTRS_UNSPECIFIED, &item, sizeof(item)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Wi-Fi RX descriptor read failed\n");
+        return;
+    }
+    if (total > item.size) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Wi-Fi RX buffer too small: %u < %zu\n",
+                      item.size, total);
+        return;
+    }
+    uint8_t *header = g_malloc0(total);
     wifi_pkt_rx_ctrl_c3_t *pkt=(wifi_pkt_rx_ctrl_c3_t *)header;
     *pkt=(wifi_pkt_rx_ctrl_c3_t){
         .rssi=(signal_strength+(rand()%10)+96),
@@ -177,16 +213,19 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame,int length, int si
     memcpy(header+sizeof(wifi_pkt_rx_ctrl_c3_t),frame,length);
     length+=sizeof(wifi_pkt_rx_ctrl_c3_t);
     // do a DMA transfer from the hardware to esp32 memory
-    dma_list_item item;
-    address_space_read(&address_space_memory, s->dma_inlink_ptr, MEMTXATTRS_UNSPECIFIED, &item, 12);
-    address_space_write(&address_space_memory, item.address, MEMTXATTRS_UNSPECIFIED, header, length);
+    if (address_space_write(&address_space_memory, item.address,
+            MEMTXATTRS_UNSPECIFIED, header, length) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Wi-Fi RX buffer write failed\n");
+        g_free(header);
+        return;
+    }
     item.length=length;
     item.eof=1;
     address_space_write(&address_space_memory, s->dma_inlink_ptr, MEMTXATTRS_UNSPECIFIED,&item,4);
     s->dma_inlink_ptr=item.next;
     if(s->dma_inlink_ptr == 0) s->dma_inlink_ptr = s->dma_inlink_address;
     set_interrupt(s, 0x1004000);
-    free(header);
+    g_free(header);
 }
 
 static const MemoryRegionOps esp32s3_wifi_ops = {

@@ -47,7 +47,9 @@ struct mac80211_frame *Esp32_WLAN_create_association_request(access_point_info *
 struct mac80211_frame *Esp32_WLAN_create_association_response(access_point_info *ap);
 struct mac80211_frame *Esp32_WLAN_create_disassociation(void);
 struct mac80211_frame *Esp32_WLAN_create_data_reply(Esp32WifiState *s, struct mac80211_frame *incoming);
-struct mac80211_frame *Esp32_WLAN_create_data_packet(Esp32WifiState *s, const uint8_t *buf, int size);
+struct mac80211_frame *Esp32_WLAN_create_data_packet(Esp32WifiState *s,
+                                                    const uint8_t *buf,
+                                                    size_t size);
 struct mac80211_frame *Esp32_WLAN_create_ack(void);
 struct mac80211_frame *Esp32_WLAN_create_dhcp_discover(Esp32WifiState *s);
 struct mac80211_frame *Esp32_WLAN_create_dhcp_request(Esp32WifiState *s, uint8_t *ip);
