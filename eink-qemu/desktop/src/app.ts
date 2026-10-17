@@ -5,6 +5,7 @@ import type { Backend, DropHandlers, FileRef, Screen } from './backend';
 import { appendLines, clearConsole } from './console';
 import { choose, confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
+import { selectedDevice } from './devices';
 import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
 import { Readiness } from './readiness';
 import { attachSetup, closeSetup, paintSetup } from './setup';
@@ -139,7 +140,8 @@ async function start() {
   try {
     status('Loading firmware…');
     const input = await api.readFirmware();
-    const { flash, machine, composed, composition: composedFrom } = await prepareFlash(input, settings.device, status);
+    const device = selectedDevice(settings.device, setup?.firmware ?? null) ?? 'auto';
+    const { flash, machine, composed, composition: composedFrom } = await prepareFlash(input, device, status);
     const composition = composedFrom ? `${composedFrom} · ` : '';
     if (composed) {
       appendLines([composition.replace(/ · $/, '')]);

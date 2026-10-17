@@ -4,7 +4,7 @@
    and finds the ELF (src-tauri/src/lib.rs `choose_firmware`); this paints
    what it reports and hands choices back. */
 import type { Settings, Setup } from './types';
-import { deviceOf, devicesOf } from './devices';
+import { selectedDevice, devicesOf } from './devices';
 
 export type RunOption = 'wifi' | 'ghosting' | 'turbo';
 export interface SetupHandlers {
@@ -42,8 +42,7 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
   state = next;
   idle = nextIdle;
   const firmware = next?.firmware ?? null;
-  const device = !next ? null : next.settings.device === 'auto'
-    ? deviceOf(firmware?.chip ?? null, firmware?.name ?? '') : next.settings.device;
+  const device = next ? selectedDevice(next.settings.device, firmware) : null;
 
   // The chip: which firmware, on which device, with or without its ELF.
   $('flash-name').textContent = firmware ? label(firmware.name, firmware.parent) : 'Choose firmware…';

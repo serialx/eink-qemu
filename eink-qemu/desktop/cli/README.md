@@ -43,7 +43,7 @@ app gets the bundled bootloader and Arduino-ESP32's 16 MB partition table
 layout; it is read and checked as ESP-IDF's `gen_esp32part.py` does. The app
 goes to ESP-IDF's boot-default slot: the factory partition, else the lowest
 OTA slot. The board defaults to X3 for ESP32-C3 and X4 Pro for ESP32-S3.
-Case-insensitive filename tokens separated by non-alphanumeric characters
+Case-insensitive filename tokens of ASCII letters and digits
 select X4 with `x4` but no `x3`, X3 with `x3` but no `x4`, or Picco with
 `picco` on S3; both `x3` and `x4`, or neither, use the default. Folder names,
 `x4pro` as an X4 hint, and hints for another chip are ignored. `--machine`

@@ -72,8 +72,8 @@ Alternatively put copies of your images in web-dist and open:
   http://127.0.0.1:8000/?flash=crosspoint-1.6.5-x3-x4.bin&sd=sd.img
 Query images must be same-origin or provide appropriate CORS/CORP headers.
 Each firmware's device is remembered between visits. New firmware defaults
-to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens, separated by
-non-alphanumeric characters and ignoring case, select X4 with x4 but no x3,
+to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens of ASCII letters
+and digits ignore case and select X4 with x4 but no x3,
 X3 with x3 but no x4, or Picco with picco on S3. Both x3 and x4, or neither,
 use the C3 default; x4pro is a separate token. Folder names and hints for the
 other chip are ignored. A remembered device wins over the filename hint.

@@ -48,9 +48,12 @@ selected explicitly**, because their chips match the other boards.
    example), a merged firmware `.bin`, an X4 Pro `.xota` update, or a 16 MiB
    flash dump. The
    emulator starts as soon as the file loads.
-3. The device follows from the firmware's chip: ESP32-S3 firmware runs on the
-   X4 Pro. For the X3 or the X4, and for the BOOX Picco, pick the device in the
-   firmware card (the chip at the top of the page).
+3. New firmware defaults to X3 for ESP32-C3 and X4 Pro for ESP32-S3. An `x4`
+   filename token without `x3` selects X4; `picco` selects Picco on S3.
+   Tokens are ASCII alphanumeric runs and ignore case. A remembered choice
+   for that firmware wins over the filename. Change the device in the
+   firmware card (the chip at the top of the page), or use `?device=x4`
+   to override the choice in a link.
 
 Use the arrow keys, Enter, Esc and `P` (Power). On boards with a touchscreen,
 click the screen to touch it. The SD card panel lets you add books, swap in

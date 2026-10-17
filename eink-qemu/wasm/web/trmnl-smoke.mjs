@@ -72,6 +72,9 @@ const UPLOAD_PICKER = [['#sd-upload'], '#sd-files'];
 try {
     await call('Runtime.enable'); await call('Page.enable'); await call('DOM.enable');
     await call('Emulation.setDeviceMetricsOverride', {width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false});
+    // A previous run remembers X4; the Auto case needs a new firmware choice.
+    await call('Page.navigate', {url: 'about:blank'});
+    await call('Storage.clearDataForOrigin', {origin: target.origin, storageTypes: 'indexeddb'});
     const initial = new URL(base); initial.searchParams.set('device', 'auto');
     await call('Page.navigate', {url: initial.href});
     await wait('crossOriginIsolated && window.einkQemu && document.querySelector("#flash")');
@@ -80,8 +83,10 @@ try {
             [...new Uint8Array(b)].map(n => n.toString(16).padStart(2, '0')).join(''));
     });`);
     await picker();
-    await wait('document.querySelector("#status").textContent.includes("Choose X3 or X4")');
-    assert.equal(await evaluate('!!document.querySelector("iframe")'), false);
+    await wait('document.querySelector("iframe")?.dataset.machine === "x3"');
+    await wait('!document.querySelector("#stop").disabled');
+    await evaluate('document.querySelector("#stop").click()');
+    await wait('!document.querySelector("iframe")');
     // The card never offers the X4 Pro for ESP32-C3 firmware; a link can still ask for it.
     const mismatch = new URL(base); mismatch.searchParams.set('device', 'x4pro');
     await call('Page.navigate', {url: mismatch.href});
@@ -121,5 +126,5 @@ try {
     await call('Page.navigate', {url: base});
     await wait('document.querySelector("#setup-devices [aria-checked=true]")?.dataset.device === "x4"');
     assert.deepEqual(errors, []);
-    console.log('PASS: C3 ambiguity, chip mismatch, X4 boot, preserved firmware, reset, stop, remembered selection');
+    console.log('PASS: C3 default, chip mismatch, X4 boot, preserved firmware, reset, stop, remembered selection');
 } finally { ws.close(); }

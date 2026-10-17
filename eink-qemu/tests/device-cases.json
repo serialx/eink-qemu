@@ -1,0 +1,28 @@
+{
+  "prefixes": ["", "/build/x4/", "/build/x3/", "/build/picco/"],
+  "remembered": [null, "auto", "x3", "x4", "x4pro", "picco"],
+  "names": [
+    ["firmware", "x3", "x4pro"],
+    ["x3", "x3", "x4pro"],
+    ["x4", "x4", "x4pro"],
+    ["x3-x4", "x3", "x4pro"],
+    ["x4-x3", "x3", "x4pro"],
+    ["x4pro", "x3", "x4pro"],
+    ["picco", "x3", "picco"],
+    ["PICCO", "x3", "picco"],
+    ["X4", "x4", "x4pro"],
+    ["x4picco", "x3", "x4pro"],
+    ["x4_picco", "x4", "picco"],
+    ["xxx4", "x3", "x4pro"],
+    ["x4x", "x3", "x4pro"],
+    ["x3.x4", "x3", "x4pro"],
+    ["x3+x4", "x3", "x4pro"],
+    ["x4-picco", "x4", "picco"],
+    ["x3-picco", "x3", "picco"],
+    ["éx4", "x4", "x4pro"],
+    ["Kx4", "x4", "x4pro"],
+    ["x4K", "x4", "x4pro"],
+    ["x4İ", "x4", "x4pro"],
+    ["piccoİ", "x3", "picco"]
+  ]
+}

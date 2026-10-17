@@ -180,6 +180,29 @@ mod tests {
     }
 
     #[test]
+    fn shared_device_cases() {
+        #[derive(serde::Deserialize)]
+        struct Cases {
+            prefixes: Vec<String>,
+            remembered: Vec<Option<String>>,
+            names: Vec<[String; 3]>,
+        }
+        let cases: Cases = serde_json::from_str(include_str!("../../../tests/device-cases.json")).unwrap();
+        for (index, chip) in [Chip::C3, Chip::S3].into_iter().enumerate() {
+            for row in &cases.names {
+                for prefix in &cases.prefixes {
+                    for remembered in &cases.remembered {
+                        let path = format!("{prefix}{}.bin", row[0]);
+                        let remembered = remembered.as_deref();
+                        let expected = remembered.filter(|d| chip.devices().contains(d)).unwrap_or(&row[index + 1]);
+                        assert_eq!(chip.device(Path::new(&path), remembered), expected, "{chip:?} {path} {remembered:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn reads_chip_and_version() {
         let image = app(CHIP_S3, "1.6.5-37-g7394e40f");
         let info = describe(Path::new("/nowhere/x4pro/firmware.bin"), &image);

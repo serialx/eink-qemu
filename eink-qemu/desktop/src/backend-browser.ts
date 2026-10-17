@@ -17,6 +17,7 @@ import {
 
 const params = new URLSearchParams(location.search);
 const MACHINES: Machine[] = ['x3', 'x4', 'x4pro', 'picco'];
+const deviceOverride = MACHINES.find((device) => device === params.get('device'));
 const PANELS: Settings['panel'][] = ['uc8279-68', 'uc8179'];
 const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' };
 const MiB = 1024 ** 2;
@@ -170,7 +171,7 @@ async function useFile(file: File, keep = true): Promise<Setup> {
   const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
   const info = { ...describeFirmware(file.name, file.size, head, file.lastModified || null), path: keptId(file) };
   const remembered = recent.find((r) => r.id === info.path)?.device;
-  settings.device = deviceOf(info.chip, file.name, remembered) ?? 'auto';
+  settings.device = deviceOverride ?? deviceOf(info.chip, file.name, remembered) ?? 'auto';
   firmware = { source: { kind: 'file', file }, info, bytes: null };
   if (keep) {
     // The list changes now; the copy is kept in the background.
@@ -599,9 +600,7 @@ export const browser: Backend = {
         const bytes = await fetchBytes(flash);
         const name = flash.split('/').pop() || flash;
         firmware = { source: { kind: 'url', url: flash }, info: describeFirmware(name, bytes.length, bytes.subarray(0, HEAD), null), bytes };
-        if (!params.has('device') || settings.device === 'auto') {
-          settings.device = deviceOf(firmware.info.chip, name) ?? 'auto';
-        }
+        settings.device = deviceOverride ?? deviceOf(firmware.info.chip, name) ?? 'auto';
       } catch (error) { problems.push(`Firmware: ${errorMessage(error)}`); }
     } else if (recent.length) {
       // The firmware last chosen in this browser, ready for Start.
