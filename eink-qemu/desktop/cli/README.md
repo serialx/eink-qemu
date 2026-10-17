@@ -199,7 +199,7 @@ quoting is needed and `#` starts a comment.
 | Step | What it does |
 | --- | --- |
 | `ready[:SECONDS]` | Wait for the boot to finish (below) |
-| `wait-log:REGEX` | Wait for a log line matching REGEX after the last action |
+| `wait-log:REGEX` | Wait for a log line matching REGEX after the last action (or `ready`) |
 | `wait-screen[:SECONDS]` | Wait for the screen to change after the last action and settle |
 | `wait-quiet[:SECONDS]` | Wait until the screen has been unchanged for SECONDS of guest time (default 2) |
 | `wait:SECONDS` | Let the guest run for that much guest time |
@@ -213,9 +213,11 @@ quoting is needed and `#` starts a comment.
 | `heap[:NAME]` | Walk every heap into `heaps/NAME.json`; the record has the totals |
 | `trace-start:NAME`, `trace-stop:NAME` | An allocation window (needs `--trace`) |
 | `mark:NAME` | A labelled record; `compare` groups `wait-log` values by the mark before them |
+| `heap-on-log:NAME=REGEX` | From here on, walk the heaps whenever a log line matches REGEX (below) |
 | `expect-log:REGEX`, `expect-no-log:REGEX` | Check the whole log so far |
 | `expect-shot:NAME=PNG[@X,Y,W,H...]` | Compare a shot with a PNG, outside masked rectangles |
 | `repeat:N` ... `end` | Run the steps between N times |
+| `repeat:until-log:REGEX` ... `end` | Run them until a log line matches REGEX (below); `repeat:N:until-log:REGEX` stops after N passes at most |
 | `hmp:COMMAND` | A QEMU monitor command; the output is in the record |
 
 Keys: `back confirm left right up down power` on the X3 and X4; `up down
@@ -234,7 +236,36 @@ In a name, `{i}` is the iteration of the innermost `repeat`, so
 `wait-screen` look only at what happened after the last action (or after
 `ready`): every log line printed before the action is delivered first, so
 none of them can satisfy the wait. After a match, the next `wait-log` looks
-past the matched line.
+past the matched line. A line the boot printed before `ready` passed, such
+as the first page of a book the firmware boots into, can therefore never
+satisfy a `wait-log` after `ready`: the run prints a `warning` record when
+the first `wait-log` after `ready` is for such a line, and a `wait-log` that
+times out names the latest matching line it did not look at. Check for a
+line that may already be in the log with `expect-log`.
+
+A loop can run until something happens rather than a fixed number of
+times. `repeat:until-log:REGEX` ... `end` runs its steps until a log line
+printed since the loop began matches REGEX. It looks after each pass, and a
+`wait-log`, `wait-screen` or `wait-quiet` inside the loop that is waiting
+when the line has come, or that passes once it has, ends the loop at once:
+the wait is a passed step with `loop_ended` (the line), and the rest of the
+pass is skipped. A `press`, `touch` or `swipe` in the loop looks too, after
+its wait for the firmware to go quiet (the line that ends a pass often comes
+just after the one its last wait matched): when the line has come, the input
+is not sent (`sent: false`) and the loop ends. That way a line that comes instead of the one a wait looks
+for (an error, say) ends the loop rather than timing the wait out. The line
+of an enclosing until-log loop ends the loops inside it too, up to that
+loop. Its `repeat` record has `passes`, `ended` (`log`; `outer` when an
+enclosing loop's line ended it; `count` when it ran its `N` passes) and the
+`line`:
+
+```text
+# CrossPoint: turn pages until the reader saves its place in the sixth spine item
+repeat:until-log:Progress saved: spine=5
+press:right
+wait-log:Page render
+end
+```
 
 Before each input step the tool waits until the firmware's log has been
 quiet, the panel idle and the CPU idle (from the emulator's instruction
@@ -306,21 +337,26 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 
 | Step | Fields |
 | --- | --- |
-| `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`quiet`), `boot_s` (host seconds from this boot's ROM banner, or without one from the run's start or the last reset, to Home for CrossPoint or to the last screen update before the quiet; the step's own `ms` also counts the quiet), `home_fw_ms` (CrossPoint: the firmware's ms at Home), `restarts` |
+| `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`reader`/`quiet`), `boot_s` (host seconds from this boot's ROM banner, or without one from the run's start or the last reset, to Home or a book's first page for CrossPoint, or to the last screen update before the quiet; the step's own `ms` also counts the quiet), `home_fw_ms` (CrossPoint: the firmware's ms at Home) or `page_fw_ms` (at the book's first page), `screen`, `restarts` |
 | `mark` | `name`, and the counters so far: `screen_updates` (display updates the guest sent), `panel_refreshes`, `panel_refresh_ms` (their guest time) |
-| `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs) |
+| `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs); `loop_ended` instead when its until-log loop's line ended it (also on `wait-screen` and `wait-quiet`) |
 | `wait-screen` | `frame`, `repaints` (settled updates before it that redrew the same picture) |
 | `wait-quiet` | `frame` |
-| `press`, `touch`, `swipe` | `waited_ms` (the input wait), coordinates |
+| `press`, `touch`, `swipe` | `waited_ms` (the input wait), coordinates; `sent: false` and `loop_ended` when its until-log loop ended before the input |
 | `shot` | `file`, `pixels_sha256` (of the gray pixels, not the PNG file), `size` |
-| `heap` | see below |
+| `heap` | see below; a `heap-on-log` walk adds `on_log` (the line), `line_fw_ms`, `line_age_ms` and `lines` |
+| `repeat` (until-log loops) | `passes`, `ended` (`log`, `outer` or `count`), `line` |
 | `trace-stop` | `allocs`, `alloc_bytes`, `freed`, `kept`, `kept_bytes`, `older_freed_bytes`, `top_sites` |
 | failed step | `error`, `last_lines`, `fail_dir` |
 
+A `warning` record (`text`, `warning`) says something about a step that did
+not fail it, such as a `wait-log` that cannot see a line the boot printed.
+
 The `end` record's `metrics` hold the run's `screen_updates`,
 `panel_refreshes`, `panel_refresh_ms`, `log_errors` and `log_warnings`
-(ESP-IDF's `E (…)` and `W (…)` lines), and for CrossPoint a `crosspoint`
-object with its page renders, render medians and lowest `[MEM]` free.
+(ESP-IDF's `E (…)` and `W (…)` lines, and CrossPoint's own `[ERR]` lines),
+and for CrossPoint a `crosspoint` object with its page renders, render
+medians and lowest `[MEM]` free.
 
 ## Heap profiling
 
@@ -344,9 +380,25 @@ free, 2 = poisoned, 4 = corrupt, and the requested size). With `--trace`,
 `sites` gives each block's index into the file's `siteNames` (function and
 source line; -1 when the block was not traced).
 
+`heap-on-log:NAME=REGEX` walks the heaps whenever a log line matches, from
+the step on, for the rest of the run (in a session, also between requests):
+`heap-on-log:err=\[ERR\]` keeps the heaps at each of CrossPoint's errors
+as `heaps/err.json`, `err-2.json`, and so on, each with a `heap` record whose
+`on_log` is the line. The walk stops the guest as soon as the tool sees the
+line, usually within tens of ms; `line_age_ms` (host time) says how long it
+was, and a busy host can make it longer. So it shows the heap just after the
+firmware logged the line, not at the instant something failed. Lines that
+come together get one walk (`lines` counts them); each watch takes at most
+100. A walk that cannot be kept is a `warning` record, not a failed step.
+The same NAME again watches for its new REGEX; in a repeat, `{i}` in NAME
+makes one watch per pass.
+
 `--trace` records every allocation and free with its call stack (the
 heaptrace plugin; it needs the firmware's ELF, found beside the firmware or
-given with `--elf`). Between `trace-start:NAME` and `trace-stop:NAME`, the
+given with `--elf`). An allocation's site is the first of the firmware's own
+functions above the allocator; a function that only wraps an allocation,
+such as CrossPoint's `makeUniqueNoThrow`, is listed in the firmware's
+profile and counted with the allocator, so its caller is the site. Between `trace-start:NAME` and `trace-stop:NAME`, the
 record counts allocations, frees and the bytes still held at the end, by
 allocation site; `traces/NAME.json` lists every site. A window sees only
 what happened inside it; `live_sites` in a `heap` record covers everything

@@ -13,6 +13,7 @@ use crate::output::Printer;
 use crate::run::{child_code, collect_steps, interrupted, Tap};
 use crate::{RunArgs, EXIT_FAIL, EXIT_SETUP, EXIT_USAGE};
 use eink_core::script::steps;
+use eink_core::script::events::RunEvents;
 use eink_core::script::Runner;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -116,10 +117,10 @@ pub fn remember_trace_starts(names: &mut Vec<String>, parsed: &[steps::Step]) {
 }
 
 /// Resolves when the emulator stops running.
-async fn alive_watch(runner: &Runner) {
+async fn alive_watch(events: Arc<RunEvents>) {
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        if runner.events.state().is_some_and(|s| s.state != "running" && s.state != "starting") {
+        if events.state().is_some_and(|s| s.state != "running" && s.state != "starting") {
             return;
         }
     }
@@ -145,6 +146,8 @@ enum Event {
     Idle,
     Interrupted,
     Exited,
+    /// heap-on-log watches look at the log between requests too.
+    Watch,
 }
 
 /// Keep the session for `do` requests until `stop`, an interrupt, QEMU's
@@ -221,7 +224,8 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
             _ = stop_rx.changed() => Event::Stop,
             _ = tokio::time::sleep_until((last_activity + idle).into()) => Event::Idle,
             _ = interrupted() => Event::Interrupted,
-            _ = alive_watch(runner) => Event::Exited,
+            _ = alive_watch(runner.events.clone()) => Event::Exited,
+            _ = tokio::time::sleep(Duration::from_millis(20)), if runner.watching() => Event::Watch,
         };
         let (request, mut stream) = match event {
             Event::Steps(request, stream) => (request, stream),
@@ -229,6 +233,11 @@ pub async fn serve(runner: &mut Runner, args: &RunArgs, tap: Tap, printer: &Prin
             Event::Idle => break "idle-timeout",
             Event::Interrupted => break "interrupted",
             Event::Exited => break "qemu-exited",
+            Event::Watch => {
+                runner.idle_tick().await;
+                *status.lock().unwrap() = status_value(runner, false);
+                continue;
+            }
         };
         let tokens: Vec<String> = request["steps"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
         let traced = matches!(runner.session.trace_log(), Some(Ok(_)));
