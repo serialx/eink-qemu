@@ -106,9 +106,12 @@ short; the flash copy in it is 0600. Windows uses loopback TCP, which does
 not authenticate the peer: another local user could race QEMU to connect
 during startup. Startup succeeds once QMP has negotiated and the display has
 sent its first size; it fails after 30 seconds, when QEMU exits, or when
-Stop cancels it. Any later loss of QEMU, the monitor or the display ends the
-run as crashed. SIGTERM and SIGINT quit the app like the menu does; a run
-directory left by a killed app is removed at the next launch.
+Stop cancels it. If termination after a startup failure is not confirmed,
+the session stays stopping with its run directory and card reservations held.
+The same fault watcher used for a running session observes the eventual exit
+and returns the session to idle. Any later loss of QEMU, the monitor or the
+display ends the run as crashed. SIGTERM and SIGINT quit the app like the
+menu does; a run directory left by a killed app is removed at the next launch.
 
 ## Host files
 

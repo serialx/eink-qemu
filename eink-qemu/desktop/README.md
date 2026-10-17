@@ -94,7 +94,9 @@ newest first. Missing files and the open card are omitted from that list;
 Default card is always offered. Opening another card while the device runs
 pauses it, switches the image and resets it to mount the new card. If the
 switch fails, the old card stays selected and the emulator stops; card
-operations stay disabled until QEMU confirms it has exited. New cards
+operations stay disabled until QEMU confirms it has exited. This also applies
+when startup times out or is cancelled: card reservations remain held and
+card operations stay disabled until the process exits. New cards
 and resizing require stopping the device. Cards are sparse files, so the
 16 GiB card made on first run starts at about 5 MiB on disk and grows as
 files are written; "Save a copy" keeps the copy sparse, but copying the file

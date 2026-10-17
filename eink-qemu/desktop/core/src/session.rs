@@ -169,7 +169,7 @@ const RUN_PREFIX: &str = "eink-qemu-";
 struct Run {
     id: u64,
     machine: String,
-    qmp: Qmp,
+    qmp: Option<Qmp>,
     input: mpsc::UnboundedSender<Input>,
     /// True while an SD operation has the guest stopped: input waits.
     paused: watch::Sender<bool>,
@@ -185,6 +185,12 @@ struct Run {
     /// The QEMU binary and its arguments.
     command: Vec<String>,
     dir: tempfile::TempDir,
+}
+
+impl Run {
+    fn qmp(&self) -> &Qmp {
+        self.qmp.as_ref().expect("a running session has a monitor")
+    }
 }
 
 enum Input {
@@ -506,12 +512,12 @@ impl Session {
                 let path = card.path.clone();
                 self.pending_card.lock().unwrap().replace(card);
                 let changed: Result<(), AppError> = async {
-                    run.qmp.execute("stop", None).await.map_err(|e| AppError::new("EQEMU", e))?;
-                    run.qmp.execute("blockdev-change-medium", Some(json!({
+                    run.qmp().execute("stop", None).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    run.qmp().execute("blockdev-change-medium", Some(json!({
                         "device": "sd-card", "filename": path, "format": "raw"
                     }))).await.map_err(|e| AppError::new("EQEMU", e))?;
                     self.reset_device(&run).await.map_err(|e| AppError::new("EQEMU", e))?;
-                    run.qmp.execute("cont", None).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    run.qmp().execute("cont", None).await.map_err(|e| AppError::new("EQEMU", e))?;
                     // No fallible work after committing the selection. On error,
                     // keep both reservations until finish confirms QEMU exited.
                     persist(&path)?;
@@ -574,7 +580,7 @@ impl Session {
     /// errors come back as EQMP.
     pub async fn qmp(&self, name: &str, arguments: Option<Value>) -> Result<Value, AppError> {
         let run = self.current().ok_or_else(|| AppError::new("EIDLE", "The emulator is not running."))?;
-        run.qmp.execute(name, arguments).await.map_err(|e| AppError::new("EQMP", e))
+        run.qmp().execute(name, arguments).await.map_err(|e| AppError::new("EQMP", e))
     }
 
     fn set(&self, update: impl FnOnce(&mut SessionInfo)) {
@@ -655,6 +661,10 @@ impl Session {
             Ok(card) => self.launch(id, &options, flash, &card, trace, cancel_rx).await,
             Err(error) => Err((Exit { kind: "failed", reason: Some(error.message.clone()) }, error)),
         };
+        self.complete_start(result)
+    }
+
+    fn complete_start(&self, result: Result<Arc<Run>, (Exit, AppError)>) -> Result<SessionInfo, AppError> {
         self.shared.lock().unwrap().cancel = None;
         match result {
             Ok(run) => {
@@ -663,11 +673,13 @@ impl Session {
                 Ok(self.info())
             }
             Err((exit, error)) => {
-                self.set(|info| {
-                    info.state = "idle";
-                    info.machine = None;
-                    info.exit = Some(exit);
-                });
+                if self.shared.lock().unwrap().run.is_none() {
+                    self.set(|info| {
+                        info.state = "idle";
+                        info.machine = None;
+                        info.exit = Some(exit);
+                    });
+                }
                 Err(error)
             }
         }
@@ -743,7 +755,7 @@ impl Session {
         flash: Vec<u8>,
         card: &Path,
         trace: TracePlan,
-        mut cancel: watch::Receiver<bool>,
+        cancel: watch::Receiver<bool>,
     ) -> Result<Arc<Run>, (Exit, AppError)> {
         let failed = |error: AppError| (Exit { kind: "failed", reason: Some(error.message.clone()) }, error);
         let binary = self.qemu.binary(&options.machine);
@@ -821,7 +833,7 @@ impl Session {
             });
         }
 
-        let (faults_tx, mut faults) = mpsc::unbounded_channel::<String>();
+        let (faults_tx, faults) = mpsc::unbounded_channel::<String>();
         let (exit_tx, exited) = watch::channel::<Option<String>>(None);
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
         {
@@ -905,35 +917,13 @@ impl Session {
             Ok::<Qmp, AppError>(qmp)
         };
 
-        let mut exit_watch = exited.clone();
-        let outcome = tokio::select! {
-            result = tokio::time::timeout(CONNECT_TIMEOUT, connect) => match result {
-                Ok(result) => result.map_err(failed),
-                Err(_) => Err(failed(AppError::new("EQEMU", format!("QEMU did not connect within {} seconds.", CONNECT_TIMEOUT.as_secs())))),
-            },
-            _ = exit_watch.wait_for(|status| status.is_some()) => {
-                let status = exited.borrow().clone().unwrap_or_default();
-                Err(failed(AppError::new("EQEMU", format!("QEMU exited during startup ({status}). See the console for its message."))))
-            }
-            _ = cancel.wait_for(|cancelled| *cancelled) => {
-                Err((Exit { kind: "stopped", reason: None }, AppError::new("ECANCELED", "Startup was cancelled.")))
-            }
-        };
-        let qmp = match outcome {
-            Ok(qmp) => qmp,
-            Err(error) => {
-                terminate(None, &kill, &exited).await;
-                return Err(error);
-            }
-        };
-
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
         let (paused, mut paused_rx) = watch::channel(false);
         let gate = Arc::new(Mutex::new(()));
-        let run = Arc::new(Run {
+        let run = Run {
             id,
             machine: options.machine.clone(),
-            qmp: qmp.clone(),
+            qmp: None,
             input: input_tx,
             paused,
             gate: gate.clone(),
@@ -943,12 +933,13 @@ impl Session {
             pools: Mutex::new(heap::Pools::new()),
             command: command_line,
             dir,
-        });
+        };
+        let run = self.connect_run(run, connect, cancel, faults).await?;
         // Device input in arrival order, so a release never overtakes its
         // press. While an SD operation has the guest stopped, QEMU rejects
         // input, so it waits here instead.
         {
-            let qmp = qmp.clone();
+            let qmp = run.qmp().clone();
             let machine = options.machine.clone();
             let session = self.clone();
             tokio::spawn(async move {
@@ -998,15 +989,48 @@ impl Session {
                 }
             });
         }
+        Ok(run)
+    }
+
+    async fn connect_run(
+        self: &Arc<Self>,
+        mut run: Run,
+        connect: impl std::future::Future<Output = Result<Qmp, AppError>>,
+        mut cancel: watch::Receiver<bool>,
+        mut faults: mpsc::UnboundedReceiver<String>,
+    ) -> Result<Arc<Run>, (Exit, AppError)> {
+        let failed = |error: AppError| (Exit { kind: "failed", reason: Some(error.message.clone()) }, error);
+        let mut exit_watch = run.exited.clone();
+        let outcome = tokio::select! {
+            result = tokio::time::timeout(CONNECT_TIMEOUT, connect) => match result {
+                Ok(result) => result.map_err(failed),
+                Err(_) => Err(failed(AppError::new("EQEMU", format!("QEMU did not connect within {} seconds.", CONNECT_TIMEOUT.as_secs())))),
+            },
+            _ = exit_watch.wait_for(|status| status.is_some()) => {
+                let status = run.exited.borrow().clone().unwrap_or_default();
+                Err(failed(AppError::new("EQEMU", format!("QEMU exited during startup ({status}). See the console for its message."))))
+            }
+            _ = cancel.wait_for(|cancelled| *cancelled) => {
+                Err((Exit { kind: "stopped", reason: None }, AppError::new("ECANCELED", "Startup was cancelled.")))
+            }
+        };
+        let outcome = outcome.map(|qmp| run.qmp = Some(qmp));
+        let run = Arc::new(run);
         // Faults wait for start to publish the run. Keep watching after an
         // unconfirmed stop so a later process exit can release reservations.
         {
             let session = self.clone();
+            let id = run.id;
             tokio::spawn(async move {
                 while let Some(reason) = faults.recv().await {
                     session.fault(id, reason).await;
                 }
             });
+        }
+        if let Err((exit, error)) = outcome {
+            self.shared.lock().unwrap().run = Some(run.clone());
+            self.finish(&run, exit.clone()).await;
+            return Err((exit, error));
         }
         Ok(run)
     }
@@ -1035,7 +1059,7 @@ impl Session {
             return;
         }
         self.set(|info| info.state = "stopping");
-        if !terminate(Some(&run.qmp), &run.kill, &run.exited).await {
+        if !terminate(run.qmp.as_ref(), &run.kill, &run.exited).await {
             self.log("QEMU has not confirmed its exit. Card operations remain disabled and card reservations are retained until it exits.");
             return;
         }
@@ -1076,7 +1100,7 @@ impl Session {
         if run.machine == "x4pro" {
             let _ = run.input.send(Input::Key("Home".into(), false));
         }
-        run.qmp.execute("system_reset", None).await.map(|_| ())
+        run.qmp().execute("system_reset", None).await.map(|_| ())
     }
 
     pub fn key(&self, key: String, down: bool) {
@@ -1120,7 +1144,7 @@ impl Session {
                     let _gate = run.gate.lock().await;
                     let _ = run.paused.send(true);
                 }
-                if let Err(error) = run.qmp.execute("stop", None).await {
+                if let Err(error) = run.qmp().execute("stop", None).await {
                     // The guest may or may not have stopped: end the run
                     // rather than leave it in an unknown state.
                     self.log(format!("Could not pause the emulator for the SD card: {error}"));
@@ -1143,7 +1167,7 @@ impl Session {
                         self.reset_device(&run).await?;
                         self.events.sd_reset();
                     }
-                    run.qmp.execute("cont", None).await.map(|_| ())
+                    run.qmp().execute("cont", None).await.map(|_| ())
                 }
                 .await;
                 if let Err(error) = resumed {
@@ -1169,7 +1193,7 @@ impl Session {
             let _gate = run.gate.lock().await;
             let _ = run.paused.send(true);
         }
-        let mut guest = QmpGuest { qmp: &run.qmp, path: run.dir.path().join("memory.bin") };
+        let mut guest = QmpGuest { qmp: run.qmp(), path: run.dir.path().join("memory.bin") };
         let lookup = match elf {
             Some(elf) => heap::Lookup::Elf(elf),
             None => heap::Lookup::Scan(heap::dram(&run.machine)),

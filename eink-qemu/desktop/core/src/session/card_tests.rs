@@ -4,9 +4,10 @@ use std::sync::atomic::AtomicUsize;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Default)]
-struct Sink { resets: AtomicUsize }
+struct Sink { resets: AtomicUsize, states: StdMutex<Vec<&'static str>> }
 impl Events for Sink {
     fn sd_reset(&self) { self.resets.fetch_add(1, Ordering::SeqCst); }
+    fn session(&self, info: &SessionInfo) { self.states.lock().unwrap().push(info.state); }
 }
 
 struct Fixture {
@@ -65,13 +66,44 @@ impl Fixture {
         let (input, _) = mpsc::unbounded_channel();
         let (paused, _) = watch::channel(false);
         let run = Arc::new(Run {
-            id: 1, machine: "x3".into(), qmp, input, paused, gate: Arc::new(Mutex::new(())),
+            id: 1, machine: "x3".into(), qmp: Some(qmp), input, paused, gate: Arc::new(Mutex::new(())),
             kill: StdMutex::new(Some(kill)), exited, trace: Err("test".into()),
             pools: Mutex::new(heap::Pools::new()), command: Vec::new(), dir: tempfile::tempdir().unwrap(),
         });
         session.shared.lock().unwrap().run = Some(run);
         session.set(|info| { info.state = "running"; info.run = 1; });
         Self { session, sink, old, new, locks, exit, _dir: dir }
+    }
+
+    async fn failed_start(cancelled: bool, exits: bool) -> (Self, AppError) {
+        let f = Self::running(None, false, exits).await;
+        let run = f.session.shared.lock().unwrap().run.take().unwrap();
+        let mut run = Arc::try_unwrap(run).ok().unwrap();
+        run.qmp = None;
+        let (cancel, cancelled_rx) = watch::channel(false);
+        f.session.shared.lock().unwrap().cancel = Some(cancel);
+        f.session.set(|info| { info.state = "starting"; info.machine = Some("x3".into()); });
+        let stop = cancelled.then(|| {
+            let session = f.session.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                session.stop().await.unwrap();
+            })
+        });
+        let (faults_tx, faults) = mpsc::unbounded_channel();
+        let mut exited = f.exit.subscribe();
+        tokio::spawn(async move {
+            if let Ok(status) = exited.wait_for(|status| status.is_some()).await {
+                let _ = faults_tx.send(format!("QEMU exited ({}).", status.as_ref().unwrap()));
+            }
+        });
+        let error = {
+            let _ops = f.session.ops.lock().await;
+            let result = f.session.connect_run(run, std::future::pending(), cancelled_rx, faults).await;
+            f.session.complete_start(result).unwrap_err()
+        };
+        if let Some(stop) = stop { stop.await.unwrap(); }
+        (f, error)
     }
 
     fn target(&self) -> Card { cards::open_card(&self.locks, &self.new).unwrap() }
@@ -132,6 +164,70 @@ async fn unconfirmed_exit_retains_both_locks_and_refuses_all_card_operations() {
     f.session.fault(1, "exited later".into()).await;
     assert_eq!(f.session.info().state, "idle");
     assert!(f.locked(&f.old) && !f.locked(&f.new));
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_timeout_with_unconfirmed_kill_waits_for_exit() {
+    startup_failure_retains_card_until_exit(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_cancel_with_unconfirmed_kill_waits_for_exit() {
+    startup_failure_retains_card_until_exit(true).await;
+}
+
+async fn startup_failure_retains_card_until_exit(cancelled: bool) {
+    let (f, error) = Fixture::failed_start(cancelled, false).await;
+    assert_eq!(error.code, if cancelled { "ECANCELED" } else { "EQEMU" });
+    assert!(error.message.contains(if cancelled { "cancelled" } else { "did not connect within" }));
+    assert_eq!(f.session.info().state, "stopping");
+    assert!(!f.sink.states.lock().unwrap().contains(&"idle"));
+    assert!(f.session.shared.lock().unwrap().cancel.is_none());
+    let run_dir = f.session.shared.lock().unwrap().run.as_ref().unwrap().dir.path().to_owned();
+    assert!(run_dir.is_dir());
+    assert!(f.locked(&f.old));
+    let busy = AppError::busy();
+    for error in [
+        f.session.with_card(true, sd::erase).await.unwrap_err(),
+        f.session.with_card(true, |p| sd::upload(p, "/", &[], &[])).await.unwrap_err(),
+        f.session.with_card(true, |p| sd::remove(p, "/kept")).await.unwrap_err(),
+        f.session.select_card(f.target(), |_| panic!("switch must not commit")).await.unwrap_err(),
+    ] {
+        assert_eq!(error.code, busy.code);
+        assert_eq!(error.message, busy.message);
+    }
+    let resize = f.session.while_idle(|_| -> Result<(), AppError> { panic!("resize must not run") }).await.unwrap_err();
+    assert_eq!(resize.code, "EBUSY");
+    assert_eq!(resize.message, "Stop the emulator before changing the SD card.");
+    assert_eq!(sd::list(&f.old, "/").unwrap().entries[0].name, "kept");
+    assert!(f.locked(&f.old) && !f.locked(&f.new));
+    f.exit.send(Some("exited later".into())).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while f.session.info().state != "idle" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("the fault watcher must observe the late exit");
+    assert!(f.session.shared.lock().unwrap().run.is_none());
+    assert!(!run_dir.exists());
+    f.session.with_card(true, sd::erase).await.unwrap();
+    f.session.while_idle(|_| Ok(())).await.unwrap();
+    f.session.select_card(f.target(), |_| Ok(())).await.unwrap();
+    assert!(!f.locked(&f.old) && f.locked(&f.new));
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_failure_with_confirmed_kill_returns_to_idle() {
+    for cancelled in [false, true] {
+        let (f, error) = Fixture::failed_start(cancelled, true).await;
+        assert_eq!(error.code, if cancelled { "ECANCELED" } else { "EQEMU" });
+        assert_eq!(f.session.info().state, "idle");
+        assert_eq!(f.session.info().exit.unwrap().kind, if cancelled { "stopped" } else { "failed" });
+        assert!(f.session.shared.lock().unwrap().run.is_none());
+        assert!(f.session.shared.lock().unwrap().cancel.is_none());
+        f.session.with_card(true, sd::erase).await.unwrap();
+        f.session.select_card(f.target(), |_| Ok(())).await.unwrap();
+        assert!(!f.locked(&f.old) && f.locked(&f.new));
+    }
 }
 
 #[tokio::test(start_paused = true)]
