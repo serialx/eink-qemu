@@ -66,7 +66,12 @@ The top bar's firmware chip names the firmware, its device and whether its
 ELF is loaded; it opens the firmware card. The card shows the file (chip,
 app version, size, date), offers only the devices that take its chip (X3 and
 X4 for ESP32-C3, X4 Pro and Picco for ESP32-S3), holds the ELF for the Heap
-tab, the X4 Pro's display panel, and recent firmware. Each firmware keeps the
+tab, the X4 Pro's display panel, and recent firmware. New firmware defaults
+to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens of ASCII letters
+and digits ignore case and can select X4 (`x4` without
+`x3`), X3 (`x3` without `x4`), or Picco (`picco` on S3). Both `x3` and `x4`,
+or neither, use the C3 default; `x4pro` is a separate token. Folder names
+and hints for another chip are ignored. Each firmware keeps the
 device and ELF it last used, so `.pio/build/default` comes back as an X3 and
 `.pio/build/x4pro` as an X4 Pro. When a firmware is chosen, an ELF beside it
 (the same name with `.elf`, or `firmware.elf`, as PlatformIO and ESP-IDF

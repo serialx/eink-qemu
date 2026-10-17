@@ -224,7 +224,8 @@
                 partition table), a merged <code>.bin</code>, a 16 MiB flash dump, or an official X4 Pro <code>.xota</code> update.
                 For example, <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> or <code>-x4pro.bin</code> from the
                 <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases" target="_blank" rel="noopener">CrossPoint Reader releases</a>.
-                An S3 image runs on the X4 Pro unless you pick the Picco; for a C3 image pick the X3 or the X4 in the
+                New firmware defaults to X3 for C3 and X4 Pro for S3. An <code>x4</code> filename token without
+                <code>x3</code> selects X4; <code>picco</code> selects Picco on S3. Change the device in the
                 firmware card. Drop the file here or choose it; loading it starts the emulator.</p>
               <button class="button" type="button" data-for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</button>
               <p class="fine" data-only="tauri">The SD card is an image file on disk. A blank 16 GiB FAT32 card is created on first run; it takes a few MiB until files are written.</p>

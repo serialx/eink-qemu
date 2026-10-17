@@ -4,6 +4,7 @@
    and finds the ELF (src-tauri/src/lib.rs `choose_firmware`); this paints
    what it reports and hands choices back. */
 import type { Settings, Setup } from './types';
+import { selectedDevice, devicesOf } from './devices.ts';
 
 export type RunOption = 'wifi' | 'ghosting' | 'turbo';
 export interface SetupHandlers {
@@ -18,7 +19,6 @@ export interface SetupHandlers {
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const names: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' };
-const devices: Record<string, Machine[]> = { 'ESP32-C3': ['x3', 'x4'], 'ESP32-S3': ['x4pro', 'picco'] };
 const otherChip: Record<string, string> = {
   'ESP32-C3': 'X4 Pro and Picco take ESP32-S3 firmware', 'ESP32-S3': 'X3 and X4 take ESP32-C3 firmware',
 };
@@ -39,18 +39,11 @@ const label = (name: string, parent: string) => /^firmware\b/i.test(name) && par
 const mib = (bytes: number) => `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 const when = (ms: number) => new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-/** The device a firmware runs on: Auto stands for the X4 Pro on ESP32-S3. */
-function deviceOf(s: Setup): Machine | null {
-  const device = s.settings.device;
-  if (device !== 'auto') return device;
-  return s.firmware?.chip === 'ESP32-S3' ? 'x4pro' : null;
-}
-
 export function paintSetup(next: Setup | null, nextIdle: boolean) {
   state = next;
   idle = nextIdle;
   const firmware = next?.firmware ?? null;
-  const device = next ? deviceOf(next) : null;
+  const device = next ? selectedDevice(next.settings.device, firmware) : null;
 
   // The chip: which firmware, on which device, with or without its ELF.
   $('flash-name').textContent = firmware ? label(firmware.name, firmware.parent) : 'Choose firmware…';
@@ -79,7 +72,7 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
   choose.disabled = !idle;
 
   // The device: those that take the firmware's chip, all four before one is chosen.
-  const offered = firmware?.chip ? devices[firmware.chip] : (['x3', 'x4', 'x4pro', 'picco'] as Machine[]);
+  const offered = firmware?.chip ? devicesOf(firmware.chip) : (['x3', 'x4', 'x4pro', 'picco'] as Machine[]);
   $('setup-devices').innerHTML = offered.map((d) =>
     `<button type="button" role="radio" data-device="${d}" aria-checked="${d === device}"${idle ? '' : ' disabled'}>${names[d]}</button>`).join('');
   $('setup-device-note').textContent = firmware?.chip ? otherChip[firmware.chip] : '';
