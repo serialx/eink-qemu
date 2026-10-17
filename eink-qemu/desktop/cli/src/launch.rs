@@ -108,7 +108,9 @@ pub fn run_dir_in(out: Option<&Path>, firmware: &Path, suffix: &str, claim: Opti
 /// A run directory left by a run that never started (error.txt, no
 /// run.jsonl) is cleared of the files such a run makes, so the same command
 /// can be retried; anything else in it keeps it from being reused.
-fn clear_failed_setup(dir: &Path) -> bool {
+/// Whether `dir` holds only what a run that could not start left (its
+/// error and report), which the same command may replace.
+pub fn failed_setup(dir: &Path) -> bool {
     if !dir.join("error.txt").is_file() {
         return false;
     }
@@ -121,14 +123,22 @@ fn clear_failed_setup(dir: &Path) -> bool {
         ".eink-qemu-run", "error.txt", "run.jsonl", "report.html", "card.img", ".locks", "log.txt", "console.jsonl", "flash.bin", "automation.json",
         "desktop", "desktop.log", "session.log", "ready.json", "steps.txt", "frames", "shots", "heaps", "traces",
     ];
-    let names: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    if names.iter().any(|n| !OURS.contains(&n.as_str())) {
-        return false;
-    }
-    for name in names {
-        let path = dir.join(&name);
+    std::fs::read_dir(dir).into_iter().flatten().flatten().all(|e| OURS.contains(&e.file_name().to_string_lossy().as_ref()))
+}
+
+/// Remove everything in `dir`.
+pub fn clear_dir(dir: &Path) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
         let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
     }
+}
+
+fn clear_failed_setup(dir: &Path) -> bool {
+    if !failed_setup(dir) {
+        return false;
+    }
+    clear_dir(dir);
     true
 }
 

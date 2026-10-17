@@ -157,6 +157,15 @@ class Cli(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse((self.tmp / 'card.img').exists())
 
+    def test_a_comparison_that_could_not_start_runs_again_into_the_same_out(self):
+        out = self.tmp / 'compare'
+        args = ('compare', str(self.tmp / 'missing-a'), str(self.tmp / 'missing-b'), '--out', str(out), '--no-frames')
+        first = cli(*args)
+        self.assertEqual(first.returncode, 3, first.stdout + first.stderr)
+        second = cli(*args)
+        self.assertEqual(second.returncode, 3, second.stdout + second.stderr)
+        self.assertNotIn('already exists', second.stdout + second.stderr)
+
     def test_truncated_firmware_is_rejected(self):
         app = self.tmp / 'short.bin'
         app.write_bytes(app_image(5)[:40])

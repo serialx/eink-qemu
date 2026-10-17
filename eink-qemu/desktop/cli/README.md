@@ -173,7 +173,8 @@ or steps (found before the emulator starts), 3 when the run could not start
 (firmware, card, QEMU), 130 when interrupted (Ctrl-C or SIGTERM, which still
 write the end record and report). A run that could not start leaves
 `error.txt`, a `run.jsonl` with the setup error and a `report.html` saying
-why, and the same command, `--out` included, can be run again.
+why, and the same command, `--out` included, can be run again (for
+`compare` too, when neither side started).
 
 ### The X4 Pro
 
@@ -425,14 +426,33 @@ before either starts. Put the workload's prerequisites (the book, its fonts,
 the options) in the pull request beside the numbers. The comparison directory holds each run's directory
 and:
 
-- `compare.md`: a table for a pull request: result, boot to ready, each
-  `mark` window's guest time, panel refreshes and display updates, every
-  `wait-log` value's median and sum, the whole run's counters, heaps and
-  allocation windows by name, screenshots by name, and for CrossPoint its
-  Home time, page drawing and total rendering medians and memory reports.
+- `compare.md`: a table for a pull request. It shows the result, the input
+  pacing, the boot (to the first drawn Home or book page, from the first
+  `ready`; `ready` itself passes later, after the memory report; later
+  `ready` passes, such as wakes into a book, as medians by how they
+  finished), each `mark`
+  window's guest time, the log's error lines, and then only what changed: a
+  time that moved by at least the threshold (10 ms or 1% of the base,
+  whichever is larger; `--noise-ms`, `--noise-pct`; for host time ten times
+  the ms and five times the percentage; for a sum of N values N times the
+  ms), a median of a different number of samples, any other number that
+  differs, a differing heap, live allocation site, allocation window (its
+  allocations, bytes, blocks kept and freed, and older blocks freed) or
+  screenshot. A line under it counts the rows it leaves out and gives the
+  thresholds. Below it,
+  collapsed, every row: each `mark` window's panel refreshes and display
+  updates, every `wait-log` value's median and sum, the whole run's
+  counters, heaps, live allocation sites (each side's five largest; `-`
+  when a site is not among that side's ten largest) and allocation windows
+  by name, screenshots by name, and for CrossPoint its page drawing and
+  total rendering medians and memory reports. A change under the threshold
+  is marked `(below threshold)`, without a percentage: the threshold is a
+  display cutoff, not a measured noise level, so check it with a
+  comparison of a build against itself.
 - `compare.json`: the same numbers.
 - `diffs/`: for each screenshot that differs, its differing pixels in black.
-- `report.html`: the table and the screenshot pairs.
+- `report.html`: the same tables, every row behind a fold, and the
+  screenshot pairs.
 
 A `mark:NAME` starts a window that runs to the next mark (or the last
 step): the table gives its guest time and the panel refreshes and display
@@ -444,7 +464,19 @@ measurement at a step: use `heap` steps for that. With `--trace`, each heap
 snapshot's live allocation sites are listed side by side. A side that could
 not start still gets its outcome in the table. `--require-identical` fails
 the comparison when a screenshot differs, for changes that must not change
-rendering. `--sequential` runs one after the other.
+rendering. `--sequential` runs one after the other; interrupted during the
+first, it does not start the second.
+
+Input pacing is part of what a run measures. Each press holds its key 150
+ms of guest time (`press:KEY:MS`), and each input first waits for the
+firmware to go quiet (`--input-quiet`, 200 ms); a page turn's time counts
+from its press, so a harness that presses differently measures slightly
+different numbers (a few percent on a page turn). Compare numbers taken with
+the same pacing: both sides of a `compare` share it, and its table and each
+start record (`pacing`) say what it was. The table's pacing row gives the
+quiet period an input waits for (each input's actual wait is its record's
+`waited_ms`) and the default key hold; the start records also have
+`settle_ms` and `panel_idle_ms`.
 
 A reading workload as a script file:
 

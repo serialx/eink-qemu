@@ -169,19 +169,19 @@ fn run_page(dir: &Path) -> Result<String, String> {
     Ok(page(&format!("eink-qemu run {}", Path::new(&firmware).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), &b))
 }
 
-fn compare_page(dir: &Path) -> Result<String, String> {
-    let s: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("compare.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let md = crate::compare::markdown(&s);
+/// Markdown tables (and the lines between them) as HTML; a cell that names
+/// a PNG beside the report links to it.
+fn tables_html(md: &str) -> String {
     let mut b = String::new();
-    let (a, c) = (text(&s["names"][0]), text(&s["names"][1]));
-    let _ = write!(b, "<h1>eink-qemu compare: {} vs {}</h1><div class=\"muted\">{}</div>", esc(&a), esc(&c), esc(&dir.display().to_string()));
-    // The Markdown tables, as HTML tables.
     let mut in_table = false;
     for line in md.lines() {
         if !line.starts_with('|') {
             if in_table {
                 b += "</table></div>";
                 in_table = false;
+            }
+            if !line.trim().is_empty() && !line.starts_with('<') {
+                let _ = write!(b, "<p class=\"muted\">{}</p>", esc(line).replace("**", "").replace('`', ""));
             }
             continue;
         }
@@ -190,9 +190,9 @@ fn compare_page(dir: &Path) -> Result<String, String> {
         }
         let cells: Vec<String> = line.trim_matches('|').split(" | ").map(|c| c.trim().to_string()).collect();
         if !in_table {
-            b += "<h2></h2><div class=\"wrap\"><table><tr>";
+            b += "<div class=\"wrap\"><table><tr>";
             for cell in &cells {
-                let _ = write!(b, "<th>{}</th>", esc(cell));
+                let _ = write!(b, "<th>{}</th>", esc(cell).replace('`', ""));
             }
             b += "</tr>";
             in_table = true;
@@ -200,17 +200,33 @@ fn compare_page(dir: &Path) -> Result<String, String> {
         }
         b += "<tr>";
         for cell in &cells {
-            let cell = esc(cell).replace("**", "");
-            let _ = write!(b, "<td>{}</td>", cell.replace('`', ""));
+            let plain = cell.replace("**", "").replace('`', "");
+            if plain.ends_with(".png") && !plain.contains(' ') {
+                let _ = write!(b, "<td><a href=\"{0}\">{0}</a></td>", esc(&plain));
+            } else {
+                let _ = write!(b, "<td>{}</td>", esc(&plain));
+            }
         }
         b += "</tr>";
     }
     if in_table {
         b += "</table></div>";
     }
+    b
+}
+
+fn compare_page(dir: &Path) -> Result<String, String> {
+    let s: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("compare.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut b = String::new();
+    let (a, c) = (text(&s["names"][0]), text(&s["names"][1]));
+    let _ = write!(b, "<h1>eink-qemu compare: {} vs {}</h1><div class=\"muted\">{}</div>", esc(&a), esc(&c), esc(&dir.display().to_string()));
+    let _ = write!(b, "<p><a href=\"#screenshots\">Screenshots</a> · <a href=\"#runs\">Runs</a></p>");
+    // What changed, then every row.
+    b += &tables_html(&crate::compare::compact_tables(&s));
+    let _ = write!(b, "<details><summary>All rows</summary>{}</details>", tables_html(&crate::compare::full_tables(&s)));
     let shots = s["shots"].as_array().cloned().unwrap_or_default();
     if !shots.is_empty() {
-        b += "<h2>Screenshots</h2>";
+        b += "<h2 id=\"screenshots\">Screenshots</h2>";
         for sh in shots {
             let _ = write!(b, "<h3>{} {}</h3><div class=\"pair\">", esc(&text(&sh["name"])), if sh["identical"] == true { "<span class=\"ok\">identical</span>" } else { "<span class=\"bad\">differs</span>" });
             for (label, key) in [(a.as_str(), "a"), (c.as_str(), "b"), ("difference", "diff")] {
@@ -221,6 +237,6 @@ fn compare_page(dir: &Path) -> Result<String, String> {
             b += "</div>";
         }
     }
-    let _ = write!(b, "<h2>Runs</h2><p><a href=\"{0}/report.html\">{1}</a> · <a href=\"{2}/report.html\">{3}</a></p>", esc(&text(&s["runs"][0])), esc(&a), esc(&text(&s["runs"][1])), esc(&c));
+    let _ = write!(b, "<h2 id=\"runs\">Runs</h2><p><a href=\"{0}/report.html\">{1}</a> · <a href=\"{2}/report.html\">{3}</a></p>", esc(&text(&s["runs"][0])), esc(&a), esc(&text(&s["runs"][1])), esc(&c));
     Ok(page(&format!("eink-qemu compare {a} vs {c}"), &b))
 }
