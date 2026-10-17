@@ -160,6 +160,13 @@ overrides from `turbo-args.sh`, like the other launchers, but keeps idle time
 in real time (`-icount sleep=on`): native QEMU would otherwise run a resting
 device through its 10-minute auto-sleep in under a minute at a full CPU core.
 
+The device keys follow the keyboard press and release: arrows, Enter,
+Esc/Backspace for Back on X3/X4, and P for Power. On the X4 Pro, Esc, H
+and Home press its capacitive Home key. Picco has no Home key. Hold P
+for a long Power press; many firmwares use it to sleep or power off.
+The action and required hold time depend on the firmware. Keys typed into
+fields or the SD card panel stay with those controls.
+
 ### Test hooks
 
 | Variable | Effect |

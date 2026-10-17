@@ -157,11 +157,12 @@ document.addEventListener('pointerdown', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !card.hidden) {
+    event.preventDefault();
     open(false);
     chip.focus();
     event.stopPropagation();
   }
-});
+}, true);
 $('setup-choose').addEventListener('click', () => { open(false); handlers?.choose(); });
 $('setup-devices').addEventListener('click', (event) => {
   const b = (event.target as Element).closest<HTMLButtonElement>('[data-device]');
