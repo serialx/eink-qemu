@@ -234,7 +234,7 @@ fn choose_elf(args: &RunArgs, firmware: &Path, flash: &Flash) -> Result<(Option<
 
 /// The card lock directory shared with the desktop app (EINK_QEMU_LOCKS overrides it).
 pub fn shared_locks() -> PathBuf {
-    std::env::var_os("EINK_QEMU_LOCKS").map(PathBuf::from).unwrap_or_else(cards::default_locks_dir)
+    std::env::var_os("EINK_QEMU_LOCKS").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(cards::default_locks_dir)
 }
 
 /// A lock error, with what to do when the lock directory is not writable.
@@ -243,7 +243,8 @@ pub fn lock_error(what: &str, message: &str, locks: &Path) -> String {
     if denied {
         format!(
             "{what}: {message} The tool takes card locks in {}, shared with the desktop app so the two never write one card; \
-             this process may not write there (a sandbox?). Allow writes to it, or set EINK_QEMU_LOCKS to a writable directory.",
+             this process may not write there (a sandbox?). Allow writes to it, or set EINK_QEMU_LOCKS to a writable directory \
+             and start the desktop app with the same EINK_QEMU_LOCKS, so it sees those locks.",
             locks.display()
         )
     } else {

@@ -67,13 +67,19 @@ pub async fn compare(base: PathBuf, candidate: PathBuf, tokens: Vec<String>, arg
         tokio::join!(run_a, run_b)
     };
     let summary = summarize(&dir, (a, &base, &dir_a), (b, &candidate, &dir_b));
-    let _ = std::fs::write(dir.join("compare.json"), serde_json::to_string_pretty(&summary).unwrap_or_default());
     let md = markdown(&summary);
-    let _ = std::fs::write(dir.join("compare.md"), &md);
+    // The comparison is the command's result: losing it fails the command.
+    let mut written = true;
+    for (name, text) in [("compare.json", serde_json::to_string_pretty(&summary).unwrap_or_default()), ("compare.md", md.clone())] {
+        if let Err(e) = std::fs::write(dir.join(name), text) {
+            written = false;
+            printer.record(&json!({"type": "error", "stage": "compare", "error": format!("cannot write {}: {e}", dir.join(name).display())}));
+        }
+    }
     let report = crate::report::write(&dir).ok();
     printer.note(&md);
     let differing = summary["shots"].as_array().map(|s| s.iter().filter(|x| x["identical"] == false).count()).unwrap_or(0);
-    let ok = out_a.code == 0 && out_b.code == 0 && (!require_identical || differing == 0);
+    let ok = out_a.code == 0 && out_b.code == 0 && (!require_identical || differing == 0) && written;
     let codes = [out_a.code, out_b.code];
     let code = if codes.contains(&EXIT_INTERRUPTED) {
         EXIT_INTERRUPTED

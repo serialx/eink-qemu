@@ -149,6 +149,11 @@ fn file_info(path: &Path) -> Option<FileInfo> {
 /// The lock directory shared by every instance of this user, whatever data
 /// directory each uses, so a card has one owner across instances.
 fn locks_dir(app: &tauri::AppHandle) -> PathBuf {
+    // The command-line tool's override (for a sandbox), so the two can still
+    // share one directory when both are started with it.
+    if let Some(dir) = std::env::var_os("EINK_QEMU_LOCKS").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
     app.path()
         .app_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("eink-qemu"))

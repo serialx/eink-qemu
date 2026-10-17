@@ -449,7 +449,9 @@ session listens on `/tmp/eink-qemu-ctl-<pid>.sock`. Opening a card in place
 (`--sd-in-place`, `sd`) takes a lock in the desktop app's data directory
 (`~/Library/Application Support/net.serialx.eink-qemu/locks` on macOS),
 shared so the app and the tool never write one card; set `EINK_QEMU_LOCKS`
-to another writable directory when that one is off limits. A sandbox that
+to another writable directory when that one is off limits, and start the
+desktop app with the same `EINK_QEMU_LOCKS` (it reads it too), or it will
+not see the tool's locks. A sandbox that
 blocks sockets or those paths needs those permissions granted; `status`
 says when it cannot reach a session it is not allowed to connect to, rather
 than calling it dead.
