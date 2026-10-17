@@ -16,7 +16,7 @@ The X4 Pro defaults to UC8279 revision `0x68`. Select the legacy UC8179
 profile to compare with this device log:
 
 ```sh
-X4PANEL=uc8179 eink-qemu/drive.py flash.bin sd.img sim.log wait:30
+X4PANEL=uc8179 python3 eink-qemu/drive.py flash.bin sd.img sim.log wait:30
 grep -h "\[PANEL\] VER=\|\[PANEL\] MTP\|OTP VCOM" eink-qemu/testdata/device/boot-reader-1002p.txt sim.log
 ```
 
@@ -37,8 +37,8 @@ Other lines to compare (grep the tag in both logs):
 
 ```sh
 rm -f sd.img
-eink-qemu/mksd.py sd.img 2050 eink-qemu/testdata/sdcard   # add your books folder the same way
-eink-qemu/run.sh flash.bin sd.img
+python3 eink-qemu/mksd.py sd.img 2050 eink-qemu/testdata/sdcard   # add your books folder the same way
+X4PANEL=uc8179 eink-qemu/run.sh flash.bin sd.img
 ```
 
 The image uses 32 KiB clusters, matching the measured stock X3 card. See

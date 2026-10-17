@@ -401,16 +401,23 @@ Sources:
 ## 7. Reproducing
 
 CLI runs default to ghosting off for pixel QA. Enable `ghosting` to reproduce
-the physical model and parameter sweeps below. Use `uc8279` in place of `uc8179`
-for X3. The browser defaults to ghosting on; its switch or `?ghosting=0` selects
-clean rendering before starting.
+the physical model and parameter sweeps below. These X4 Pro measurements use
+the legacy panel, selected with `X4PANEL=uc8179`; `-global uc8179.*` alone
+does not select it. For X3, omit `X4PANEL` and use `uc8279` in place of
+`uc8179` in the global properties. In the browser, select the UC8179 panel
+with accurate timing (`?panel=uc8179&turbo=0`) for these measurements.
+Ghosting defaults to on; its switch or `?ghosting=0` selects clean rendering
+before starting.
 
 ```sh
 # one step per line (steps contain spaces):
 mapfile -t S < eink-qemu/ghosting/test/type-delete-pep-steps.txt   # replace OUT in shot: lines first
-QEMU_EXTRA="-global uc8179.ghosting=on" eink-qemu/drive.py flash.bin sd.img log.txt "${S[@]}"
+X4PANEL=uc8179 QEMU_EXTRA="-global uc8179.ghosting=on" \
+  python3 eink-qemu/drive.py flash.bin sd.img log.txt "${S[@]}"
 python3 eink-qemu/ghosting/tools/pepmeasure.py OUT.png
-QEMU_EXTRA="-global uc8179.ghosting=on -global uc8179.bloom=30" eink-qemu/drive.py ...   # sweep a parameter
+# sweep a parameter:
+X4PANEL=uc8179 QEMU_EXTRA="-global uc8179.ghosting=on -global uc8179.bloom=30" \
+  python3 eink-qemu/drive.py flash.bin sd.img log.txt "${S[@]}"
 ```
 
 - **Use a fresh SD image per run.** A used SD changes Home's rows and the

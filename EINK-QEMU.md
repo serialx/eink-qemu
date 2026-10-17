@@ -524,6 +524,11 @@ Done in `eink-qemu`:
   of virtual time (full refreshes flash, fast ones paint in). BUSY lasts the
   frames' length: boot full 1500 ms (device 1493), 50-frame direct gray 1250 ms
   (device 1189), DU 24 frames 600 ms (device 662).
+  To reproduce these legacy measurements with `run.sh`, `drive.py` or
+  `wasm/run-node.sh`, set `X4PANEL=uc8179`; in the browser, select UC8179
+  with accurate timing (`?panel=uc8179&turbo=0`). The `-global uc8179.*`
+  properties below also apply to the default UC8279 profile, so they do not
+  select the legacy panel.
   - PSR REG picks the waveform per refresh: REG=1 runs the uploaded register LUTs
     (0x20 VCOM, 0x21 WW, 0x22 KW, 0x23 WK, 0x24 KK); REG=0 runs stand-ins for the
     OTP waveforms (bodies never dumped): fast inside PTIN/PTOUT, full otherwise.
