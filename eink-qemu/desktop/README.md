@@ -111,7 +111,8 @@ A card is used by one app instance at a time; an instance that
 cannot lock its card opens without one and says so. If another program replaces
 the open image, stop the emulator and use Open SD image to open that path again.
 Reopening keeps the path reserved and requires QEMU to have exited before accepting
-the replacement. If a saved card outside
+the replacement. If reopening fails, the existing reservations remain held.
+If a saved card outside
 the default location no longer exists, the app opens the default card,
 creating it if needed, and reports both paths. Existing cards that are
 invalid, unreadable or locked keep their error. A saved firmware file that

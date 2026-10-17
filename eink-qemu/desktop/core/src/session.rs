@@ -469,8 +469,7 @@ impl Session {
             return Err(AppError::new("EBUSY", "Stop the emulator before reopening the selected SD card. Wait until QEMU has exited."));
         }
         crate::cards::validate_card(&card.path)?;
-        card.lock.lock().unwrap().refresh(locks, &card.path)?;
-        card.verify()?;
+        card.lock.lock().unwrap().refresh_verified(locks, &card.path)?;
         Ok(true)
     }
 
