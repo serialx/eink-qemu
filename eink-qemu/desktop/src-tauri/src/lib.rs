@@ -532,6 +532,9 @@ async fn card_pick_open(handle: tauri::AppHandle, app: State<'_, App>) -> Result
     else {
         return Ok(None);
     };
+    if app.session.reopen_card(&app.locks, &path).await? {
+        return app.card_info(&path).map(Some).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."));
+    }
     let card = open_card(&app.locks, &path)?;
     use_card(&app, card).await.map(Some)
 }
@@ -557,7 +560,7 @@ async fn card_use_recent(app: State<'_, App>, path: PathBuf) -> Result<FileInfo,
     if !default && !app.settings.lock().unwrap().recent_cards.contains(&path) {
         return Err(AppError::new("EPERM", "That SD card is not in the recent cards."));
     }
-    if app.session.card_path().is_some_and(|p| card_key(&p) == card_key(&path)) {
+    if app.session.reopen_card(&app.locks, &path).await? {
         return app.card_info(&path).ok_or_else(|| AppError::new("ENOENT", "No SD card is open."));
     }
     let card = if default {

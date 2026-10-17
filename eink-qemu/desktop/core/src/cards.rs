@@ -23,13 +23,15 @@ pub struct Card {
 impl Card {
     pub fn verify(&self) -> Result<(), AppError> {
         let reservation = self.lock.lock().unwrap();
-        let held = reservation.identity.as_ref().map(|(key, _)| key);
-        let current = identity_key(&self.path);
-        if current.as_ref().is_some_and(|key| Some(key) == held) {
-            Ok(())
-        } else {
-            Err(AppError::new("ESTALE", "The SD card file changed outside eink-qemu. Open it again before using it."))
-        }
+        verify_identity(&self.path, reservation.identity.as_ref().map(|(key, _)| key.as_str()))
+    }
+}
+
+fn verify_identity(path: &Path, held: Option<&str>) -> Result<(), AppError> {
+    if identity_key(path).as_deref().is_some_and(|key| Some(key) == held) {
+        Ok(())
+    } else {
+        Err(AppError::new("ESTALE", "The SD card file changed outside eink-qemu. Open it again before using it."))
     }
 }
 
@@ -117,12 +119,26 @@ impl Reservation {
     /// Lock the file's current identity (after it was created or replaced),
     /// releasing the identity of a file it replaced.
     pub fn refresh(&mut self, locks: &Path, path: &Path) -> Result<(), AppError> {
-        let Some(id) = identity_key(path) else { return Ok(()) };
-        if self.identity.as_ref().is_some_and(|(held, _)| *held == id) {
-            return Ok(());
+        self.refresh_with(locks, path, |_| Ok(()))
+    }
+
+    /// Verify the acquired identity before releasing the old reservation.
+    pub fn refresh_verified(&mut self, locks: &Path, path: &Path) -> Result<(), AppError> {
+        self.refresh_with(locks, path, |held| verify_identity(path, held))
+    }
+
+    fn refresh_with(&mut self, locks: &Path, path: &Path, verify: impl FnOnce(Option<&str>) -> Result<(), AppError>) -> Result<(), AppError> {
+        let candidate = match identity_key(path) {
+            Some(id) if !self.identity.as_ref().is_some_and(|(held, _)| *held == id) => {
+                let file = try_lock(locks, &id, path)?;
+                Some((id, file))
+            }
+            _ => None,
+        };
+        verify(candidate.as_ref().or(self.identity.as_ref()).map(|(id, _)| id.as_str()))?;
+        if let Some(candidate) = candidate {
+            self.identity = Some(candidate);
         }
-        let file = try_lock(locks, &id, path)?;
-        self.identity = Some((id, file));
         Ok(())
     }
 }
@@ -200,5 +216,47 @@ mod tests {
         let card = dir.path().join("new.img");
         let _creator = reserve(&locks, &card).unwrap();
         assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
+    }
+
+    #[test]
+    fn failed_verification_retains_the_original_identity() {
+        for remove in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let locks = dir.path().join("locks");
+            let card = dir.path().join("card.img");
+            let old_alias = dir.path().join("old.img");
+            let candidate_alias = dir.path().join("candidate.img");
+            let replacement = dir.path().join("replacement.img");
+            for path in [&card, &candidate_alias, &replacement] {
+                std::fs::write(path, vec![0u8; 1024]).unwrap();
+            }
+            std::fs::hard_link(&card, &old_alias).unwrap();
+            let mut owner = reserve(&locks, &card).unwrap();
+            let original = owner.identity.as_ref().unwrap().0.clone();
+            std::fs::remove_file(&card).unwrap();
+            std::fs::hard_link(&candidate_alias, &card).unwrap();
+            let error = owner.refresh_with(&locks, &card, |held| {
+                for path in [&card, &old_alias, &candidate_alias] {
+                    assert_eq!(reserve(&locks, path).err().unwrap().code, "EBUSY");
+                }
+                // Change the file after acquiring the candidate, before verification.
+                if remove {
+                    std::fs::remove_file(&card).unwrap();
+                } else {
+                    std::fs::rename(&replacement, &card).unwrap();
+                }
+                verify_identity(&card, held)
+            }).unwrap_err();
+            assert_eq!(error.code, "ESTALE");
+            assert_eq!(owner.identity.as_ref().unwrap().0, original);
+            for path in [&card, &old_alias] {
+                assert_eq!(reserve(&locks, path).err().unwrap().code, "EBUSY");
+            }
+            assert!(reserve(&locks, &candidate_alias).is_ok());
+            if remove { std::fs::rename(&replacement, &card).unwrap(); }
+            owner.refresh_verified(&locks, &card).unwrap();
+            assert!(reserve(&locks, &old_alias).is_ok());
+            assert_eq!(reserve(&locks, &card).err().unwrap().code, "EBUSY");
+        }
     }
 }

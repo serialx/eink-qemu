@@ -163,6 +163,60 @@ async fn replaced_card_cannot_be_edited_under_an_old_identity_lock() {
     assert_eq!(sd::list(&f.old, "/").unwrap().entries[0].name, "kept");
 }
 
+#[tokio::test]
+async fn idle_reopen_refreshes_identity_without_releasing_the_path() {
+    let f = Fixture::running(None, false, true).await;
+    f.session.stop().await.unwrap();
+    assert!(!f.session.reopen_card(&f.locks, &f.new).await.unwrap());
+    let old_alias = f.old.with_file_name("old-alias.img");
+    std::fs::hard_link(&f.old, &old_alias).unwrap();
+    let replacement = f.target();
+    std::fs::rename(&f.new, &f.old).unwrap();
+    assert_eq!(f.session.checked_card_path().unwrap_err().code, "ESTALE");
+    assert_eq!(f.session.reopen_card(&f.locks, &f.old).await.unwrap_err().code, "EBUSY");
+    assert!(f.locked(&f.old) && f.locked(&old_alias));
+    assert_eq!(f.session.checked_card_path().unwrap_err().code, "ESTALE");
+    drop(replacement);
+    assert!(f.session.reopen_card(&f.locks, &f.old).await.unwrap());
+    assert_eq!(f.session.checked_card_path().unwrap(), f.old);
+    assert!(f.locked(&f.old));
+    assert!(!f.locked(&old_alias));
+    let new_alias = f.old.with_file_name("new-alias.img");
+    std::fs::hard_link(&f.old, &new_alias).unwrap();
+    assert!(f.locked(&new_alias));
+    f.session.with_card(true, sd::erase).await.unwrap();
+    assert!(sd::list(&f.old, "/").unwrap().entries.is_empty());
+    assert_eq!(sd::list(&old_alias, "/").unwrap().entries[0].name, "kept");
+}
+
+#[tokio::test(start_paused = true)]
+async fn reopen_retains_reservations_until_qemu_confirms_exit() {
+    for stopping in [false, true] {
+        let f = Fixture::running(Some("system_reset"), true, false).await;
+        if stopping {
+            assert!(f.session.select_card(f.target(), |_| Ok(())).await.is_err());
+            assert_eq!(f.session.info().state, "stopping");
+        }
+        let old_alias = f.old.with_file_name("old-alias.img");
+        let replacement = f.old.with_file_name("replacement.img");
+        std::fs::hard_link(&f.old, &old_alias).unwrap();
+        sd::create_blank(&replacement).unwrap();
+        std::fs::rename(&replacement, &f.old).unwrap();
+        let error = f.session.reopen_card(&f.locks, &f.old).await.unwrap_err();
+        assert_eq!(error.code, "EBUSY");
+        assert!(error.message.contains("Stop the emulator"));
+        assert!(f.locked(&f.old) && f.locked(&old_alias));
+        assert_eq!(f.locked(&f.new), stopping);
+        f.exit.send(Some("exited later".into())).unwrap();
+        f.session.fault(1, "exited later".into()).await;
+        assert_eq!(f.session.info().state, "idle");
+        assert!(f.session.reopen_card(&f.locks, &f.old).await.unwrap());
+        assert_eq!(f.session.checked_card_path().unwrap(), f.old);
+        assert!(f.locked(&f.old));
+        assert!(!f.locked(&old_alias) && !f.locked(&f.new));
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn partial_erase_stops_but_precheck_failure_resumes_the_same_card() {
     let f = Fixture::running(None, false, true).await;

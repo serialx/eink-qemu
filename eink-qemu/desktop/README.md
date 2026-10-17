@@ -117,7 +117,11 @@ Dropping either on the panel also copies them into the open folder. Hidden
 entries and symbolic links in folders are skipped. The card's path keeps its file name in view, and the folder
 button beside it shows the image in Finder (File Explorer, the file manager).
 A card is used by one app instance at a time; an instance that
-cannot lock its card opens without one and says so. If a saved card outside
+cannot lock its card opens without one and says so. If another program replaces
+the open image, stop the emulator and use Open SD image to open that path again.
+Reopening keeps the path reserved and requires QEMU to have exited before accepting
+the replacement. If reopening fails, the existing reservations remain held.
+If a saved card outside
 the default location no longer exists, the app opens the default card,
 creating it if needed, and shows both paths as a notice in the SD panel and
 console. The notice clears from the panel when another card is chosen.
