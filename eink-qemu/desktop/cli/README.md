@@ -17,8 +17,8 @@ boards boots, runs scripts, and gets screenshots, heap snapshots and the
 emulator's own measurements (display updates, panel refreshes and their
 time). What it knows about particular firmware is data in
 [`eink-qemu/profiles`](../../profiles/README.md): CrossPoint Reader's boot
-milestones, render times and memory reports, and the stock Xteink
-firmware's boot gate.
+milestones, its error lines, render times, memory reports and allocation
+wrappers, and the stock Xteink firmware's boot gate.
 
 ## Install
 
@@ -165,7 +165,7 @@ stdout. The run directory is in the first record and linked from
 | `heaps/` | The `heap` steps' snapshots, block by block |
 | `traces/` | The `trace-stop` steps' allocation windows by site, and `trace.bin` |
 | `fail/` | When a step fails: the screen, heaps, last 200 log lines and registers |
-| `metrics.json` | Display updates, panel refreshes and their guest time, ESP-IDF error and warning counts; CrossPoint's render times and memory reports under `crosspoint` |
+| `metrics.json` | Display updates, panel refreshes and their guest time, error and warning line counts (ESP-IDF's, and CrossPoint's `[ERR]`); CrossPoint's render times and memory reports under `crosspoint` |
 | `report.html` | All of it on one page |
 
 Exit codes: 0 when every step passed, 1 when a step failed, 2 for bad usage
@@ -264,10 +264,20 @@ values (`bw_render_ms`, `total_ms` and the rest) land in the record.
 unchanged for 5 host seconds (`--ready-quiet`), after an update of this boot, and the ROM has not rebooted the firmware
 meanwhile (`how` is `screen-quiet`). CrossPoint is read more closely, from
 its profile: three completed panel refreshes (Home drawn), then its first
-`[MEM]` report, about 10 s of guest time (`how` is `home`). A reboot starts
+periodic `[MEM]` report, about 10 s of guest time (`how` is `home`). When it
+boots straight into a book (it was asleep in one), its reader's first page
+counts instead (`how` is `reader`): its `Page render` line, with the report
+before or after it; the record's `screen` names the screen it entered
+(`Home`, `EpubReader`). The reader shows itself by its `[ACT] Entering
+activity` line, or by `[MEM] reader enter` in builds that log it at info
+level. A reader that logs no page line (a release build) is ready 12 host
+seconds after its last refresh (`how` is `quiet`). A build that logs none of
+these is read as a boot to Home, unless a page line comes before the memory
+report. A reboot starts
 over and is reported as `restarts`; after `reset` (or `hmp:system_reset`),
 `ready` waits for the new boot. An image the ROM cannot boot, or a card
-CrossPoint cannot mount, fails at once. When the stock Xteink firmware turns
+CrossPoint cannot mount, fails at once; a card that fails after the boot was
+ready fails the next `ready`. When the stock Xteink firmware turns
 itself off because Power was not held long enough, the timeout says so: run
 with `--power-hold 3000` (or put `press:power:4000` before `ready`).
 

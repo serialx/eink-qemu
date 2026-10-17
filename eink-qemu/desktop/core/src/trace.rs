@@ -29,6 +29,12 @@ static ALLOCATOR: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .unwrap()
 });
+/// A frame inside the allocator, or in a function that only wraps an
+/// allocation (a firmware's own make_unique, from its profile).
+fn allocator_frame(name: &str) -> bool {
+    ALLOCATOR.is_match(name) || crate::profiles::CROSSPOINT.allocation_wrappers.iter().any(|w| w.is_match(name))
+}
+
 /// Source outside the firmware's own tree: toolchain, ESP-IDF, Arduino core, libraries.
 static LIBRARY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"/(\.platformio/packages|esp32-arduino-lib-builder|crosstool-NG|libdeps|managed_components|framework-[^/]+)/").unwrap()
@@ -39,16 +45,58 @@ static LIBRARY: LazyLock<Regex> = LazyLock::new(|| {
 pub struct Symbols {
     loader: Option<addr2line::Loader>,
     /// Sorted (address, size, demangled name) of every function symbol.
-    functions: Vec<(u32, u32, String)>,
+    functions: Vec<Function>,
+    /// Mangled names the demangler cannot read, and the demangled name of
+    /// another symbol for the same function (see `elf_functions`).
+    aliases: HashMap<String, String>,
     cache: HashMap<u32, Vec<(String, String)>>,
 }
 
-/// Function symbols from an ELF's symbol table, sorted by address.
-fn elf_functions(data: &[u8]) -> Vec<(u32, u32, String)> {
+/// (address, size, name) of a function symbol.
+type Function = (u32, u32, String);
+
+/// Still mangled: the demangler could not read it.
+fn mangled(name: &str) -> bool {
+    name.starts_with("_Z")
+}
+
+/// A readable name for a mangled one the demangler cannot read: its scope
+/// and name, `<…>` for template arguments. GCC mangles C++20 constraints
+/// (`requires`) with a `Q`, which the demangler does not know.
+fn rough_demangle(name: &str) -> String {
+    let rest = name.trim_start_matches("_Z");
+    let rest = rest.strip_prefix('N').map(|r| r.trim_start_matches(['r', 'V', 'K', 'R', 'O'])).unwrap_or(rest);
+    let mut parts: Vec<String> = Vec::new();
+    let mut at = rest;
+    loop {
+        if let Some(r) = at.strip_prefix("St") {
+            parts.push("std".into());
+            at = r;
+            continue;
+        }
+        let digits = at.chars().take_while(char::is_ascii_digit).count();
+        let fits = |n: usize| n > 0 && digits.checked_add(n).is_some_and(|end| end <= at.len());
+        let Some(len) = at[..digits].parse::<usize>().ok().filter(|&n| fits(n)) else { break };
+        let Some(part) = at.get(digits..digits + len) else { break };
+        parts.push(part.to_string());
+        at = &at[digits + len..];
+    }
+    if parts.is_empty() {
+        return name.to_string();
+    }
+    let templated = if at.starts_with('I') { "<…>" } else { "" };
+    format!("{}{templated}", parts.join("::"))
+}
+
+/// Function symbols from an ELF's symbol table, sorted by address, and the
+/// aliases of names the demangler cannot read. GCC gives a constrained
+/// template two symbols, its C++20 mangling and the older one; the readable
+/// one names the function.
+fn elf_functions(data: &[u8]) -> (Vec<Function>, HashMap<String, String>) {
     let u16_at = |at: usize| data.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
     let u32_at = |at: usize| data.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
     let mut functions = Vec::new();
-    let (Some(shoff), Some(shentsize), Some(shnum)) = (u32_at(0x20), u16_at(0x2E), u16_at(0x30)) else { return functions };
+    let (Some(shoff), Some(shentsize), Some(shnum)) = (u32_at(0x20), u16_at(0x2E), u16_at(0x30)) else { return (functions, HashMap::new()) };
     let section = |i: usize| -> Option<(u32, usize, usize, usize)> {
         let at = shoff as usize + i * shentsize;
         Some((u32_at(at + 4)?, u32_at(at + 16)? as usize, u32_at(at + 20)? as usize, u32_at(at + 24)? as usize))
@@ -68,13 +116,83 @@ fn elf_functions(data: &[u8]) -> Vec<(u32, u32, String)> {
         }
     }
     functions.sort();
-    functions
+    let mut aliases = HashMap::new();
+    let mut unique: Vec<Function> = Vec::with_capacity(functions.len());
+    for group in functions.chunk_by(|a, b| a.0 == b.0) {
+        let names: Vec<&str> = group.iter().map(|f| f.2.as_str()).collect();
+        aliases.extend(same_function_aliases(&names));
+        unique.push(group.iter().find(|f| !mangled(&f.2)).unwrap_or(&group[0]).clone());
+    }
+    (unique, aliases)
+}
+
+/// The function a demangled signature names: what comes before its
+/// parameter list (the last top-level parentheses), less its template
+/// arguments. `T f<int>(int) const` names `T f`, of which the caller takes
+/// the end.
+fn callable(signature: &str) -> Option<&str> {
+    let close = signature.rfind(')')?;
+    let mut depth = 0;
+    let open = signature[..=close].char_indices().rev().find_map(|(i, c)| {
+        match c {
+            ')' => depth += 1,
+            '(' => depth -= 1,
+            _ => {}
+        }
+        (depth == 0).then_some(i)
+    })?;
+    let head = signature[..open].trim_end();
+    let Some(head_open) = head.strip_suffix('>') else { return Some(head) };
+    let mut depth = 1;
+    let lt = head_open.char_indices().rev().find_map(|(i, c)| {
+        match c {
+            '>' => depth += 1,
+            '<' => depth -= 1,
+            _ => {}
+        }
+        (depth == 0).then_some(i)
+    })?;
+    Some(head_open[..lt].trim_end())
+}
+
+/// Among the names of one address: each name the demangler cannot read,
+/// with a readable name of the same function (GCC's older spelling of a
+/// constrained template). Another function's name there (identical code
+/// folded into one) is no alias.
+fn same_function_aliases(names: &[&str]) -> Vec<(String, String)> {
+    names
+        .iter()
+        .filter(|raw| mangled(raw))
+        .filter_map(|raw| {
+            let rough = rough_demangle(raw);
+            let base = rough.trim_end_matches("<…>");
+            if base == *raw {
+                return None;
+            }
+            // The readable name's own function (not a name in its return
+            // type or parameters) must be this one.
+            let names_it = |readable: &str| {
+                callable(readable).is_some_and(|name| {
+                    name.strip_suffix(base).is_some_and(|before| !before.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':'))
+                })
+            };
+            names.iter().find(|r| !mangled(r) && names_it(r)).map(|r| (raw.to_string(), r.to_string()))
+        })
+        .collect()
 }
 
 impl Symbols {
     pub fn new(elf: &Path) -> Symbols {
-        let functions = std::fs::read(elf).map(|data| elf_functions(&data)).unwrap_or_default();
-        Symbols { loader: addr2line::Loader::new(elf).ok(), functions, cache: HashMap::new() }
+        let (functions, aliases) = std::fs::read(elf).map(|data| elf_functions(&data)).unwrap_or_default();
+        Symbols { loader: addr2line::Loader::new(elf).ok(), functions, aliases, cache: HashMap::new() }
+    }
+
+    /// A name the demangler could not read, made readable.
+    fn readable(&self, name: String) -> String {
+        if !mangled(&name) {
+            return name;
+        }
+        self.aliases.get(&name).cloned().unwrap_or_else(|| rough_demangle(&name))
     }
 
     /// The function symbol containing `addr`.
@@ -90,7 +208,7 @@ impl Symbols {
             let mut chain = Vec::new();
             if let Some(Ok(mut frames)) = self.loader.as_ref().map(|loader| loader.find_frames(addr as u64)) {
                 while let Ok(Some(frame)) = frames.next() {
-                    let name = frame.function.as_ref().and_then(|f| f.demangle().ok()).map(|n| n.into_owned());
+                    let name = frame.function.as_ref().and_then(|f| f.demangle().ok()).map(|n| self.readable(n.into_owned()));
                     let loc = frame.location.as_ref().and_then(|l| Some(format!("{}:{}", l.file?, l.line?))).unwrap_or_default();
                     chain.push((name.unwrap_or_else(|| "??".into()), loc));
                 }
@@ -105,7 +223,7 @@ impl Symbols {
                 }
                 (Some((name, _)), _) if name != "??" => {}
                 _ => {
-                    let name = symbol.map_or_else(|| "??".into(), |(start, _, name)| format!("{name}+{:#x}", addr - start));
+                    let name = symbol.map_or_else(|| "??".into(), |(start, _, name)| format!("{}+{:#x}", self.readable(name.clone()), addr - start));
                     chain = vec![(name, String::new())];
                 }
             }
@@ -150,7 +268,7 @@ pub fn stack_frames(symbols: &mut Symbols, addrs: &[u32]) -> Stack {
         let (name, loc) = chain.last().cloned().unwrap_or_default(); // the outermost function
         frames.push(Frame {
             addr,
-            alloc: ALLOCATOR.is_match(&name),
+            alloc: allocator_frame(&name),
             lib: LIBRARY.is_match(&loc),
             inl: chain[..chain.len().saturating_sub(1)].iter().map(|(name, loc)| Inline { name: name.clone(), loc: loc.clone() }).collect(),
             name,
@@ -158,7 +276,9 @@ pub fn stack_frames(symbols: &mut Symbols, addrs: &[u32]) -> Stack {
         });
     }
     let caller = frames.iter().position(|f| !f.alloc).unwrap_or(frames.len());
-    let site = (caller..frames.len()).find(|&i| !frames[i].lib && !frames[i].loc.is_empty()).unwrap_or(caller);
+    // An allocation wrapper called through library code (a constructor it
+    // inlines copying a string) is not the site either.
+    let site = (caller..frames.len()).find(|&i| !frames[i].lib && !frames[i].alloc && !frames[i].loc.is_empty()).unwrap_or(caller);
     Stack { frames, caller, site }
 }
 
@@ -545,7 +665,7 @@ mod tests {
 
     #[test]
     fn finds_the_caller_and_the_site() {
-        let mut symbols = Symbols { loader: None, functions: Vec::new(), cache: HashMap::new() };
+        let mut symbols = Symbols { loader: None, functions: Vec::new(), aliases: HashMap::new(), cache: HashMap::new() };
         let names = [
             ("multi_heap_malloc", "/x/.platformio/packages/framework-espidf/heap.c:1"),
             ("heap_caps_malloc", "/x/.platformio/packages/framework-espidf/heap.c:2"),
@@ -562,5 +682,57 @@ mod tests {
         assert_eq!(sites.of(&mut symbols, &[1, 2, 3, 4]), 0);
         assert_eq!(sites.of(&mut symbols, &[2, 4]), 0);
         assert_eq!(sites.names[0]["fn"], "Reader::open()");
+    }
+
+    #[test]
+    fn an_allocation_wrapper_is_not_the_site() {
+        let mut symbols = Symbols { loader: None, functions: Vec::new(), aliases: HashMap::new(), cache: HashMap::new() };
+        let names = [
+            ("operator new(unsigned int, std::nothrow_t const&)", "/x/crosstool-NG/libstdc++-v3/libsupc++/new_opnt.cc:32"),
+            ("std::unique_ptr<ParsedText, std::default_delete<ParsedText> > makeUniqueNoThrow<ParsedText, bool&>(bool&)", "/work/lib/Memory/Memory.h:26"),
+            ("ChapterHtmlSlimParser::startNewTextBlock(BlockStyle const&)", "/work/lib/Epub/parsers/ChapterHtmlSlimParser.cpp:410"),
+        ];
+        for (i, (name, loc)) in names.iter().enumerate() {
+            symbols.cache.insert(i as u32, vec![(name.to_string(), loc.to_string())]);
+        }
+        let stack = stack_frames(&mut symbols, &[1, 2, 3]);
+        assert_eq!((stack.caller, stack.site), (2, 2));
+        assert!(stack.frames[1].alloc);
+        // The wrapper's inlined constructor copies a string: library code between it and the allocator.
+        symbols.cache.insert(10, vec![("std::__cxx11::basic_string<char>::basic_string(std::__cxx11::basic_string<char> const&)".into(), "/x/.platformio/packages/toolchain/basic_string.h:556".into())]);
+        let stack = stack_frames(&mut symbols, &[1, 11, 2, 3]);
+        assert_eq!((stack.caller, stack.site), (1, 3));
+    }
+
+    #[test]
+    fn names_the_demangler_cannot_read_stay_readable() {
+        // GCC 14's mangling of a constrained template (C++20 `requires`), and the older alias it also emits.
+        let constrained = "_Z17makeUniqueNoThrowI10ParsedTextJRbS1_RK10BlockStyleRhEQnt10is_array_vIT_EESt10unique_ptrIS6_St14default_deleteIS6_EEDpOT0_";
+        let older = "_Z17makeUniqueNoThrowI10ParsedTextJRbS1_RK10BlockStyleRhEESt10unique_ptrIT_St14default_deleteIS7_EEDpOT0_";
+        assert_eq!(addr2line::demangle(constrained, addr2line::gimli::DW_LANG_C_plus_plus), None);
+        assert_eq!(rough_demangle(constrained), "makeUniqueNoThrow<…>");
+        assert_eq!(rough_demangle("_ZNK3foo3bar3bazEv"), "foo::bar::baz");
+        assert_eq!(rough_demangle("_ZNSt6vectorIiE9push_backEi"), "std::vector<…>");
+        assert_eq!(rough_demangle("_Z"), "_Z");
+        assert_eq!(rough_demangle("_Z18446744073709551615x"), "_Z18446744073709551615x");
+        assert_eq!(rough_demangle("_Z99x"), "_Z99x");
+        // Only the same function's readable name is its alias, not another function folded into the same code.
+        let folded = "anotherFoldedFunction(unsigned int)";
+        assert_eq!(same_function_aliases(&[constrained, folded]), []);
+        let older_readable = "std::unique_ptr<ParsedText> makeUniqueNoThrow<ParsedText, bool&>(bool&)";
+        assert_eq!(same_function_aliases(&[constrained, folded, older_readable]), [(constrained.to_string(), older_readable.to_string())]);
+        assert_eq!(same_function_aliases(&[constrained, "notmakeUniqueNoThrow<int>()"]), []);
+        // The name in another function's return type or parameters is not that function.
+        assert_eq!(same_function_aliases(&[constrained, "decltype (makeUniqueNoThrow<int>()) unrelated()"]), []);
+        assert_eq!(same_function_aliases(&[constrained, "void unrelated(makeUniqueNoThrow<int>(*)())"]), []);
+        assert_eq!(callable("std::unique_ptr<A, B<C> > makeUniqueNoThrow<A, bool&>(bool&) const"), Some("std::unique_ptr<A, B<C> > makeUniqueNoThrow"));
+        assert_eq!(callable("no parameters"), None);
+        // A symbol table with both: one function, its readable name, and the alias.
+        let readable = addr2line::demangle(older, addr2line::gimli::DW_LANG_C_plus_plus).unwrap();
+        let mut functions = vec![(0x420a3816, 8, constrained.to_string()), (0x420a3816, 8, readable.clone())];
+        functions.sort();
+        let symbols = Symbols { loader: None, functions, aliases: HashMap::from([(constrained.to_string(), readable.clone())]), cache: HashMap::new() };
+        assert_eq!(symbols.readable(constrained.to_string()), readable);
+        assert!(readable.contains("makeUniqueNoThrow<ParsedText"), "{readable}");
     }
 }

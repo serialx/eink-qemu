@@ -771,13 +771,22 @@ impl Runner {
                             self.check_alive()?;
                             f.insert("how".into(), json!(how));
                             // From this boot's start (its ROM banner; without one, the
-                            // run's start or the last reset) to Home for CrossPoint, or
-                            // to the last screen update before the quiet.
+                            // run's start or the last reset) to Home or a book's first
+                            // page for CrossPoint, or to the last screen update before
+                            // the quiet.
                             let start = self.readiness.rom_banner_at().map_or(self.boot_started, |t| t.max(self.boot_started));
                             let drawn = screen.last_update.map(|u| now - u.elapsed().as_secs_f64()).unwrap_or(now);
-                            f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(drawn) - start)));
-                            if let Some(ms) = self.readiness.home_fw_ms {
-                                f.insert("home_fw_ms".into(), json!(ms));
+                            let (at, fw_key, fw_ms) = match how {
+                                "reader" => (self.readiness.page_at, "page_fw_ms", self.readiness.page_fw_ms),
+                                "home" => (self.readiness.home_at, "home_fw_ms", self.readiness.home_fw_ms),
+                                _ => (None, "", None),
+                            };
+                            f.insert("boot_s".into(), json!(round3(at.unwrap_or(drawn) - start)));
+                            if let Some(ms) = fw_ms {
+                                f.insert(fw_key.into(), json!(ms));
+                            }
+                            if let Some(name) = &self.readiness.screen {
+                                f.insert("screen".into(), json!(name));
                             }
                             f.insert("restarts".into(), json!(self.readiness.restarts));
                             self.log_cursor = end;

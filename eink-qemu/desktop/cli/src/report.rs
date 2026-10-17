@@ -60,7 +60,11 @@ fn step_detail(r: &Value) -> String {
     let kind = r["step"].as_str().unwrap_or_default();
     match kind {
         "ready" => {
-            let home = if r["home_fw_ms"].is_null() { String::new() } else { format!(" · Home at firmware {} ms", text(&r["home_fw_ms"])) };
+            let home = match (&r["home_fw_ms"], &r["page_fw_ms"]) {
+                (Value::Null, Value::Null) => String::new(),
+                (Value::Null, page) => format!(" · {} first page at firmware {} ms", text(&r["screen"]), text(page)),
+                (home, _) => format!(" · Home at firmware {} ms", text(home)),
+            };
             format!("{} at {} s{home} · restarts {}", text(&r["how"]), text(&r["boot_s"]), text(&r["restarts"]))
         }
         "wait-log" => format!("<code>{}</code>", esc(&text(&r["line"]))),
@@ -137,7 +141,7 @@ fn run_page(dir: &Path) -> Result<String, String> {
         row(&mut b, "Display updates sent", text(&metrics["screen_updates"]));
         row(&mut b, "Panel refreshes", text(&metrics["panel_refreshes"]));
         row(&mut b, "Panel refresh time, total ms", text(&metrics["panel_refresh_ms"]));
-        row(&mut b, "Log lines (ESP-IDF errors / warnings)", format!("{} ({} / {})", text(&metrics["log_lines"]), text(&metrics["log_errors"]), text(&metrics["log_warnings"])));
+        row(&mut b, "Log lines (errors / warnings)", format!("{} ({} / {})", text(&metrics["log_lines"]), text(&metrics["log_errors"]), text(&metrics["log_warnings"])));
         b += "</table>";
     }
     let cp = &metrics["crosspoint"];

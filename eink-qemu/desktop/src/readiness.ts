@@ -1,8 +1,9 @@
 /* When a boot is finished, decided as the Rust core decides it
    (core/src/script/readiness.rs). Firmware with a profile in
    eink-qemu/profiles is followed by its log: CrossPoint's boot milestones
-   (completed panel refreshes, then its memory report; Running a while after
-   Home for a fork that never reports), a card it could not mount, a panel
+   (completed panel refreshes, or in a book it boots into the reader's first
+   page, then its memory report; Running a while after Home for a fork that
+   never reports), a card it could not mount, a panel
    wait that ran out because the display never answered (firmware for
    another board), and the stock X4 Pro firmware's wait for Power. Any other firmware
    is ready once its screen has been quiet for 5 s after an update of this
@@ -17,6 +18,12 @@ const refreshDone = new RegExp(crosspoint.ready.refresh_done);
 const memoryReport = new RegExp(crosspoint.ready.report);
 const sdFailure = new RegExp(crosspoint.ready.sd_failed);
 const powerWait = new RegExp(stock.ready.power_wait);
+// The screen it enters; a book's reader is drawn when its first page is, not after Home's refreshes.
+const activity = new RegExp(crosspoint.ready.activity);
+const readerActivity = new RegExp(crosspoint.ready.reader_activity);
+// Entering a reader, in a line release builds keep (they drop the activity and page lines).
+const readerEntered = new RegExp(crosspoint.ready.reader_entered);
+const pageDrawn = new RegExp(crosspoint.ready.page_drawn);
 // A panel wait and how long it took, in guest time: one that ran out is not a refresh.
 const panelWait = new RegExp(crosspoint.ready.panel_wait);
 /** Host time from CrossPoint's Home to "Running" when no memory report comes. */
@@ -50,6 +57,11 @@ export class Readiness {
   private settled = false;
   /** When CrossPoint's Home was drawn. */
   private homeAt: number | null = null;
+  /** This boot went into a book's reader, and when its first page was drawn. */
+  private inReader = false;
+  private pageAt: number | null = null;
+  /** A memory report came in this boot. */
+  private reported = false;
   private failed = false;
   private readonly status: (text: string) => void;
   private readonly device: () => string;
@@ -95,6 +107,9 @@ export class Readiness {
     this.decided = false;
     this.settled = false;
     this.homeAt = null;
+    this.inReader = false;
+    this.pageAt = null;
+    this.reported = false;
   }
 
   /** The run ended: nothing more is said about it. */
@@ -146,19 +161,47 @@ export class Readiness {
       if (/main_task: Returned from app_main\(\)/.test(line) && this.bootSeconds === null && !this.decided) {
         this.status(`${this.prefix()} · Firmware running`);
       }
+      const entered = this.decided ? null : activity.exec(line);
+      if (entered) {
+        this.crosspoint = true;
+        if (readerActivity.test(entered[1])) this.inReader = true;
+      }
+      if (!this.decided && readerEntered.test(line)) {
+        this.crosspoint = true;
+        this.inReader = true;
+      }
+      if (!this.decided && this.pageAt === null && pageDrawn.test(line)) {
+        // A page drawn while booting: it booted into a book (also without the activity line).
+        this.crosspoint = true;
+        this.inReader = true;
+        this.pageAt = this.now();
+        this.bootSeconds = (this.pageAt - this.startedAt) / 1000;
+        if (!this.sdFailed) {
+          if (this.reported) this.decided = true;
+          this.status(`${this.prefix()} · ${this.reported ? 'Ready · ' : ''}first page drawn in ${this.bootSeconds.toFixed(2)} s${this.reported ? '' : ' · finishing startup…'}`);
+        }
+      }
       if (refreshDone.test(line)) {
         this.crosspoint = true;
         this.lastDrawAt = this.now();
-        if (++this.milestones === crosspoint.ready.milestones) {
+        // In a reader these refreshes draw its first page, not Home.
+        if (++this.milestones === crosspoint.ready.milestones && !this.inReader) {
           this.homeAt = this.lastDrawAt;
           this.bootSeconds = (this.lastDrawAt - this.startedAt) / 1000;
           if (!this.sdFailed) this.status(`${this.prefix()} · Home drawn in ${this.bootSeconds.toFixed(2)} s · finishing startup…`);
         }
       }
       if (memoryReport.test(line) && !this.decided) {
+        this.reported = true;
         if (this.sdFailed) {
           this.decided = true;
           this.status(`${this.device()} · The firmware could not mount the SD card · check it in the SD card panel`);
+        } else if (this.inReader) {
+          // Ready once its first page is drawn (here, or when the page comes).
+          if (this.pageAt !== null) {
+            this.decided = true;
+            this.status(`${this.prefix()} · Ready · first page drawn in ${this.bootSeconds!.toFixed(2)} s`);
+          }
         } else if (this.bootSeconds !== null) {
           this.decided = true;
           this.status(`${this.prefix()} · Ready · Home drawn in ${this.bootSeconds.toFixed(2)} s`);
@@ -184,11 +227,19 @@ export class Readiness {
     if (this.decided || this.failed || this.awaitRom || this.powerWait) return;
     const now = this.now();
     if (this.crosspoint) {
-      // Home was drawn a while ago and no memory report came: a CrossPoint
-      // fork that does not report. It runs ([MEM] can still make it Ready).
-      if (this.homeAt !== null && !this.settled && !this.sdFailed && now - this.homeAt >= SETTLE_MS) {
+      // Home (or a book's first page) was drawn a while ago and no memory
+      // report came: a CrossPoint fork that does not report. It runs ([MEM]
+      // can still make it Ready).
+      const drawnAt = this.inReader ? this.pageAt : this.homeAt;
+      if (drawnAt !== null && !this.settled && !this.sdFailed && now - drawnAt >= SETTLE_MS) {
         this.settled = true;
-        this.status(`${this.prefix()} · Running · Home drawn in ${this.bootSeconds!.toFixed(2)} s`);
+        this.status(`${this.prefix()} · Running · ${this.inReader ? 'first page' : 'Home'} drawn in ${this.bootSeconds!.toFixed(2)} s`);
+      }
+      // A reader that logs no page line: long quiet.
+      if (this.inReader && this.pageAt === null && this.milestones && !this.sdFailed
+        && now - this.lastDrawAt >= crosspoint.ready.report_wait_s * 1000) {
+        this.decided = true;
+        this.status(`${this.prefix()} · Ready`);
       }
       return;
     }
