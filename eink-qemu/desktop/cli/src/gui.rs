@@ -174,8 +174,12 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         let tail: Vec<&str> = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect();
         printer.record(&json!({"type": "error", "stage": "gui", "error": "the desktop app exited before the steps finished", "log_tail": tail, "run_dir": dir}));
     }
-    finish(&dir, ok && steps_done, started, &printer, counters);
-    if ok && steps_done { 0 } else if steps_done && !setup_failed { EXIT_FAIL } else { EXIT_SETUP }
+    // Steps that passed but whose end record was lost do not make a passed run.
+    let recorded = finish(&dir, ok && steps_done, started, &printer, counters);
+    if let Err(error) = &recorded {
+        printer.record(&json!({"type": "error", "stage": "record", "error": error}));
+    }
+    if ok && steps_done && recorded.is_ok() { 0 } else if steps_done && !setup_failed { EXIT_FAIL } else { EXIT_SETUP }
 }
 
 /// The QEMU directory the CLI resolved, for the app.
@@ -183,8 +187,9 @@ fn spec_qemu_bin(args: &RunArgs, spec: &Automation) -> PathBuf {
     launch::find_qemu(args.qemu.as_deref(), &spec.machine).map(|q| q.bin).unwrap_or_default()
 }
 
-/// The summary files and end record, from what the app wrote.
-fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer, counters: Value) {
+/// The summary files and end record, from what the app wrote; an error when
+/// the end record could not be added to run.jsonl.
+fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer, counters: Value) -> Result<(), String> {
     let log = std::fs::read_to_string(dir.join("log.txt")).unwrap_or_default();
     let mut summary = metrics::summarize(log.lines());
     // The counters when the steps ended (the window may have run on after).
@@ -210,10 +215,12 @@ fn finish(dir: &Path, ok: bool, started: Instant, printer: &Printer, counters: V
     });
     let mut end = end;
     end["report"] = json!(dir.join("report.html"));
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(dir.join("run.jsonl")) {
+    let records = dir.join("run.jsonl");
+    let written = std::fs::OpenOptions::new().append(true).create(true).open(&records).and_then(|mut file| {
         use std::io::Write;
-        let _ = writeln!(file, "{end}");
-    }
+        writeln!(file, "{end}").and_then(|()| file.flush())
+    });
     let _ = crate::report::write(dir);
     printer.record(&end);
+    written.map_err(|e| format!("cannot write {}: {e}; the run's record is incomplete", records.display()))
 }
