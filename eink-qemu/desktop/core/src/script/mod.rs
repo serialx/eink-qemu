@@ -331,8 +331,10 @@ pub struct Runner {
     /// wait-log looks at lines from here on: the last action, ready, or the
     /// line after the last match.
     log_cursor: usize,
-    /// wait-screen needs a settled update after this count.
+    /// wait-screen needs a settled update after this count that changes
+    /// the picture there (its fingerprint).
     screen_cursor: u64,
+    screen_mark: Option<String>,
     /// An action happened and no wait followed it yet: a shot first waits
     /// for the screen to respond.
     pending_action: bool,
@@ -359,6 +361,8 @@ pub struct Runner {
     sink: Sink,
     /// The first failed record, if any.
     pub failed: Option<Value>,
+    /// The first failure to write run.jsonl: the run's record is incomplete.
+    pub record_error: Option<String>,
 }
 
 fn epoch_us() -> u64 {
@@ -388,6 +392,7 @@ impl Runner {
             opts,
             log_cursor: 0,
             screen_cursor: 0,
+            screen_mark: None,
             pending_action: false,
             readiness: Readiness::new(),
             readiness_pos: 0,
@@ -404,6 +409,7 @@ impl Runner {
             records,
             sink,
             failed: None,
+            record_error: None,
         })
     }
 
@@ -413,9 +419,16 @@ impl Runner {
 
     /// Write a record to run.jsonl and the sink.
     pub fn emit(&mut self, record: &Value) {
-        let _ = writeln!(self.records, "{record}");
-        let _ = self.records.flush();
+        let written = writeln!(self.records, "{record}").and_then(|()| self.records.flush());
+        self.note_record_error(written);
         (self.sink)(record);
+    }
+
+    fn note_record_error(&mut self, written: std::io::Result<()>) {
+        if let Err(e) = written {
+            let path = self.opts.dir.join("run.jsonl");
+            self.record_error.get_or_insert_with(|| format!("cannot write {}: {e}; the run's record is incomplete", path.display()));
+        }
     }
 
     /// The latest settled screen kept in frames/, if any.
@@ -438,6 +451,11 @@ impl Runner {
         self.session.log_barrier(LOG_BARRIER).await;
         if let Err(failure) = self.check_alive() {
             self.record_failure("check", "(log check after the last step)", &[], Instant::now(), failure).await;
+            return false;
+        }
+        // Steps that passed but could not be recorded do not make a passed run.
+        if let Some(error) = self.record_error.clone() {
+            self.record_failure("record", "(writing run.jsonl)", &[], Instant::now(), Failure::new(error)).await;
             return false;
         }
         true
@@ -565,8 +583,15 @@ impl Runner {
     async fn action(&mut self) {
         self.session.log_barrier(LOG_BARRIER).await;
         self.log_cursor = self.events.line_count();
-        self.screen_cursor = self.events.screen().updates;
+        self.mark_screen(self.events.screen().updates);
         self.pending_action = true;
+    }
+
+    /// Move the screen cursor to `updates` and keep the picture there, so
+    /// a later wait-screen needs an update that changes it.
+    fn mark_screen(&mut self, updates: u64) {
+        self.screen_cursor = updates;
+        self.screen_mark = self.session.screen().map(|s| crate::flash::sha256_hex(&s.pixels));
     }
 
     /// Before input: wait until the firmware's log has been quiet and the
@@ -751,7 +776,7 @@ impl Runner {
                             }
                             f.insert("restarts".into(), json!(self.readiness.restarts));
                             self.log_cursor = end;
-                            self.screen_cursor = screen.updates;
+                            self.mark_screen(screen.updates);
                             return Ok(f);
                         }
                         Verdict::Failed(why) => {
@@ -815,22 +840,31 @@ impl Runner {
             Kind::WaitScreen { timeout } => {
                 let limit = timeout.unwrap_or(self.timeout);
                 let started = Instant::now();
-                let before = self.session.screen().map(|s| crate::flash::sha256_hex(&s.pixels));
+                // Settled updates that redrew the same picture: not a change.
+                let mut repaints = 0;
                 loop {
                     let settled = self.frames.settled();
                     if settled > self.screen_cursor && settled == self.events.screen().updates {
                         self.check_alive()?;
-                        self.screen_cursor = settled;
-                        let after = self.session.screen().map(|s| crate::flash::sha256_hex(&s.pixels));
-                        f.insert("changed".into(), json!(before != after));
-                        if let Some(frame) = self.frames.last_frame() {
-                            f.insert("frame".into(), json!(frame.file));
+                        let before = self.screen_mark.clone();
+                        self.mark_screen(settled);
+                        if self.screen_mark != before {
+                            f.insert("repaints".into(), json!(repaints));
+                            if let Some(frame) = self.frames.last_frame() {
+                                f.insert("frame".into(), json!(frame.file));
+                            }
+                            return Ok(f);
                         }
-                        return Ok(f);
+                        repaints += 1;
                     }
                     self.check_alive()?;
                     if started.elapsed().as_secs_f64() > limit {
-                        return Err(Failure::new(format!("the screen did not change within {limit} s after the last action")));
+                        let same = match repaints {
+                            0 => String::new(),
+                            1 => " (one display update redrew the same picture)".into(),
+                            n => format!(" ({n} display updates redrew the same picture)"),
+                        };
+                        return Err(Failure::new(format!("the screen did not change within {limit} s after the last action{same}")));
                     }
                     tokio::time::sleep(POLL).await;
                 }
@@ -849,7 +883,7 @@ impl Runner {
                         count = screen.updates;
                         quiet_from = (Instant::now(), guest);
                     } else if since(quiet_from, guest) >= need && self.frames.settled() == screen.updates {
-                        self.screen_cursor = screen.updates;
+                        self.mark_screen(screen.updates);
                         if let Some(frame) = self.frames.last_frame() {
                             f.insert("frame".into(), json!(frame.file));
                         }
@@ -1154,7 +1188,8 @@ impl Runner {
     pub fn finish(&mut self) {
         self.frames.stop();
         self.events.flush();
-        let _ = self.records.flush();
+        let flushed = self.records.flush();
+        self.note_record_error(flushed);
     }
 }
 

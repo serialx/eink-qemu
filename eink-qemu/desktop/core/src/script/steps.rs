@@ -14,7 +14,8 @@ Waiting
                              or for CrossPoint its Home drawn and its memory report
   wait-log:REGEX             a log line matching REGEX, after the last action
   wait-screen[:SECONDS]      the screen changed after the last action and settled
-                             (a transient screen such as a loading screen counts)
+                             (a transient screen such as a loading screen counts;
+                             an update that redraws the same picture does not)
   wait-quiet[:SECONDS]       the screen unchanged for SECONDS of guest time
                              (default 2), e.g. after a loading screen
   wait:SECONDS               let the guest run (guest time)

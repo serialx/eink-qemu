@@ -210,6 +210,8 @@ pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option
     // Every step counts, the initial ones and any a held session ran.
     let ok = runner.failed.is_none() && !was_interrupted && !emulator_exited;
     let end = finish(&mut runner, &session, ok, started, was_interrupted).await;
+    // The end record itself, or the files before it, may not have been written.
+    let ok = ok && runner.record_error.is_none();
     let code = if was_interrupted { EXIT_INTERRUPTED } else if ok { 0 } else { EXIT_FAIL };
     Outcome { code, dir, end }
 }
@@ -249,6 +251,11 @@ pub async fn finish(runner: &mut Runner, session: &Arc<eink_core::session::Sessi
         "report": dir.join("report.html"),
     });
     runner.emit(&end);
+    if ok {
+        if let Some(error) = runner.record_error.clone() {
+            runner.emit(&json!({"type": "error", "stage": "record", "error": error}));
+        }
+    }
     let _ = crate::report::write(&dir);
     end
 }

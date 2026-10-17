@@ -237,7 +237,8 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 | `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`quiet`), `boot_s` (host seconds from this boot's ROM banner, or without one from the run's start or the last reset, to Home for CrossPoint or to the last screen update before the quiet; the step's own `ms` also counts the quiet), `home_fw_ms` (CrossPoint: the firmware's ms at Home), `restarts` |
 | `mark` | `name`, and the counters so far: `screen_updates` (display updates the guest sent), `panel_refreshes`, `panel_refresh_ms` (their guest time) |
 | `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs) |
-| `wait-screen`, `wait-quiet` | `frame`, `changed` |
+| `wait-screen` | `frame`, `repaints` (settled updates before it that redrew the same picture) |
+| `wait-quiet` | `frame` |
 | `press`, `touch`, `swipe` | `waited_ms` (the input wait), coordinates |
 | `shot` | `file`, `pixels_sha256` (of the gray pixels, not the PNG file), `size` |
 | `heap` | see below |
