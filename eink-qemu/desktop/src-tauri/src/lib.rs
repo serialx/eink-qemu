@@ -1170,17 +1170,19 @@ mod card_tests {
     #[test]
     fn missing_saved_card_falls_back_and_names_both_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("missing.img");
-        let default = dir.path().join("sd.img");
+        // Exercise a spelling that canonicalization changes on every platform.
+        let data = dir.path().join(".");
+        let missing = data.join("missing.img");
+        let default = data.join("sd.img");
         let mut settings = Settings { card: Some(missing.clone()), ..Settings::default() };
         let mut problems = Vec::new();
         let mut notices = Vec::new();
-        let card = startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems, &mut notices).unwrap();
+        let card = startup_card(&mut settings, &data, &dir.path().join("locks"), &mut problems, &mut notices).unwrap();
         assert_eq!(card.path, card_key(&default));
         assert_eq!(settings.card.as_ref(), Some(&card.path));
         assert_eq!(sd::list(&card.path, "/").unwrap().fs_type, "FAT32");
         assert!(problems.is_empty());
-        assert!(notices.iter().any(|p| p.contains(missing.to_str().unwrap()) && p.contains(default.to_str().unwrap())));
+        assert!(notices.iter().any(|p| p.contains(missing.to_str().unwrap()) && p.contains(card.path.to_str().unwrap())));
     }
 
     #[test]
