@@ -46,6 +46,8 @@ const ACTION_GRACE: Duration = Duration::from_secs(2);
 const INPUT_QUIET_LIMIT: Duration = Duration::from_secs(3);
 /// How long an action waits for the console lines read before it to arrive.
 const LOG_BARRIER: Duration = Duration::from_millis(500);
+/// The most heap walks one heap-on-log takes.
+const WATCH_LIMIT: u32 = 100;
 /// Log lines that mean the guest crashed.
 pub const CRASH_PATTERNS: &[&str] = &[
     r"Guru Meditation Error",
@@ -295,6 +297,24 @@ impl RunOptions {
     }
 }
 
+/// A repeat:until-log loop: its pattern, the lines it has looked at, and
+/// the line that ends it once one has come.
+struct Until {
+    pattern: Regex,
+    pos: usize,
+    seen: Option<String>,
+}
+
+/// A heap-on-log watch: its name, pattern, the lines it has looked at and
+/// the walks it took.
+struct Watch {
+    name: String,
+    text: String,
+    pattern: Regex,
+    pos: usize,
+    taken: u32,
+}
+
 /// A failed step: why, and what was found before it failed.
 struct Failure {
     message: String,
@@ -343,8 +363,21 @@ pub struct Runner {
     /// Screen updates before the current boot (a reset): readiness by a
     /// quiet screen needs one after it.
     readiness_screen_base: u64,
-    /// Host seconds the current boot started: the run's start, or a reset.
+    /// Host seconds the current boot started: the run's start, or a reset;
+    /// and its first log line.
     boot_started: f64,
+    boot_line: usize,
+    /// The first wait-log after `ready` has yet to run; the log line ready
+    /// looked up to (a line before it was printed during the boot).
+    after_ready: bool,
+    ready_line: usize,
+    /// Enclosing repeat:until-log loops, outermost first.
+    untils: Vec<Until>,
+    /// The until-log loop (its index in `untils`) whose line came: steps
+    /// end up to it.
+    loop_ended: Option<usize>,
+    /// heap-on-log watches.
+    watches: Vec<Watch>,
     /// The last heap record's numbers, for the next one's changes.
     last_heap: Option<(String, Fields)>,
     crash_pos: usize,
@@ -398,6 +431,12 @@ impl Runner {
             readiness_pos: 0,
             readiness_screen_base: 0,
             boot_started: 0.0,
+            boot_line: 0,
+            after_ready: false,
+            ready_line: 0,
+            untils: Vec::new(),
+            loop_ended: None,
+            watches: Vec::new(),
             last_heap: None,
             crash_pos: 0,
             heap: HeapView::default(),
@@ -448,12 +487,16 @@ impl Runner {
         if let Some(elf) = self.opts.elf.clone() {
             let _ = self.heap.elf(&elf).await;
         }
+        // A request cut short (a cancelled session request) leaves no loop behind.
+        self.untils.clear();
+        self.loop_ended = None;
         if !self.run_list(steps, Vec::new()).await {
             return false;
         }
         // A crash printed with or just after the last step's success.
         tokio::time::sleep(Duration::from_millis(60)).await;
         self.session.log_barrier(LOG_BARRIER).await;
+        self.service_watches().await;
         if let Err(failure) = self.check_alive() {
             self.record_failure("check", "(log check after the last step)", &[], Instant::now(), failure).await;
             return false;
@@ -475,12 +518,26 @@ impl Runner {
     fn run_list<'a>(&'a mut self, steps: &'a [Step], iters: Vec<u32>) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(async move {
             for step in steps {
-                if let Kind::Repeat { count, body } = &step.kind {
+                if let Kind::Repeat { count, until, body } = &step.kind {
+                    if let Some(pattern) = until {
+                        if !self.run_until(step, *count, pattern, body, &iters).await {
+                            return false;
+                        }
+                        // An enclosing until-log loop's line ended it.
+                        if self.loop_ended.is_some() {
+                            return true;
+                        }
+                        continue;
+                    }
                     for n in 1..=*count {
                         let mut inner = iters.clone();
                         inner.push(n);
                         if !self.run_list(body, inner).await {
                             return false;
+                        }
+                        // An enclosing until-log loop ended.
+                        if self.loop_ended.is_some() {
+                            return true;
                         }
                     }
                     continue;
@@ -488,9 +545,190 @@ impl Runner {
                 if !self.run_step(step, &iters).await {
                     return false;
                 }
+                if self.loop_ended.is_some() {
+                    return true;
+                }
             }
             true
         })
+    }
+
+    /// A repeat:until-log loop: passes until a log line since the loop
+    /// began matches (checked after each pass, and by its waits), at most
+    /// `count`; its record says how many passes ran and why it ended. An
+    /// enclosing loop's line ends it too (`ended: "outer"`).
+    async fn run_until(&mut self, step: &Step, count: u32, pattern: &Regex, body: &[Step], iters: &[u32]) -> bool {
+        let started = Instant::now();
+        self.session.log_barrier(LOG_BARRIER).await;
+        let depth = self.untils.len();
+        self.untils.push(Until { pattern: pattern.clone(), pos: self.events.line_count(), seen: None });
+        let mut passes = 0;
+        for n in 1..=count {
+            passes = n;
+            let mut inner = iters.to_vec();
+            inner.push(n);
+            if !self.run_list(body, inner).await {
+                self.untils.truncate(depth);
+                return false;
+            }
+            if self.loop_ended.is_some() {
+                break;
+            }
+            self.session.log_barrier(LOG_BARRIER).await;
+            if let Some((target, _)) = self.until_hit() {
+                self.loop_ended = Some(target);
+                break;
+            }
+        }
+        let own = self.untils.pop().and_then(|u| u.seen);
+        let outer = match self.loop_ended {
+            // This loop's line: it ends here.
+            Some(target) if target == depth => {
+                self.loop_ended = None;
+                None
+            }
+            // An enclosing loop's line: it ends that loop too.
+            Some(target) => self.untils.get(target).and_then(|u| u.seen.clone()),
+            None => None,
+        };
+        let guest = self.clock.now_ms().await;
+        let mut record = self.base_record("repeat", &step.text, iters, started, guest, true);
+        record.insert("passes".into(), json!(passes));
+        let (ended, line) = match (own, outer) {
+            (Some(line), _) => ("log", Some(line)),
+            (None, Some(line)) => ("outer", Some(line)),
+            (None, None) => ("count", None),
+        };
+        record.insert("ended".into(), json!(ended));
+        if let Some(line) = line {
+            record.insert("line".into(), json!(line));
+        }
+        self.index += 1;
+        let record = Value::Object(record);
+        self.emit(&record);
+        self.last_step = Some(record);
+        true
+    }
+
+    /// The outermost until-log loop whose line has come since it began, and
+    /// that line.
+    fn until_hit(&mut self) -> Option<(usize, String)> {
+        for (depth, until) in self.untils.iter_mut().enumerate() {
+            if until.seen.is_none() {
+                let pattern = &until.pattern;
+                let (found, end) = self.events.with_lines_end(until.pos, |lines| lines.iter().find(|l| pattern.is_match(&l.text)).map(|l| l.text.clone()));
+                until.pos = end;
+                until.seen = found;
+            }
+            if let Some(line) = &until.seen {
+                return Some((depth, line.clone()));
+            }
+        }
+        None
+    }
+
+    /// In a wait (or as it returns): whether an enclosing until-log loop's
+    /// line came, which ends the wait (recorded in `f`) and the steps up to
+    /// that loop.
+    fn wait_ends_loop(&mut self, f: &mut Fields) -> bool {
+        match self.until_hit() {
+            Some((target, line)) => {
+                f.insert("loop_ended".into(), json!(line));
+                self.loop_ended = Some(target);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Before an input in an until-log loop, after its quiet wait (which
+    /// lets the lines that end the last pass arrive): whether the loop's
+    /// line came, so the input is not sent and the loop ends.
+    fn input_ends_loop(&mut self, f: &mut Fields) -> bool {
+        if !self.wait_ends_loop(f) {
+            return false;
+        }
+        f.insert("sent".into(), json!(false));
+        true
+    }
+
+    /// Walk the heaps for each heap-on-log watch that saw its line since
+    /// the last look (one walk for several lines at once).
+    async fn service_watches(&mut self) {
+        for w in 0..self.watches.len() {
+            let watch = &self.watches[w];
+            let pattern = &watch.pattern;
+            let (matched, end) = self.events.with_lines_end(watch.pos, |lines| {
+                let mut hits = lines.iter().filter(|l| pattern.is_match(&l.text));
+                hits.next().map(|first| (first.text.clone(), first.t, 1 + hits.count()))
+            });
+            self.watches[w].pos = end;
+            let Some((line, line_t, lines)) = matched else { continue };
+            if self.watches[w].taken >= WATCH_LIMIT {
+                continue;
+            }
+            self.watches[w].taken += 1;
+            let (name, text, taken) = (self.watches[w].name.clone(), self.watches[w].text.clone(), self.watches[w].taken);
+            let started = Instant::now();
+            // Host time from the line's arrival to the walk, which stops the guest.
+            let age_ms = ((self.events.now() - line_t) * 1000.0).round();
+            let label = self.unique("heaps", &name);
+            // A watch is a best-effort capture: a walk that fails is a
+            // warning, not a failed step.
+            let failed = match self.read_heap().await {
+                Ok(snap) => {
+                    let file = format!("heaps/{label}.json");
+                    let written = std::fs::write(self.opts.dir.join(&file), snap.to_string());
+                    let guest = self.clock.now_ms().await;
+                    let mut record = self.base_record("heap", &text, &[], started, guest, true);
+                    record.insert("name".into(), json!(label));
+                    record.insert("file".into(), json!(file));
+                    record.insert("on_log".into(), json!(line));
+                    if let Some(ms) = metrics::firmware_ms(&line) {
+                        record.insert("line_fw_ms".into(), json!(ms));
+                    }
+                    record.insert("line_age_ms".into(), json!(age_ms));
+                    if lines > 1 {
+                        record.insert("lines".into(), json!(lines));
+                    }
+                    for (k, v) in heap_summary(&snap) {
+                        record.insert(k, v);
+                    }
+                    match written {
+                        Ok(()) => {
+                            self.index += 1;
+                            self.emit(&Value::Object(record));
+                            None
+                        }
+                        Err(e) => Some(format!("cannot write {file}: {e}")),
+                    }
+                }
+                Err(failure) => Some(failure.message),
+            };
+            if let Some(error) = failed {
+                self.warn(&text, format!("heap-on-log:{name} could not keep the heaps at {line}: {error}"));
+            }
+            if taken == WATCH_LIMIT {
+                self.warn(&text, format!("heap-on-log:{name} took its {WATCH_LIMIT} heap walks; later lines are not walked"));
+            }
+        }
+    }
+
+    /// A record that warns about a step without failing it.
+    fn warn(&mut self, text: &str, message: String) {
+        let record = json!({"type": "warning", "text": text, "t": round3(self.events.now()), "warning": message});
+        self.emit(&record);
+    }
+
+    /// Whether heap-on-log watches are armed (a held session keeps
+    /// looking between requests).
+    pub fn watching(&self) -> bool {
+        self.watches.iter().any(|w| w.taken < WATCH_LIMIT)
+    }
+
+    /// Between requests of a held session: take what watches saw.
+    pub async fn idle_tick(&mut self) {
+        self.service_watches().await;
     }
 
     fn base_record(&self, kind: &str, text: &str, iters: &[u32], started: Instant, guest: Option<i64>, ok: bool) -> Map<String, Value> {
@@ -562,6 +800,15 @@ impl Runner {
         candidate
     }
 
+    /// Fail if the guest crashed or QEMU is gone; take what heap-on-log
+    /// watches saw. Every wait calls this as it polls.
+    async fn alive(&mut self) -> Result<(), Failure> {
+        if !self.watches.is_empty() {
+            self.service_watches().await;
+        }
+        self.check_alive()
+    }
+
     /// Fail if the guest crashed or QEMU is gone.
     fn check_alive(&mut self) -> Result<(), Failure> {
         if let Some(info) = self.events.state() {
@@ -587,6 +834,7 @@ impl Runner {
     /// before it are delivered first, so none of them can satisfy a wait.
     async fn action(&mut self) {
         self.session.log_barrier(LOG_BARRIER).await;
+        self.after_ready = false;
         self.log_cursor = self.events.line_count();
         self.mark_screen(self.events.screen().updates);
         self.pending_action = true;
@@ -612,7 +860,7 @@ impl Runner {
         let mut quiet_from = (Instant::now(), self.clock.now_ns().await);
         let mut load = self.clock.load_sample().await;
         loop {
-            self.check_alive()?;
+            self.alive().await?;
             let guest = self.clock.now_ns().await;
             let now_count = self.events.line_count();
             let busy = self.panel_busy().await == Some(true);
@@ -687,6 +935,7 @@ impl Runner {
         self.readiness_pos = self.events.line_count();
         self.readiness_screen_base = self.events.screen().updates;
         self.boot_started = self.events.now();
+        self.boot_line = self.readiness_pos;
     }
 
     /// Let the guest run for `ms` of its own time (host time without the
@@ -699,7 +948,7 @@ impl Runner {
             Some(start) => {
                 let target = start.saturating_add((ms * 1_000_000.0) as i64);
                 loop {
-                    self.check_alive()?;
+                    self.alive().await?;
                     let now = self.clock.now_ns().await.unwrap_or(target);
                     if now >= target {
                         return Ok(());
@@ -714,7 +963,7 @@ impl Runner {
             None => {
                 let end = started + Duration::from_secs_f64(ms / 1000.0);
                 while Instant::now() < end {
-                    self.check_alive()?;
+                    self.alive().await?;
                     tokio::time::sleep((end - Instant::now()).min(POLL)).await;
                 }
                 Ok(())
@@ -733,7 +982,7 @@ impl Runner {
     }
 
     async fn exec(&mut self, step: &Step, iters: &[u32]) -> StepResult {
-        self.check_alive()?;
+        self.alive().await?;
         if matches!(step.kind, Kind::Ready { .. } | Kind::Wait { .. } | Kind::WaitLog { .. } | Kind::WaitScreen { .. } | Kind::WaitQuiet { .. }) {
             self.pending_action = false;
         }
@@ -768,19 +1017,30 @@ impl Runner {
                     };
                     match verdict {
                         Verdict::Ready(how) => {
-                            self.check_alive()?;
+                            self.alive().await?;
                             f.insert("how".into(), json!(how));
                             // From this boot's start (its ROM banner; without one, the
-                            // run's start or the last reset) to Home for CrossPoint, or
-                            // to the last screen update before the quiet.
+                            // run's start or the last reset) to Home or a book's first
+                            // page for CrossPoint, or to the last screen update before
+                            // the quiet.
                             let start = self.readiness.rom_banner_at().map_or(self.boot_started, |t| t.max(self.boot_started));
                             let drawn = screen.last_update.map(|u| now - u.elapsed().as_secs_f64()).unwrap_or(now);
-                            f.insert("boot_s".into(), json!(round3(self.readiness.home_at.unwrap_or(drawn) - start)));
-                            if let Some(ms) = self.readiness.home_fw_ms {
-                                f.insert("home_fw_ms".into(), json!(ms));
+                            let (at, fw_key, fw_ms) = match how {
+                                "reader" => (self.readiness.page_at, "page_fw_ms", self.readiness.page_fw_ms),
+                                "home" => (self.readiness.home_at, "home_fw_ms", self.readiness.home_fw_ms),
+                                _ => (None, "", None),
+                            };
+                            f.insert("boot_s".into(), json!(round3(at.unwrap_or(drawn) - start)));
+                            if let Some(ms) = fw_ms {
+                                f.insert(fw_key.into(), json!(ms));
+                            }
+                            if let Some(name) = &self.readiness.screen {
+                                f.insert("screen".into(), json!(name));
                             }
                             f.insert("restarts".into(), json!(self.readiness.restarts));
                             self.log_cursor = end;
+                            self.after_ready = true;
+                            self.ready_line = end;
                             self.mark_screen(screen.updates);
                             return Ok(f);
                         }
@@ -791,7 +1051,7 @@ impl Runner {
                         }
                         Verdict::Waiting => {}
                     }
-                    self.check_alive()?;
+                    self.alive().await?;
                     if started.elapsed().as_secs_f64() > limit {
                         let why = if asleep && !self.readiness.power_wait {
                             "the device is in deep sleep; a key that wakes it (press:power) starts a new boot".to_string()
@@ -810,13 +1070,31 @@ impl Runner {
             }
             Kind::WaitLog { pattern } => {
                 let started = Instant::now();
+                // The first wait-log after ready, for a line the boot already
+                // printed: that line cannot satisfy it.
+                if std::mem::take(&mut self.after_ready) {
+                    let (boot, ready) = (self.boot_line, self.ready_line);
+                    let printed = self.events.with_lines(boot, |lines| {
+                        let lines = &lines[..ready.saturating_sub(boot).min(lines.len())];
+                        // This boot: from its ROM banner (a wake from deep sleep is a new boot too).
+                        let rom = lines.iter().rposition(|l| l.text.starts_with("ESP-ROM:")).unwrap_or(0);
+                        lines[rom..].iter().find(|l| pattern.is_match(&l.text)).map(|l| l.text.clone())
+                    });
+                    if let Some(line) = printed {
+                        self.warn(&step.text, format!(
+                            "`{}`: a matching line was printed during the boot, before ready passed ({line}); wait-log looks only at lines after \
+                             the last action or ready, so it waits for another one. To check for a line already in the log, use expect-log:{}",
+                            step.text, pattern.as_str()
+                        ));
+                    }
+                }
                 loop {
                     let from = self.log_cursor;
                     let (found, _) = self.events.with_lines_end(from, |lines| {
                         lines.iter().position(|l| pattern.is_match(&l.text)).map(|i| (i, lines[i].text.clone(), lines[i].t))
                     });
                     if let Some((i, line, t)) = found {
-                        self.check_alive()?;
+                        self.alive().await?;
                         self.log_cursor = from + i + 1;
                         f.insert("line".into(), json!(line));
                         f.insert("line_t".into(), json!(round3(t)));
@@ -827,14 +1105,29 @@ impl Runner {
                         if !values.is_empty() {
                             f.insert("values".into(), Value::Object(values));
                         }
+                        self.wait_ends_loop(&mut f);
                         return Ok(f);
                     }
-                    self.check_alive()?;
+                    self.alive().await?;
+                    if self.wait_ends_loop(&mut f) {
+                        return Ok(f);
+                    }
                     if started.elapsed().as_secs_f64() > self.timeout {
+                        // A match before the cursor: the wait looked past it.
+                        let cursor = self.log_cursor;
+                        let earlier = self.events.with_lines(0, |lines| {
+                            lines[..cursor.min(lines.len())].iter().rev().find(|l| pattern.is_match(&l.text)).map(|l| l.text.clone())
+                        });
+                        let hint = earlier.map(|line| format!(
+                            "; a matching line came before this wait looked ({line}): wait-log looks only after the last action, ready, \
+                             or the line the previous wait-log matched; for a line already in the log, use expect-log:{}",
+                            pattern.as_str()
+                        ));
                         let mut failure = Failure::new(format!(
-                            "no log line matched /{}/ within {} s after the last action (press, touch, swipe, reset or ready)",
+                            "no log line matched /{}/ within {} s after the last action (press, touch, swipe, reset or ready){}",
                             pattern.as_str(),
-                            self.timeout
+                            self.timeout,
+                            hint.unwrap_or_default()
                         ));
                         failure.fields.insert("last_lines".into(), json!(self.tail(8)));
                         return Err(failure);
@@ -850,7 +1143,7 @@ impl Runner {
                 loop {
                     let settled = self.frames.settled();
                     if settled > self.screen_cursor && settled == self.events.screen().updates {
-                        self.check_alive()?;
+                        self.alive().await?;
                         let before = self.screen_mark.clone();
                         self.mark_screen(settled);
                         if self.screen_mark != before {
@@ -858,11 +1151,15 @@ impl Runner {
                             if let Some(frame) = self.frames.last_frame() {
                                 f.insert("frame".into(), json!(frame.file));
                             }
+                            self.wait_ends_loop(&mut f);
                             return Ok(f);
                         }
                         repaints += 1;
                     }
-                    self.check_alive()?;
+                    self.alive().await?;
+                    if self.wait_ends_loop(&mut f) {
+                        return Ok(f);
+                    }
                     if started.elapsed().as_secs_f64() > limit {
                         let same = match repaints {
                             0 => String::new(),
@@ -881,7 +1178,7 @@ impl Runner {
                 let mut count = self.events.screen().updates;
                 let mut quiet_from = (Instant::now(), self.clock.now_ns().await);
                 loop {
-                    self.check_alive()?;
+                    self.alive().await?;
                     let guest = self.clock.now_ns().await;
                     let screen = self.events.screen();
                     if screen.updates != count {
@@ -892,6 +1189,10 @@ impl Runner {
                         if let Some(frame) = self.frames.last_frame() {
                             f.insert("frame".into(), json!(frame.file));
                         }
+                        self.wait_ends_loop(&mut f);
+                        return Ok(f);
+                    }
+                    if self.wait_ends_loop(&mut f) {
                         return Ok(f);
                     }
                     if started.elapsed().as_secs_f64() > limit {
@@ -908,6 +1209,9 @@ impl Runner {
                 let machine = self.machine();
                 let (path, property) = key_path(&machine, key).map_err(Failure::new)?;
                 self.input_quiet(&mut f).await?;
+                if self.input_ends_loop(&mut f) {
+                    return Ok(f);
+                }
                 self.action().await;
                 self.session.qmp("qom-set", Some(json!({"path": path, "property": property, "value": true}))).await?;
                 let held = self.guest_sleep(f64::from(*ms)).await;
@@ -920,6 +1224,9 @@ impl Runner {
                 let (w, h) = self.touch_panel()?;
                 let (px, py) = (x.resolve(w), y.resolve(h));
                 self.input_quiet(&mut f).await?;
+                if self.input_ends_loop(&mut f) {
+                    return Ok(f);
+                }
                 self.action().await;
                 self.pointer(px, py, w, h, Some(true)).await?;
                 let held = self.guest_sleep(f64::from(*ms)).await;
@@ -932,6 +1239,9 @@ impl Runner {
                 let (w, h) = self.touch_panel()?;
                 let (x0, y0, x1, y1) = (from.0.resolve(w), from.1.resolve(h), to.0.resolve(w), to.1.resolve(h));
                 self.input_quiet(&mut f).await?;
+                if self.input_ends_loop(&mut f) {
+                    return Ok(f);
+                }
                 self.action().await;
                 self.pointer(x0, y0, w, h, Some(true)).await?;
                 let moves = 12;
@@ -959,7 +1269,7 @@ impl Runner {
                     // Right after an action: give the firmware time to start drawing.
                     let waited = Instant::now();
                     while self.events.screen().updates <= self.screen_cursor && waited.elapsed() < ACTION_GRACE {
-                        self.check_alive()?;
+                        self.alive().await?;
                         tokio::time::sleep(POLL).await;
                     }
                     self.pending_action = false;
@@ -1036,6 +1346,18 @@ impl Runner {
                     f.extend(counters);
                 }
             }
+            Kind::HeapOnLog { name, pattern } => {
+                self.session.log_barrier(LOG_BARRIER).await;
+                let pos = self.events.line_count();
+                let name = expand(name, iters);
+                let watch = Watch { name: name.clone(), text: step.text.clone(), pattern: pattern.clone(), pos, taken: 0 };
+                // The same name again watches for the new pattern instead.
+                match self.watches.iter_mut().find(|w| w.name == name) {
+                    Some(w) => *w = watch,
+                    None => self.watches.push(watch),
+                }
+                f.insert("name".into(), json!(name));
+            }
             Kind::ExpectLog { pattern } => {
                 self.session.log_barrier(LOG_BARRIER).await;
                 let found = self.events.with_lines(0, |lines| lines.iter().find(|l| pattern.is_match(&l.text)).map(|l| l.text.clone()));
@@ -1101,7 +1423,7 @@ impl Runner {
                     return Ok(fb);
                 }
             }
-            self.check_alive()?;
+            self.alive().await?;
             if started.elapsed().as_secs_f64() > self.timeout {
                 return Err(Failure::new(if updates == 0 {
                     "the firmware has not drawn anything yet; put ready or wait-screen before the shot".to_string()

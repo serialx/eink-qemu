@@ -55,6 +55,51 @@ test('firmware that resumes a book is Ready once the screen has been quiet', () 
   assert.equal(seen.at(-1), 'X4 Pro · Accurate timing · Ready');
 });
 
+test('a boot into a book is Ready at its first page, not at the third refresh', () => {
+  let clock = 0;
+  const { r, seen } = fresh(() => clock);
+  r.restart();
+  // CrossPoint X3 waking into the book it slept in.
+  r.feed(['[615] [DBG] [ACT] Entering activity: EpubReader', '[615] [INF] [MEM] reader enter: free=152848 max_block=114676']);
+  clock = 3011;
+  for (let i = 0; i < 3; i++) r.feed(['[3011]   Wait complete:  X3_DRF (383 ms)']);
+  assert.ok(!seen.some((text) => /Home drawn|Ready/.test(text)), seen.join(' / '));
+  clock = 3980;
+  r.feed(['[3980] [DBG] [ERS] Page render (tiled): prewarm=19ms total=3337ms']);
+  assert.equal(r.bootSeconds, 3.98);
+  assert.match(seen.at(-1), /first page drawn in 3\.98 s · finishing startup/);
+  r.feed(['[10028] [INF] [MEM] Free: 148380 bytes, Total: 265020 bytes, Min Free: 136532 bytes, MaxAlloc: 114676 bytes']);
+  assert.equal(seen.at(-1), 'X4 Pro · Accurate timing · Ready · first page drawn in 3.98 s');
+});
+
+test('a first page after the memory report is Ready at once', () => {
+  let clock = 0;
+  const { r, seen } = fresh(() => clock);
+  r.restart();
+  r.feed(['[615] [DBG] [ACT] Entering activity: EpubReader', 'Wait complete:  X3_DRF (1 ms)']);
+  clock = 10000;
+  r.feed(['[10000] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes']);
+  assert.ok(!seen.some((text) => /Ready/.test(text)));
+  clock = 12000;
+  r.feed(['[12000] [DBG] [ERS] Page render: total=900ms']);
+  assert.equal(seen.at(-1), 'X4 Pro · Accurate timing · Ready · first page drawn in 12.00 s');
+});
+
+test('a release build enters the reader by its memory line, and is Ready once long quiet', () => {
+  let clock = 0;
+  const { r, seen } = fresh(() => clock);
+  r.restart();
+  // LOG_LEVEL=1: no activity or page lines.
+  r.feed(['[615] [INF] [MEM] reader enter: free=152848 max_block=114676']);
+  clock = 3000;
+  for (let i = 0; i < 3; i++) r.feed(['[3011]   Wait complete:  X3_DRF (383 ms)']);
+  assert.ok(!seen.some((text) => /Home drawn/.test(text)), seen.join(' / '));
+  clock = 14999; r.tick();
+  assert.ok(!seen.some((text) => /Ready/.test(text)));
+  clock = 15000; r.tick();
+  assert.equal(seen.at(-1), 'X4 Pro · Accurate timing · Ready');
+});
+
 // A clock the test moves, and a page that ticks readiness as app.ts does.
 function clocked() {
   let clock = 0;

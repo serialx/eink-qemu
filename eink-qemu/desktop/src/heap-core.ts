@@ -317,7 +317,9 @@ export function stackHtml(stack: HeapStack, allocOpen: boolean, label = 'call st
     `<button class="hd-copy" type="button">Copy</button></div>` +
     (stack.caller ? `<details${allocOpen ? ' open' : ''}><summary>${stack.caller} allocator frame${stack.caller > 1 ? 's' : ''}</summary>` +
       `<ol>${fr.slice(0, stack.caller).map((f) => frameHtml(f, 'alloc')).join('')}</ol></details>` : '') +
-    `<ol start="${stack.caller + 1}">${fr.slice(stack.caller).map((f, k) => frameHtml(f, stack.caller + k === stack.site ? 'site' : f.lib ? 'lib' : '')).join('')}</ol></div>`;
+    // A wrapper the allocator is reached through library code from (a
+    // make_unique whose constructor copies a string) is the allocator's too.
+    `<ol start="${stack.caller + 1}">${fr.slice(stack.caller).map((f, k) => frameHtml(f, stack.caller + k === stack.site ? 'site' : f.alloc ? 'alloc' : f.lib ? 'lib' : '')).join('')}</ol></div>`;
 }
 
 /** Copy a stack as text, one frame a line, and say so on the button. */

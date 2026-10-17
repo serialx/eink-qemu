@@ -31,13 +31,28 @@ pub struct CrossPoint {
     pub wait_ran_out_ms: u64,
     /// Its message for a card it cannot mount.
     pub sd_failed: Regex,
+    /// The screen it enters (capture 1), and the ones that are a book's reader:
+    /// a boot into a reader is drawn when its first page is (`page_drawn`),
+    /// not after Home's refreshes.
+    pub activity: Regex,
+    pub reader_activity: Regex,
+    /// A line entering a book's reader at a level release builds keep (they
+    /// drop the activity and page lines).
+    pub reader_entered: Regex,
+    pub page_drawn: Regex,
     /// Its log prefix, `[<ms since boot>] `.
     pub timestamp: Regex,
+    /// Its own error and warning lines, counted with ESP-IDF's.
+    pub error: Regex,
+    pub warning: Regex,
     pub page_render: Regex,
     pub cold_start: Regex,
     pub mem: Regex,
     pub rendered: Regex,
     pub nvs_seed: NvsSeed,
+    /// Functions that only wrap an allocation (its own make_unique): the
+    /// allocation site is their caller.
+    pub allocation_wrappers: Vec<Regex>,
 }
 
 /// An NVS entry the firmware expects (u8 values in one namespace).
@@ -59,6 +74,12 @@ struct CrossPointFile {
     ready: CrossPointReady,
     metrics: BTreeMap<String, String>,
     nvs_seed: SeedFile,
+    trace: TraceFile,
+}
+
+#[derive(Deserialize)]
+struct TraceFile {
+    allocation_wrappers: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +97,10 @@ struct CrossPointReady {
     sd_failed: String,
     panel_wait: String,
     wait_ran_out_ms: u64,
+    activity: String,
+    reader_activity: String,
+    reader_entered: String,
+    page_drawn: String,
 }
 
 #[derive(Deserialize)]
@@ -112,7 +137,13 @@ pub static CROSSPOINT: LazyLock<CrossPoint> = LazyLock::new(|| {
         panel_wait: regex(&file.ready.panel_wait),
         wait_ran_out_ms: file.ready.wait_ran_out_ms,
         sd_failed: regex(&file.ready.sd_failed),
+        activity: regex(&file.ready.activity),
+        reader_activity: regex(&file.ready.reader_activity),
+        reader_entered: regex(&file.ready.reader_entered),
+        page_drawn: regex(&file.ready.page_drawn),
         timestamp: metric("timestamp"),
+        error: metric("error"),
+        warning: metric("warning"),
         page_render: metric("page_render"),
         cold_start: metric("cold_start"),
         mem: metric("mem"),
@@ -122,6 +153,7 @@ pub static CROSSPOINT: LazyLock<CrossPoint> = LazyLock::new(|| {
             namespace: file.nvs_seed.namespace.clone(),
             values: file.nvs_seed.u8.iter().map(|(k, &v)| (k.clone(), v)).collect(),
         },
+        allocation_wrappers: file.trace.allocation_wrappers.iter().map(|p| regex(p)).collect(),
     }
 });
 
@@ -151,6 +183,12 @@ mod tests {
         assert!(CROSSPOINT.refresh_done.is_match("[4015]   Wait complete:  8279x4_DRF (484 ms)"));
         assert!(CROSSPOINT.report.is_match("[10010] [INF] [MEM] Free: 1 bytes"));
         assert_eq!(CROSSPOINT.nvs_seed.values, [("dev_det".to_string(), 2)]);
+        assert_eq!(&CROSSPOINT.activity.captures("[615] [DBG] [ACT] Entering activity: EpubReader").unwrap()[1], "EpubReader");
+        assert!(CROSSPOINT.reader_activity.is_match("XtcReader") && !CROSSPOINT.reader_activity.is_match("EpubReaderMenu"));
+        assert!(CROSSPOINT.page_drawn.is_match("[3980] [DBG] [ERS] Page render (tiled): prewarm=19ms total=3337ms"));
+        assert!(CROSSPOINT.error.is_match("[12559] [ERR] [DEC] No decoder found for image: EPUB/images/cover.svg"));
+        assert!(!CROSSPOINT.error.is_match("[12559] [INF] [DEC] [ERR] quoted"));
+        assert!(CROSSPOINT.allocation_wrappers[0].is_match("std::unique_ptr<T> makeUniqueNoThrow<ParsedText>(bool&)"));
         assert!(XTEINK_STOCK.power_wait.is_match("W (2277) boot-preflight: reject physical boot before init: reason=3"));
     }
 

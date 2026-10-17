@@ -17,8 +17,8 @@ boards boots, runs scripts, and gets screenshots, heap snapshots and the
 emulator's own measurements (display updates, panel refreshes and their
 time). What it knows about particular firmware is data in
 [`eink-qemu/profiles`](../../profiles/README.md): CrossPoint Reader's boot
-milestones, render times and memory reports, and the stock Xteink
-firmware's boot gate.
+milestones, its error lines, render times, memory reports and allocation
+wrappers, and the stock Xteink firmware's boot gate.
 
 ## Install
 
@@ -165,7 +165,7 @@ stdout. The run directory is in the first record and linked from
 | `heaps/` | The `heap` steps' snapshots, block by block |
 | `traces/` | The `trace-stop` steps' allocation windows by site, and `trace.bin` |
 | `fail/` | When a step fails: the screen, heaps, last 200 log lines and registers |
-| `metrics.json` | Display updates, panel refreshes and their guest time, ESP-IDF error and warning counts; CrossPoint's render times and memory reports under `crosspoint` |
+| `metrics.json` | Display updates, panel refreshes and their guest time, error and warning line counts (ESP-IDF's, and CrossPoint's `[ERR]`); CrossPoint's render times and memory reports under `crosspoint` |
 | `report.html` | All of it on one page |
 
 Exit codes: 0 when every step passed, 1 when a step failed, 2 for bad usage
@@ -173,7 +173,8 @@ or steps (found before the emulator starts), 3 when the run could not start
 (firmware, card, QEMU), 130 when interrupted (Ctrl-C or SIGTERM, which still
 write the end record and report). A run that could not start leaves
 `error.txt`, a `run.jsonl` with the setup error and a `report.html` saying
-why, and the same command, `--out` included, can be run again.
+why, and the same command, `--out` included, can be run again (for
+`compare` too, when neither side started).
 
 ### The X4 Pro
 
@@ -199,7 +200,7 @@ quoting is needed and `#` starts a comment.
 | Step | What it does |
 | --- | --- |
 | `ready[:SECONDS]` | Wait for the boot to finish (below) |
-| `wait-log:REGEX` | Wait for a log line matching REGEX after the last action |
+| `wait-log:REGEX` | Wait for a log line matching REGEX after the last action (or `ready`) |
 | `wait-screen[:SECONDS]` | Wait for the screen to change after the last action and settle |
 | `wait-quiet[:SECONDS]` | Wait until the screen has been unchanged for SECONDS of guest time (default 2) |
 | `wait:SECONDS` | Let the guest run for that much guest time |
@@ -213,9 +214,11 @@ quoting is needed and `#` starts a comment.
 | `heap[:NAME]` | Walk every heap into `heaps/NAME.json`; the record has the totals |
 | `trace-start:NAME`, `trace-stop:NAME` | An allocation window (needs `--trace`) |
 | `mark:NAME` | A labelled record; `compare` groups `wait-log` values by the mark before them |
+| `heap-on-log:NAME=REGEX` | From here on, walk the heaps whenever a log line matches REGEX (below) |
 | `expect-log:REGEX`, `expect-no-log:REGEX` | Check the whole log so far |
 | `expect-shot:NAME=PNG[@X,Y,W,H...]` | Compare a shot with a PNG, outside masked rectangles |
 | `repeat:N` ... `end` | Run the steps between N times |
+| `repeat:until-log:REGEX` ... `end` | Run them until a log line matches REGEX (below); `repeat:N:until-log:REGEX` stops after N passes at most |
 | `hmp:COMMAND` | A QEMU monitor command; the output is in the record |
 
 Keys: `back confirm left right up down power` on the X3 and X4; `up down
@@ -234,7 +237,36 @@ In a name, `{i}` is the iteration of the innermost `repeat`, so
 `wait-screen` look only at what happened after the last action (or after
 `ready`): every log line printed before the action is delivered first, so
 none of them can satisfy the wait. After a match, the next `wait-log` looks
-past the matched line.
+past the matched line. A line the boot printed before `ready` passed, such
+as the first page of a book the firmware boots into, can therefore never
+satisfy a `wait-log` after `ready`: the run prints a `warning` record when
+the first `wait-log` after `ready` is for such a line, and a `wait-log` that
+times out names the latest matching line it did not look at. Check for a
+line that may already be in the log with `expect-log`.
+
+A loop can run until something happens rather than a fixed number of
+times. `repeat:until-log:REGEX` ... `end` runs its steps until a log line
+printed since the loop began matches REGEX. It looks after each pass, and a
+`wait-log`, `wait-screen` or `wait-quiet` inside the loop that is waiting
+when the line has come, or that passes once it has, ends the loop at once:
+the wait is a passed step with `loop_ended` (the line), and the rest of the
+pass is skipped. A `press`, `touch` or `swipe` in the loop looks too, after
+its wait for the firmware to go quiet (the line that ends a pass often comes
+just after the one its last wait matched): when the line has come, the input
+is not sent (`sent: false`) and the loop ends. That way a line that comes instead of the one a wait looks
+for (an error, say) ends the loop rather than timing the wait out. The line
+of an enclosing until-log loop ends the loops inside it too, up to that
+loop. Its `repeat` record has `passes`, `ended` (`log`; `outer` when an
+enclosing loop's line ended it; `count` when it ran its `N` passes) and the
+`line`:
+
+```text
+# CrossPoint: turn pages until the reader saves its place in the sixth spine item
+repeat:until-log:Progress saved: spine=5
+press:right
+wait-log:Page render
+end
+```
 
 Before each input step the tool waits until the firmware's log has been
 quiet, the panel idle and the CPU idle (from the emulator's instruction
@@ -264,10 +296,20 @@ values (`bw_render_ms`, `total_ms` and the rest) land in the record.
 unchanged for 5 host seconds (`--ready-quiet`), after an update of this boot, and the ROM has not rebooted the firmware
 meanwhile (`how` is `screen-quiet`). CrossPoint is read more closely, from
 its profile: three completed panel refreshes (Home drawn), then its first
-`[MEM]` report, about 10 s of guest time (`how` is `home`). A reboot starts
+periodic `[MEM]` report, about 10 s of guest time (`how` is `home`). When it
+boots straight into a book (it was asleep in one), its reader's first page
+counts instead (`how` is `reader`): its `Page render` line, with the report
+before or after it; the record's `screen` names the screen it entered
+(`Home`, `EpubReader`). The reader shows itself by its `[ACT] Entering
+activity` line, or by `[MEM] reader enter` in builds that log it at info
+level. A reader that logs no page line (a release build) is ready 12 host
+seconds after its last refresh (`how` is `quiet`). A build that logs none of
+these is read as a boot to Home, unless a page line comes before the memory
+report. A reboot starts
 over and is reported as `restarts`; after `reset` (or `hmp:system_reset`),
 `ready` waits for the new boot. An image the ROM cannot boot, or a card
-CrossPoint cannot mount, fails at once. When the stock Xteink firmware turns
+CrossPoint cannot mount, fails at once; a card that fails after the boot was
+ready fails the next `ready`. When the stock Xteink firmware turns
 itself off because Power was not held long enough, the timeout says so: run
 with `--power-hold 3000` (or put `press:power:4000` before `ready`).
 
@@ -296,21 +338,26 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 
 | Step | Fields |
 | --- | --- |
-| `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`quiet`), `boot_s` (host seconds from this boot's ROM banner, or without one from the run's start or the last reset, to Home for CrossPoint or to the last screen update before the quiet; the step's own `ms` also counts the quiet), `home_fw_ms` (CrossPoint: the firmware's ms at Home), `restarts` |
+| `ready` | `how` (`screen-quiet`, or for CrossPoint `home`/`reader`/`quiet`), `boot_s` (host seconds from this boot's ROM banner, or without one from the run's start or the last reset, to Home or a book's first page for CrossPoint, or to the last screen update before the quiet; the step's own `ms` also counts the quiet), `home_fw_ms` (CrossPoint: the firmware's ms at Home) or `page_fw_ms` (at the book's first page), `screen`, `restarts` |
 | `mark` | `name`, and the counters so far: `screen_updates` (display updates the guest sent), `panel_refreshes`, `panel_refresh_ms` (their guest time) |
-| `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs) |
+| `wait-log` | `line`, `fw_ms` (the line's own timestamp), `values` (`name=123ms` pairs); `loop_ended` instead when its until-log loop's line ended it (also on `wait-screen` and `wait-quiet`) |
 | `wait-screen` | `frame`, `repaints` (settled updates before it that redrew the same picture) |
 | `wait-quiet` | `frame` |
-| `press`, `touch`, `swipe` | `waited_ms` (the input wait), coordinates |
+| `press`, `touch`, `swipe` | `waited_ms` (the input wait), coordinates; `sent: false` and `loop_ended` when its until-log loop ended before the input |
 | `shot` | `file`, `pixels_sha256` (of the gray pixels, not the PNG file), `size` |
-| `heap` | see below |
+| `heap` | see below; a `heap-on-log` walk adds `on_log` (the line), `line_fw_ms`, `line_age_ms` and `lines` |
+| `repeat` (until-log loops) | `passes`, `ended` (`log`, `outer` or `count`), `line` |
 | `trace-stop` | `allocs`, `alloc_bytes`, `freed`, `kept`, `kept_bytes`, `older_freed_bytes`, `top_sites` |
 | failed step | `error`, `last_lines`, `fail_dir` |
 
+A `warning` record (`text`, `warning`) says something about a step that did
+not fail it, such as a `wait-log` that cannot see a line the boot printed.
+
 The `end` record's `metrics` hold the run's `screen_updates`,
 `panel_refreshes`, `panel_refresh_ms`, `log_errors` and `log_warnings`
-(ESP-IDF's `E (…)` and `W (…)` lines), and for CrossPoint a `crosspoint`
-object with its page renders, render medians and lowest `[MEM]` free.
+(ESP-IDF's `E (…)` and `W (…)` lines, and CrossPoint's own `[ERR]` lines),
+and for CrossPoint a `crosspoint` object with its page renders, render
+medians and lowest `[MEM]` free.
 
 ## Heap profiling
 
@@ -334,9 +381,25 @@ free, 2 = poisoned, 4 = corrupt, and the requested size). With `--trace`,
 `sites` gives each block's index into the file's `siteNames` (function and
 source line; -1 when the block was not traced).
 
+`heap-on-log:NAME=REGEX` walks the heaps whenever a log line matches, from
+the step on, for the rest of the run (in a session, also between requests):
+`heap-on-log:err=\[ERR\]` keeps the heaps at each of CrossPoint's errors
+as `heaps/err.json`, `err-2.json`, and so on, each with a `heap` record whose
+`on_log` is the line. The walk stops the guest as soon as the tool sees the
+line, usually within tens of ms; `line_age_ms` (host time) says how long it
+was, and a busy host can make it longer. So it shows the heap just after the
+firmware logged the line, not at the instant something failed. Lines that
+come together get one walk (`lines` counts them); each watch takes at most
+100. A walk that cannot be kept is a `warning` record, not a failed step.
+The same NAME again watches for its new REGEX; in a repeat, `{i}` in NAME
+makes one watch per pass.
+
 `--trace` records every allocation and free with its call stack (the
 heaptrace plugin; it needs the firmware's ELF, found beside the firmware or
-given with `--elf`). Between `trace-start:NAME` and `trace-stop:NAME`, the
+given with `--elf`). An allocation's site is the first of the firmware's own
+functions above the allocator; a function that only wraps an allocation,
+such as CrossPoint's `makeUniqueNoThrow`, is listed in the firmware's
+profile and counted with the allocator, so its caller is the site. Between `trace-start:NAME` and `trace-stop:NAME`, the
 record counts allocations, frees and the bytes still held at the end, by
 allocation site; `traces/NAME.json` lists every site. A window sees only
 what happened inside it; `live_sites` in a `heap` record covers everything
@@ -363,14 +426,33 @@ before either starts. Put the workload's prerequisites (the book, its fonts,
 the options) in the pull request beside the numbers. The comparison directory holds each run's directory
 and:
 
-- `compare.md`: a table for a pull request: result, boot to ready, each
-  `mark` window's guest time, panel refreshes and display updates, every
-  `wait-log` value's median and sum, the whole run's counters, heaps and
-  allocation windows by name, screenshots by name, and for CrossPoint its
-  Home time, page drawing and total rendering medians and memory reports.
+- `compare.md`: a table for a pull request. It shows the result, the input
+  pacing, the boot (to the first drawn Home or book page, from the first
+  `ready`; `ready` itself passes later, after the memory report; later
+  `ready` passes, such as wakes into a book, as medians by how they
+  finished), each `mark`
+  window's guest time, the log's error lines, and then only what changed: a
+  time that moved by at least the threshold (10 ms or 1% of the base,
+  whichever is larger; `--noise-ms`, `--noise-pct`; for host time ten times
+  the ms and five times the percentage; for a sum of N values N times the
+  ms), a median of a different number of samples, any other number that
+  differs, a differing heap, live allocation site, allocation window (its
+  allocations, bytes, blocks kept and freed, and older blocks freed) or
+  screenshot. A line under it counts the rows it leaves out and gives the
+  thresholds. Below it,
+  collapsed, every row: each `mark` window's panel refreshes and display
+  updates, every `wait-log` value's median and sum, the whole run's
+  counters, heaps, live allocation sites (each side's five largest; `-`
+  when a site is not among that side's ten largest) and allocation windows
+  by name, screenshots by name, and for CrossPoint its page drawing and
+  total rendering medians and memory reports. A change under the threshold
+  is marked `(below threshold)`, without a percentage: the threshold is a
+  display cutoff, not a measured noise level, so check it with a
+  comparison of a build against itself.
 - `compare.json`: the same numbers.
 - `diffs/`: for each screenshot that differs, its differing pixels in black.
-- `report.html`: the table and the screenshot pairs.
+- `report.html`: the same tables, every row behind a fold, and the
+  screenshot pairs.
 
 A `mark:NAME` starts a window that runs to the next mark (or the last
 step): the table gives its guest time and the panel refreshes and display
@@ -382,7 +464,19 @@ measurement at a step: use `heap` steps for that. With `--trace`, each heap
 snapshot's live allocation sites are listed side by side. A side that could
 not start still gets its outcome in the table. `--require-identical` fails
 the comparison when a screenshot differs, for changes that must not change
-rendering. `--sequential` runs one after the other.
+rendering. `--sequential` runs one after the other; interrupted during the
+first, it does not start the second.
+
+Input pacing is part of what a run measures. Each press holds its key 150
+ms of guest time (`press:KEY:MS`), and each input first waits for the
+firmware to go quiet (`--input-quiet`, 200 ms); a page turn's time counts
+from its press, so a harness that presses differently measures slightly
+different numbers (a few percent on a page turn). Compare numbers taken with
+the same pacing: both sides of a `compare` share it, and its table and each
+start record (`pacing`) say what it was. The table's pacing row gives the
+quiet period an input waits for (each input's actual wait is its record's
+`waited_ms`) and the default key hold; the start records also have
+`settle_ms` and `panel_idle_ms`.
 
 A reading workload as a script file:
 

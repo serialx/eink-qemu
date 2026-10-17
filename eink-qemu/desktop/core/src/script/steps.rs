@@ -11,8 +11,11 @@ use std::path::PathBuf;
 pub const STEP_HELP: &str = "\
 Waiting
   ready[:SECONDS]            boot finished: the screen quiet for 5 s (--ready-quiet),
-                             or for CrossPoint its Home drawn and its memory report
+                             or for CrossPoint its Home (or, booting into a book,
+                             the book's first page) drawn and its memory report
   wait-log:REGEX             a log line matching REGEX, after the last action
+                             (or ready; for a line that may already be in the
+                             log, use expect-log)
   wait-screen[:SECONDS]      the screen changed after the last action and settled
                              (a transient screen such as a loading screen counts;
                              an update that redraws the same picture does not)
@@ -38,6 +41,9 @@ Capture
   mark:NAME                  a labelled record with the display and panel counters;
                              compare measures each mark's window (guest time,
                              refreshes) and groups wait-log values by it
+  heap-on-log:NAME=REGEX     from here on, walk the heaps whenever a log line
+                             matches REGEX: heaps/NAME.json, NAME-2.json, ...
+                             (at most 100; line_age_ms says how soon after the line)
   In NAME, {i} is the iteration of the innermost repeat (shot:page{i}); a name
   used again gets -2, -3, ...
 Checks
@@ -47,6 +53,11 @@ Checks
                              shot NAME equals PNG, outside the masked rectangles
 Structure
   repeat:N ... end           run the steps between N times
+  repeat:until-log:REGEX ... end
+                             run them until a log line matches REGEX: checked
+                             after each pass and by each wait in the loop, which
+                             ends the loop at once; repeat:N:until-log:REGEX
+                             stops after N passes at most
   hmp:COMMAND                a QEMU monitor command; its output is recorded
 ";
 
@@ -101,7 +112,9 @@ pub enum Kind {
     ExpectLog { pattern: Regex },
     ExpectNoLog { pattern: Regex },
     ExpectShot { name: String, reference: PathBuf, masks: Vec<Rect> },
-    Repeat { count: u32, body: Vec<Step> },
+    /// `until`: a log line that ends the loop early.
+    Repeat { count: u32, until: Option<Regex>, body: Vec<Step> },
+    HeapOnLog { name: String, pattern: Regex },
     Hmp { command: String },
 }
 
@@ -128,6 +141,7 @@ impl Kind {
             Kind::ExpectNoLog { .. } => "expect-no-log",
             Kind::ExpectShot { .. } => "expect-shot",
             Kind::Repeat { .. } => "repeat",
+            Kind::HeapOnLog { .. } => "heap-on-log",
             Kind::Hmp { .. } => "hmp",
         }
     }
@@ -141,7 +155,7 @@ impl Kind {
     pub fn label(&self) -> Option<&str> {
         match self {
             Kind::Shot { name } | Kind::TraceStart { name } | Kind::TraceStop { name } | Kind::Mark { name }
-            | Kind::ExpectShot { name, .. } => Some(name),
+            | Kind::ExpectShot { name, .. } | Kind::HeapOnLog { name, .. } => Some(name),
             Kind::Heap { name } => name.as_deref(),
             _ => None,
         }
@@ -153,8 +167,14 @@ pub const MAX_SECONDS: f64 = 86_400.0;
 
 const KINDS: &[&str] = &[
     "ready", "wait", "wait-log", "wait-screen", "wait-quiet", "timeout", "press", "touch", "swipe", "reset", "shot", "heap",
-    "trace-start", "trace-stop", "mark", "expect-log", "expect-no-log", "expect-shot", "repeat", "end", "hmp",
+    "trace-start", "trace-stop", "mark", "heap-on-log", "expect-log", "expect-no-log", "expect-shot", "repeat", "end", "hmp",
 ];
+
+/// How long a press holds its key without `:MS`, in guest ms.
+pub const DEFAULT_HOLD_MS: u32 = 150;
+
+/// The most passes a repeat takes.
+pub const MAX_REPEAT: u32 = 100_000;
 
 /// The lines of a script file that hold steps: blank lines and lines
 /// starting with # are skipped; surrounding whitespace is trimmed.
@@ -164,7 +184,7 @@ pub fn script_lines(text: &str) -> Vec<String> {
 
 /// Parse steps, matching `repeat:N` with `end`.
 pub fn parse(tokens: &[String]) -> Result<Vec<Step>, String> {
-    let mut stack: Vec<(u32, String, Vec<Step>)> = Vec::new();
+    let mut stack: Vec<(u32, Option<Regex>, String, Vec<Step>)> = Vec::new();
     let mut top: Vec<Step> = Vec::new();
     for token in tokens {
         let token = token.trim();
@@ -176,35 +196,61 @@ pub fn parse(tokens: &[String]) -> Result<Vec<Step>, String> {
             if arg.is_some() {
                 return Err(format!("`{token}`: end takes no argument"));
             }
-            let Some((count, text, body)) = stack.pop() else {
+            let Some((count, until, text, body)) = stack.pop() else {
                 return Err("`end` without a `repeat:N` before it".into());
             };
-            let step = Step { kind: Kind::Repeat { count, body }, text };
+            let step = Step { kind: Kind::Repeat { count, until, body }, text };
             match stack.last_mut() {
-                Some((_, _, outer)) => outer.push(step),
+                Some((_, _, _, outer)) => outer.push(step),
                 None => top.push(step),
             }
             continue;
         }
         if kind == "repeat" {
-            let count = number(token, arg, "a count")?;
-            if count < 1.0 || count.fract() != 0.0 {
-                return Err(format!("`{token}`: the count must be a whole number, at least 1"));
-            }
-            let count = count as u32;
-            stack.push((count, token.to_string(), Vec::new()));
+            let (count, until) = repeat(token, arg)?;
+            stack.push((count, until, token.to_string(), Vec::new()));
             continue;
         }
         let step = Step { kind: parse_one(token, kind, arg)?, text: token.to_string() };
         match stack.last_mut() {
-            Some((_, _, body)) => body.push(step),
+            Some((_, _, _, body)) => body.push(step),
             None => top.push(step),
         }
     }
-    if let Some((_, text, _)) = stack.last() {
+    if let Some((_, _, text, _)) = stack.last() {
         return Err(format!("`{text}` has no matching `end`"));
     }
     Ok(top)
+}
+
+/// `repeat:N`, `repeat:until-log:REGEX` or `repeat:N:until-log:REGEX`.
+fn repeat(token: &str, arg: Option<&str>) -> Result<(u32, Option<Regex>), String> {
+    let (count, until) = match arg {
+        Some(a) if a.starts_with("until-log:") => (None, Some(a)),
+        Some(a) => match a.split_once(':') {
+            Some((n, rest)) => (Some(n), Some(rest)),
+            None => (Some(a), None),
+        },
+        None => (None, None),
+    };
+    let until = match until {
+        None => None,
+        Some(rest) => {
+            let regex = rest.strip_prefix("until-log:").ok_or_else(|| format!("`{token}`: after the count, only until-log:REGEX; {}", usage("repeat")))?;
+            Some(pattern(token, "repeat", Some(regex))?)
+        }
+    };
+    let count = match count {
+        None if until.is_some() => MAX_REPEAT,
+        _ => {
+            let count = number(token, count, "a count")?;
+            if count < 1.0 || count.fract() != 0.0 {
+                return Err(format!("`{token}`: the count must be a whole number, at least 1"));
+            }
+            count as u32
+        }
+    };
+    Ok((count, until))
 }
 
 fn usage(kind: &str) -> String {
@@ -231,8 +277,8 @@ fn number(token: &str, arg: Option<&str>, what: &str) -> Result<f64, String> {
     if value > MAX_SECONDS && kind != "repeat" {
         return Err(format!("`{token}`: {what} is at most {MAX_SECONDS} (a day)"));
     }
-    if kind == "repeat" && value > 100_000.0 {
-        return Err(format!("`{token}`: repeat at most 100000 times"));
+    if kind == "repeat" && value > f64::from(MAX_REPEAT) {
+        return Err(format!("`{token}`: repeat at most {MAX_REPEAT} times"));
     }
     Ok(value)
 }
@@ -302,7 +348,7 @@ fn parse_one(token: &str, kind: &str, arg: Option<&str>) -> Result<Kind, String>
                 Some((k, ms)) => (k, Some(ms)),
                 None => (arg, None),
             };
-            Kind::Press { key: key.trim().to_ascii_lowercase(), ms: hold(token, ms, 150)? }
+            Kind::Press { key: key.trim().to_ascii_lowercase(), ms: hold(token, ms, DEFAULT_HOLD_MS)? }
         }
         "touch" => {
             let arg = arg.ok_or_else(|| format!("`{token}` needs X,Y; {}", usage(kind)))?;
@@ -348,6 +394,10 @@ fn parse_one(token: &str, kind: &str, arg: Option<&str>) -> Result<Kind, String>
         "trace-start" => Kind::TraceStart { name: name(token, kind, arg)? },
         "trace-stop" => Kind::TraceStop { name: name(token, kind, arg)? },
         "mark" => Kind::Mark { name: name(token, kind, arg)? },
+        "heap-on-log" => {
+            let (watch, regex) = arg.and_then(|a| a.split_once('=')).ok_or_else(|| format!("`{token}` needs NAME=REGEX; {}", usage(kind)))?;
+            Kind::HeapOnLog { name: name(token, kind, Some(watch))?, pattern: pattern(token, kind, Some(regex))? }
+        }
         "expect-log" => Kind::ExpectLog { pattern: pattern(token, kind, arg)? },
         "expect-no-log" => Kind::ExpectNoLog { pattern: pattern(token, kind, arg)? },
         "expect-shot" => {
@@ -418,8 +468,32 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(parsed.len(), 9);
-        let Kind::Repeat { count, body } = &parsed[6].kind else { panic!() };
+        let Kind::Repeat { count, body, until: None } = &parsed[6].kind else { panic!() };
         assert_eq!((*count, body.len()), (12, 2));
+    }
+
+    #[test]
+    fn repeats_until_a_log_line() {
+        let parsed = steps(&["repeat:until-log:End of book: 3", "press:right", "end", "repeat:400:until-log:\\[ERR\\]", "end"]).unwrap();
+        let Kind::Repeat { count, until: Some(until), body } = &parsed[0].kind else { panic!() };
+        assert_eq!((*count, until.as_str(), body.len()), (MAX_REPEAT, "End of book: 3", 1));
+        let Kind::Repeat { count: 400, until: Some(until), .. } = &parsed[1].kind else { panic!() };
+        assert_eq!(until.as_str(), "\\[ERR\\]");
+        assert!(steps(&["repeat:5:until:x", "end"]).unwrap_err().contains("only until-log:REGEX"));
+        assert!(steps(&["repeat:until-log:", "end"]).unwrap_err().contains("needs a regex"));
+        assert!(steps(&["repeat:until-log:(", "end"]).unwrap_err().contains("invalid regex"));
+        assert!(steps(&["repeat:x:until-log:a", "end"]).unwrap_err().contains("not a number"));
+        assert!(steps(&["repeat", "end"]).unwrap_err().contains("needs a count"));
+    }
+
+    #[test]
+    fn heap_on_log_takes_a_name_and_a_regex() {
+        let parsed = steps(&["heap-on-log:err=\\[ERR\\] a=b"]).unwrap();
+        let Kind::HeapOnLog { name, pattern } = &parsed[0].kind else { panic!() };
+        assert_eq!((name.as_str(), pattern.as_str()), ("err", "\\[ERR\\] a=b"));
+        assert!(steps(&["heap-on-log:\\[ERR\\]"]).unwrap_err().contains("needs NAME=REGEX"));
+        assert!(steps(&["heap-on-log:a/b=x"]).unwrap_err().contains("names use"));
+        assert!(steps(&["heap-on-log:err="]).unwrap_err().contains("needs a regex"));
     }
 
     #[test]

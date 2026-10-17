@@ -7,10 +7,14 @@ about one particular firmware lives here, as data that every front end
 reads (the Rust core behind the CLI and desktop app, and the web page):
 
 - `crosspoint.json`: CrossPoint Reader and its forks. The log lines that
-  mark a finished boot (three completed refreshes, then a memory report),
-  its measurements (page render times, memory reports), and the NVS entry
-  its X3 build expects. The NVS entry is written only into images that
-  contain its strings (`detect.image_strings`).
+  mark a finished boot (three completed refreshes, then a periodic memory
+  report; booting into a book, the reader's first page instead: `activity`,
+  `reader_activity`, `page_drawn`), its own error and warning lines, its
+  measurements (page render times, memory reports), the functions that only
+  wrap an allocation (`trace.allocation_wrappers`: an allocation's site is
+  their caller), and the NVS entry its X3 build expects. The NVS entry is
+  written only into images that contain its strings
+  (`detect.image_strings`).
 - `xteink-stock.json`: the stock firmware's boot gate, so a run that
   waits on it can say why.
 

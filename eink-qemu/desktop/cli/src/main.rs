@@ -32,6 +32,15 @@ fn seconds(text: &str) -> Result<f64, String> {
     Ok(v)
 }
 
+/// A noise floor: zero or more, at most 100000.
+fn noise(text: &str) -> Result<f64, String> {
+    let v: f64 = text.parse().map_err(|_| format!("{text:?} is not a number"))?;
+    if !v.is_finite() || !(0.0..=100_000.0).contains(&v) {
+        return Err("use a number from 0 to 100000".into());
+    }
+    Ok(v)
+}
+
 /// Milliseconds: 0 to an hour.
 fn millis(text: &str) -> Result<u64, String> {
     let v: u64 = text.parse().map_err(|_| format!("{text:?} is not a whole number of milliseconds"))?;
@@ -110,6 +119,13 @@ enum Command {
         /// Run one after the other instead of at the same time.
         #[arg(long)]
         sequential: bool,
+        /// Time changes smaller than this many ms (or --noise-pct of the base) are noise: compare.md lists
+        /// them only in its full table, without a percentage.
+        #[arg(long, default_value_t = 10.0, value_name = "MS", value_parser = noise)]
+        noise_ms: f64,
+        /// Time changes smaller than this percent of the base value (or --noise-ms) are noise.
+        #[arg(long, default_value_t = 1.0, value_name = "PERCENT", value_parser = noise)]
+        noise_pct: f64,
     },
     /// Boot a firmware in the background and keep it running; drive it with `do`, end it with `stop`.
     Start {
@@ -333,8 +349,9 @@ fn main() -> ExitCode {
     let code = runtime.block_on(async move {
         match cli.command {
             Command::Run { firmware, steps, run } => run::run(firmware, steps, run).await,
-            Command::Compare { base, candidate, steps, run, names, require_identical, sequential } => {
-                compare::compare(base, candidate, steps, run, names, require_identical, sequential).await
+            Command::Compare { base, candidate, steps, run, names, require_identical, sequential, noise_ms, noise_pct } => {
+                let noise = compare::Noise { ms: noise_ms, pct: noise_pct };
+                compare::compare(base, candidate, steps, run, names, require_identical, sequential, noise).await
             }
             Command::Start { firmware, steps, run } => control::start(firmware, steps, run).await,
             Command::Do { steps, session } => control::send(session, steps).await,

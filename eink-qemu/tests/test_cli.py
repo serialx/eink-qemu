@@ -36,6 +36,30 @@ def app_image(chip, data=bytes(range(1, 17))):
     return bytes(image)
 
 
+def write_epub(path):
+    """A one-chapter EPUB with an SVG image, which CrossPoint cannot decode (an [ERR] line)."""
+    import zipfile
+    files = {
+        'META-INF/container.xml': '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                                  '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+        'OEBPS/content.opf': '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">'
+                             '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Test Book</dc:title><dc:identifier id="id">eink-qemu-test</dc:identifier>'
+                             '<dc:language>en</dc:language></metadata><manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>'
+                             '<item id="img" href="cover.svg" media-type="image/svg+xml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest>'
+                             '<spine toc="ncx"><itemref idref="c1"/></spine></package>',
+        'OEBPS/toc.ncx': '<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head/><docTitle><text>Test Book</text></docTitle>'
+                         '<navMap><navPoint id="n1" playOrder="1"><navLabel><text>One</text></navLabel><content src="c1.xhtml"/></navPoint></navMap></ncx>',
+        'OEBPS/cover.svg': '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
+        'OEBPS/c1.xhtml': '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>One</h1>'
+                          '<img src="cover.svg" alt="cover"/>' + ''.join(f'<p>Paragraph {i} of a short test chapter, long enough to fill a few pages.</p>' for i in range(120)) +
+                          '</body></html>',
+    }
+    with zipfile.ZipFile(path, 'w') as z:
+        z.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+        for name, text in files.items():
+            z.writestr(name, text, compress_type=zipfile.ZIP_DEFLATED)
+
+
 def cli(*args, **kwargs):
     return subprocess.run([str(CLI), *args], capture_output=True, text=True, **kwargs)
 
@@ -133,6 +157,15 @@ class Cli(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse((self.tmp / 'card.img').exists())
 
+    def test_a_comparison_that_could_not_start_runs_again_into_the_same_out(self):
+        out = self.tmp / 'compare'
+        args = ('compare', str(self.tmp / 'missing-a'), str(self.tmp / 'missing-b'), '--out', str(out), '--no-frames')
+        first = cli(*args)
+        self.assertEqual(first.returncode, 3, first.stdout + first.stderr)
+        second = cli(*args)
+        self.assertEqual(second.returncode, 3, second.stdout + second.stderr)
+        self.assertNotIn('already exists', second.stdout + second.stderr)
+
     def test_truncated_firmware_is_rejected(self):
         app = self.tmp / 'short.bin'
         app.write_bytes(app_image(5)[:40])
@@ -186,6 +219,88 @@ class Cli(unittest.TestCase):
         self.assertGreater(steps[4]['ms'], 3000)
         self.assertIn('PASS', (out / 'report.html').read_text())
         self.assertTrue(list((out / 'frames').glob('*.png')))
+
+    @unittest.skipUnless(FIRMWARE, 'set EINK_QEMU_TEST_FIRMWARE to a CrossPoint X3 build or .bin')
+    @unittest.skipUnless(RISCV.exists(), 'build qemu-system-riscv32 first')
+    def test_crosspoint_wakes_into_a_book(self):
+        book = self.tmp / 'book.epub'
+        write_epub(book)
+        out = self.tmp / 'book'
+        script = self.tmp / 'book.txt'
+        script.write_text('\n'.join([
+            'heap-on-log:err=\\[ERR\\]',
+            'ready', 'press:confirm', 'wait-screen', 'press:confirm', 'wait-log:Page render',
+            'repeat:5:until-log:Page render', 'press:right', 'wait-quiet:1', 'end',
+            'wait-quiet:3', 'press:power:600', 'wait-log:Entering deep sleep', 'wait:2', 'press:power',
+            # Booting into the book: ready at its first page, and a wait for a line the boot printed warns.
+            'ready', 'timeout:3', 'wait-log:Page render',
+        ]))
+        result = cli('run', FIRMWARE, '--put', str(book), '--out', str(out), '--script', str(script), timeout=400)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        recs = records(result.stdout)
+        steps = [r for r in recs if r['type'] == 'step']
+        readies = [s for s in steps if s['step'] == 'ready']
+        self.assertEqual([r['how'] for r in readies], ['home', 'reader'])
+        self.assertEqual(readies[1]['screen'], 'EpubReader')
+        self.assertIn('page_fw_ms', readies[1])
+        self.assertNotIn('home_fw_ms', readies[1])
+        # The first page turn's render: the wait in the loop sees it and ends the loop.
+        loop = next(s for s in steps if s['step'] == 'repeat')
+        self.assertEqual((loop['passes'], loop['ended']), (1, 'log'))
+        self.assertIn('Page render', loop['line'])
+        # CrossPoint's [ERR] for the SVG image: counted, and the heaps walked at it.
+        walks = [s for s in steps if s['step'] == 'heap' and 'on_log' in s]
+        self.assertTrue(walks and all('[ERR]' in w['on_log'] for w in walks), walks)
+        self.assertTrue((out / 'heaps/err.json').exists())
+        self.assertGreater(records(result.stdout)[-1]['metrics']['log_errors'], 0)
+        warnings = [r for r in recs if r['type'] == 'warning']
+        self.assertTrue(any('expect-log' in w['warning'] for w in warnings), warnings)
+        self.assertIn('expect-log:Page render', steps[-1]['error'])
+
+    @unittest.skipUnless(FIRMWARE, 'set EINK_QEMU_TEST_FIRMWARE to a CrossPoint X3 build or .bin')
+    @unittest.skipUnless(RISCV.exists(), 'build qemu-system-riscv32 first')
+    def test_until_loops_end_where_their_line_says(self):
+        out = self.tmp / 'loops'
+        script = self.tmp / 'loops.txt'
+        script.write_text('\n'.join([
+            'repeat:2', 'heap-on-log:act{i}=Entering activity', 'end',
+            'ready', 'timeout:20',
+            # A wait that matches the loop's own line ends the loop: the mark after it does not run.
+            'repeat:until-log:Entering activity: FileBrowser', 'press:confirm', 'wait-log:Entering activity: FileBrowser', 'mark:skipped-1', 'end',
+            'press:back', 'wait-log:Entering activity: Home',
+            # The outer loop's line ends the inner loop too.
+            'repeat:until-log:Entering activity: FileBrowser', 'repeat:until-log:NEVER_INNER', 'press:confirm', 'wait-log:NEVER_WAIT', 'end',
+            'mark:skipped-2', 'end',
+            'mark:after',
+        ]))
+        result = cli('run', FIRMWARE, '--out', str(out), '--no-frames', '--script', str(script), timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        steps = [r for r in records(result.stdout) if r['type'] == 'step']
+        marks = [s['name'] for s in steps if s['step'] == 'mark']
+        self.assertEqual(marks, ['after'])
+        loops = [(s['passes'], s['ended']) for s in steps if s['step'] == 'repeat']
+        self.assertEqual(loops, [(1, 'log'), (1, 'outer'), (1, 'log')])
+        waits = [s for s in steps if s['step'] == 'wait-log' and 'loop_ended' in s]
+        self.assertEqual(len(waits), 2)
+        # One watch per pass, named by its pass.
+        self.assertTrue((out / 'heaps/act1.json').exists() and (out / 'heaps/act2.json').exists())
+        self.assertFalse(any(r['type'] == 'warning' for r in records(result.stdout)))
+
+    @unittest.skipUnless(FIRMWARE, 'set EINK_QEMU_TEST_FIRMWARE to a CrossPoint X3 build or .bin')
+    @unittest.skipUnless(RISCV.exists(), 'build qemu-system-riscv32 first')
+    def test_an_input_is_not_sent_once_its_loop_line_came(self):
+        # The line comes after the reset while the press waits for the firmware to go quiet.
+        out = self.tmp / 'pacing'
+        result = cli('run', FIRMWARE, '--out', str(out), '--no-frames', '--input-quiet', '3000',
+                     'ready', 'repeat:1:until-log:Going to low-power mode', 'reset', 'wait:4', 'press:confirm',
+                     'wait-log:Entering activity: FileBrowser', 'end', timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        steps = [r for r in records(result.stdout) if r['type'] == 'step']
+        press = next(s for s in steps if s['step'] == 'press')
+        self.assertEqual(press.get('sent'), False, press)
+        self.assertIn('low-power', press['loop_ended'])
+        self.assertNotIn('wait-log', [s['step'] for s in steps])
+        self.assertNotIn('Entering activity: FileBrowser', (out / 'log.txt').read_text())
 
     @unittest.skipUnless(STOCK, 'set EINK_QEMU_TEST_STOCK_FLASH to a stock X4 Pro flash dump')
     @unittest.skipUnless(XTENSA.exists(), 'build qemu-system-xtensa first')

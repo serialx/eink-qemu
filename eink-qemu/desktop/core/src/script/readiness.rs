@@ -3,9 +3,10 @@
 //! it in a loop; ROM messages about an image it cannot boot fail the wait
 //! at once. Firmware with a profile (eink-qemu/profiles) is read more
 //! closely, with the same rules as the desktop page's readiness.ts:
-//! CrossPoint is ready after its boot refreshes and then its memory report
-//! (a reboot starts the count again, a card it cannot mount fails), and the
-//! stock Xteink firmware's boot gate explains a wait for Power.
+//! CrossPoint is ready after its boot refreshes (Home drawn), or when it
+//! boots into a book after the reader's first page, and then its memory
+//! report (a reboot starts the count again, a card it cannot mount fails),
+//! and the stock Xteink firmware's boot gate explains a wait for Power.
 
 use crate::profiles::{CROSSPOINT, XTEINK_STOCK};
 use regex::Regex;
@@ -21,8 +22,9 @@ pub enum Verdict {
     /// Not yet.
     Waiting,
     /// Ready; how it was decided ("home": Home drawn and reported,
-    /// "quiet": reported after the screen went quiet, "screen-quiet": no
-    /// CrossPoint log, the screen quiet).
+    /// "reader": a book's first page drawn and reported, "quiet": reported
+    /// after the screen went quiet, "screen-quiet": no CrossPoint log, the
+    /// screen quiet).
     Ready(&'static str),
     /// The boot cannot finish as it is; why.
     Failed(String),
@@ -36,6 +38,16 @@ pub struct Readiness {
     pub home_at: Option<f64>,
     /// The firmware's own timestamp (ms since its boot) of that refresh.
     pub home_fw_ms: Option<u64>,
+    /// The screen (activity) CrossPoint entered last in this boot.
+    pub screen: Option<String>,
+    /// This boot went into a book's reader: its first page, not Home's
+    /// refreshes, finishes the boot.
+    in_reader: bool,
+    /// Host seconds and firmware ms of the reader's first page.
+    pub page_at: Option<f64>,
+    pub page_fw_ms: Option<u64>,
+    /// A memory report came in this boot.
+    reported: bool,
     sd_failed: bool,
     /// Seen any of CrossPoint's refresh lines (kept across resets).
     pub crosspoint: bool,
@@ -88,6 +100,11 @@ impl Readiness {
             self.last_draw = None;
             self.home_at = None;
             self.home_fw_ms = None;
+            self.screen = None;
+            self.in_reader = false;
+            self.page_at = None;
+            self.page_fw_ms = None;
+            self.reported = false;
             self.sd_failed = false;
             self.power_wait = false;
             self.verdict = None;
@@ -114,16 +131,46 @@ impl Readiness {
             self.crosspoint = true;
             self.last_draw = Some(now);
             self.milestones += 1;
-            if self.milestones == crosspoint.milestones {
+            // In a reader these refreshes draw its first page, not Home.
+            if self.milestones == crosspoint.milestones && !self.in_reader {
                 self.home_at = Some(now);
                 self.home_fw_ms = super::metrics::firmware_ms(line.trim_start());
             }
         }
+        if self.verdict.is_none() {
+            if let Some(c) = crosspoint.activity.captures(line) {
+                self.crosspoint = true;
+                self.in_reader |= crosspoint.reader_activity.is_match(&c[1]);
+                self.screen = Some(c[1].to_string());
+            }
+            if crosspoint.reader_entered.is_match(line) {
+                self.crosspoint = true;
+                self.in_reader = true;
+            }
+            if crosspoint.page_drawn.is_match(line) && self.page_at.is_none() {
+                // A page drawn while booting: it booted into a book (also
+                // without the activity line, in builds that do not log it).
+                self.crosspoint = true;
+                self.in_reader = true;
+                self.page_at = Some(now);
+                self.page_fw_ms = super::metrics::firmware_ms(line.trim_start());
+            }
+        }
+        // A card that fails after the boot was ready (Home, a book or quiet)
+        // fails it at the next report: a later `ready` says so.
+        if crosspoint.report.is_match(line) && self.sd_failed && matches!(self.verdict, Some(Verdict::Ready(_))) {
+            self.verdict = None;
+        }
         if crosspoint.report.is_match(line) && self.verdict.is_none() {
+            self.reported = true;
             if self.sd_failed {
                 self.verdict = Some(Verdict::Failed(
                     "the firmware could not mount the SD card (\"SD card initialization failed\"); check the card image".into(),
                 ));
+            } else if self.in_reader {
+                // Home's refresh count means nothing in a reader: its first
+                // page does (decided in `verdict`, which also takes a page
+                // drawn after this report).
             } else if self.home_at.is_some() {
                 self.verdict = Some(Verdict::Ready("home"));
             } else if self.last_draw.is_some_and(|t| now - t > crosspoint.quiet_after_draw_s) {
@@ -137,16 +184,33 @@ impl Readiness {
     /// The verdict so far. `screen_quiet` is how long the screen has been
     /// unchanged since an update that belongs to this boot (None before
     /// one); `now` is host seconds since the run started.
-    pub fn verdict(&self, screen_quiet: Option<f64>, quiet_needed: f64, now: f64) -> Verdict {
+    /// A CrossPoint verdict, once reached, stays: later lines (another
+    /// screen) do not change the boot that finished.
+    pub fn verdict(&mut self, screen_quiet: Option<f64>, quiet_needed: f64, now: f64) -> Verdict {
         if let Some(failure) = &self.boot_failure {
             return Verdict::Failed(failure.clone());
         }
         if let Some(verdict) = &self.verdict {
             return verdict.clone();
         }
+        if self.in_reader && !self.sd_failed {
+            // The reader's first page, and a memory report before or after
+            // it; a fork that does not report is ready this long after it.
+            // A reader that logs no page line is ready once long quiet.
+            let page = self.page_at.is_some_and(|t| self.reported || now - t >= CROSSPOINT.report_wait_s);
+            let quiet = self.page_at.is_none() && self.last_draw.is_some_and(|t| now - t >= CROSSPOINT.report_wait_s);
+            let verdict = match (page, quiet) {
+                (true, _) => Verdict::Ready("reader"),
+                (_, true) => Verdict::Ready("quiet"),
+                _ => return Verdict::Waiting,
+            };
+            self.verdict = Some(verdict.clone());
+            return verdict;
+        }
         // CrossPoint's Home drawn and no memory report since: a fork that
         // does not report. It is ready this long after Home.
         if self.home_at.is_some_and(|t| now - t >= CROSSPOINT.report_wait_s) && !self.sd_failed {
+            self.verdict = Some(Verdict::Ready("home"));
             return Verdict::Ready("home");
         }
         let rom_quiet = self.last_rom.is_none_or(|t| now - t >= quiet_needed);
@@ -169,7 +233,11 @@ impl Readiness {
         if self.restarts > 2 {
             return format!("the guest rebooted {} times (a boot loop?); see log.txt", self.restarts);
         }
-        if self.crosspoint {
+        if self.crosspoint && self.in_reader {
+            let screen = self.screen.as_deref().unwrap_or("a reader");
+            let report = if self.reported { "" } else { ", then a [MEM] report" };
+            format!("CrossPoint booted into {screen}: waiting for its first page (a Page render line){report}; restarts: {}", self.restarts)
+        } else if self.crosspoint {
             let needed = CROSSPOINT.milestones;
             format!("CrossPoint: {} of {needed} boot refreshes seen, then a [MEM] report; restarts: {}", self.milestones.min(needed), self.restarts)
         } else {
@@ -200,14 +268,14 @@ mod tests {
         r.feed("ESP-ROM:esp32c3-api1-20210207", 1.0);
         assert_eq!(r.restarts, 1);
         r.feed("SD card initialization failed", 2.0);
-        r.feed("[MEM] Free", 3.0);
+        r.feed("[MEM] Free: 1 bytes", 3.0);
         assert!(matches!(r.verdict(None, 5.0, 3.0), Verdict::Failed(_)));
     }
 
     #[test]
     fn a_reboot_after_ready_waits_again() {
         let mut r = Readiness::new();
-        for line in ["Wait complete: X3_DRF", "Wait complete: X3_DRF", "Wait complete: X3_DRF", "[MEM] Free"] {
+        for line in ["Wait complete: X3_DRF", "Wait complete: X3_DRF", "Wait complete: X3_DRF", "[MEM] Free: 1 bytes"] {
             r.feed(line, 1.0);
         }
         assert_eq!(r.verdict(None, 5.0, 1.0), Verdict::Ready("home"));
@@ -217,7 +285,7 @@ mod tests {
 
     #[test]
     fn other_firmware_is_ready_when_quiet_but_not_in_a_boot_loop() {
-        let r = Readiness::new();
+        let mut r = Readiness::new();
         assert_eq!(r.verdict(Some(4.0), 5.0, 10.0), Verdict::Waiting);
         assert_eq!(r.verdict(Some(5.5), 5.0, 10.0), Verdict::Ready("screen-quiet"));
         let mut looping = Readiness::new();
@@ -231,7 +299,7 @@ mod tests {
 
     #[test]
     fn other_firmware_after_a_reset_waits_for_the_rom_banner() {
-        let after = Readiness::after_reset(&Readiness::new());
+        let mut after = Readiness::after_reset(&Readiness::new());
         assert_eq!(after.verdict(Some(6.0), 5.0, 100.0), Verdict::Waiting);
     }
 
@@ -296,11 +364,158 @@ mod tests {
         assert!(after.crosspoint);
         assert_eq!(after.verdict(Some(30.0), 5.0, 30.0), Verdict::Waiting);
         // Lines from before the new boot's ROM banner do not count.
-        for line in ["Wait complete: X3_DRF", "Wait complete: X3_DRF", "Wait complete: X3_DRF", "[MEM] Free"] {
+        for line in ["Wait complete: X3_DRF", "Wait complete: X3_DRF", "Wait complete: X3_DRF", "[MEM] Free: 1 bytes"] {
             after.feed(line, 31.0);
         }
         assert_eq!(after.verdict(None, 5.0, 31.0), Verdict::Waiting);
         after.feed("ESP-ROM:esp32c3-api1-20210207", 32.0);
         assert_eq!(after.restarts, 0);
+    }
+
+    /// CrossPoint X3 waking into the book it slept in (eink-qemu 0.6.0's
+    /// emulated X3): its third refresh is in the middle of the first page.
+    const WAKE_INTO_BOOK: &[&str] = &[
+        "ESP-ROM:esp32c3-api1-20210207",
+        "[615] [DBG] [ACT] Entering activity: EpubReader",
+        "[615] [INF] [MEM] reader enter: free=152848 max_block=114676",
+        "[890]   Wait complete:  X3_PON (128 ms)",
+        "[1825]   Wait complete:  X3_DRF (935 ms)",
+        "[2532]   Wait complete:  X3_DRF (459 ms)",
+        "[3011]   Wait complete:  X3_DRF (383 ms)",
+        "[3543]   Wait complete:  X3_DRF (485 ms)",
+        "[3885]   Wait complete:  X3_DRF (228 ms)",
+        "[3980] [DBG] [ERS] Page render (tiled): prewarm=19ms bw_render=4ms display=2878ms total=3337ms",
+        "[3980] [DBG] [ERS] Rendered page in 3337ms",
+    ];
+
+    #[test]
+    fn a_boot_into_a_book_is_ready_at_its_first_page_not_at_home() {
+        let mut r = Readiness::new();
+        for (i, line) in WAKE_INTO_BOOK.iter().enumerate() {
+            r.feed(line, i as f64);
+            // Neither the reader's own [MEM] line nor Home's three refreshes finish it.
+            assert_eq!(r.verdict(None, 5.0, i as f64), Verdict::Waiting, "after {line}");
+        }
+        assert!(r.home_at.is_none());
+        assert_eq!((r.page_fw_ms, r.screen.as_deref()), (Some(3980), Some("EpubReader")));
+        assert!(r.waiting_for().contains("first page"), "{}", r.waiting_for());
+        r.feed("[10028] [INF] [MEM] Free: 148380 bytes, Total: 265020 bytes, Min Free: 136532 bytes, MaxAlloc: 114676 bytes", 20.0);
+        assert_eq!(r.verdict(None, 5.0, 20.0), Verdict::Ready("reader"));
+        assert_eq!(r.page_at, Some(9.0));
+    }
+
+    #[test]
+    fn a_page_after_the_report_is_ready_at_once() {
+        let mut r = Readiness::new();
+        for (i, line) in WAKE_INTO_BOOK[..8].iter().enumerate() {
+            r.feed(line, i as f64);
+        }
+        // A slow first page: the periodic report comes before it.
+        r.feed("[10028] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 10.0);
+        assert_eq!(r.verdict(None, 5.0, 10.0), Verdict::Waiting);
+        r.feed("[12000] [DBG] [ERS] Page render: prewarm=1ms total=900ms", 12.0);
+        assert_eq!(r.verdict(None, 5.0, 12.0), Verdict::Ready("reader"));
+    }
+
+    #[test]
+    fn without_activity_lines_a_page_still_means_a_reader() {
+        let mut r = Readiness::new();
+        // A build that logs neither its activity nor the reader's memory line.
+        for (i, line) in WAKE_INTO_BOOK.iter().filter(|l| !l.contains("[ACT]") && !l.contains("reader enter")).enumerate() {
+            r.feed(line, i as f64);
+        }
+        // Home's milestone was reached before the page: the page decides.
+        assert!(r.home_at.is_some());
+        r.feed("[10028] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 20.0);
+        assert_eq!(r.verdict(None, 5.0, 20.0), Verdict::Ready("reader"));
+        assert_eq!(r.screen, None);
+    }
+
+    #[test]
+    fn a_reader_verdict_stays_when_the_screen_changes_later() {
+        let mut r = Readiness::new();
+        for (i, line) in WAKE_INTO_BOOK.iter().enumerate() {
+            r.feed(line, i as f64);
+        }
+        r.feed("[10028] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 20.0);
+        assert_eq!(r.verdict(None, 5.0, 20.0), Verdict::Ready("reader"));
+        r.feed("[30000] [DBG] [ACT] Entering activity: Home", 30.0);
+        assert_eq!(r.verdict(None, 5.0, 30.0), Verdict::Ready("reader"));
+        assert_eq!(r.screen.as_deref(), Some("EpubReader"));
+    }
+
+    #[test]
+    fn a_card_failure_after_ready_fails_at_the_next_report() {
+        let mut r = Readiness::new();
+        for (i, line) in WAKE_INTO_BOOK.iter().enumerate() {
+            r.feed(line, i as f64);
+        }
+        r.feed("[10028] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 20.0);
+        assert_eq!(r.verdict(None, 5.0, 20.0), Verdict::Ready("reader"));
+        r.feed("SD card initialization failed", 25.0);
+        assert_eq!(r.verdict(None, 5.0, 25.0), Verdict::Ready("reader"));
+        r.feed("[20028] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 30.0);
+        assert!(matches!(r.verdict(None, 5.0, 30.0), Verdict::Failed(_)));
+        // The same after a boot to Home.
+        let mut home = Readiness::new();
+        for line in ["Wait complete: X3_DRF", "Wait complete: X3_DRF", "Wait complete: X3_DRF", "[MEM] Free: 1 bytes"] {
+            home.feed(line, 1.0);
+        }
+        assert_eq!(home.verdict(None, 5.0, 1.0), Verdict::Ready("home"));
+        home.feed("SD card initialization failed", 2.0);
+        home.feed("[MEM] Free: 1 bytes", 3.0);
+        assert!(matches!(home.verdict(None, 5.0, 3.0), Verdict::Failed(_)));
+    }
+
+    #[test]
+    fn a_release_build_enters_the_reader_by_its_memory_line() {
+        // LOG_LEVEL=1 keeps INF lines only: no activity or page lines.
+        let mut r = Readiness::new();
+        r.feed("[615] [INF] [MEM] reader enter: free=152848 max_block=114676", 0.0);
+        for _ in 0..3 {
+            r.feed("[3011]   Wait complete:  X3_DRF (383 ms)", 3.0);
+        }
+        assert!(r.home_at.is_none());
+        r.feed("[10028] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 10.0);
+        assert_eq!(r.verdict(None, 5.0, 10.0), Verdict::Waiting);
+        assert_eq!(r.verdict(None, 5.0, 15.0), Verdict::Ready("quiet"));
+    }
+
+    #[test]
+    fn a_reader_without_page_lines_or_reports_is_ready_once_long_quiet() {
+        let mut r = Readiness::new();
+        r.feed("[600] [DBG] [ACT] Entering activity: TxtReader", 0.0);
+        for _ in 0..3 {
+            r.feed("Wait complete: X3_DRF (1 ms)", 1.0);
+        }
+        assert_eq!(r.verdict(None, 5.0, 12.0), Verdict::Waiting);
+        assert_eq!(r.verdict(None, 5.0, 13.0), Verdict::Ready("quiet"));
+    }
+
+    #[test]
+    fn a_reader_without_page_lines_is_ready_once_long_quiet() {
+        let mut r = Readiness::new();
+        r.feed("[600] [DBG] [ACT] Entering activity: TxtReader", 0.0);
+        for _ in 0..3 {
+            r.feed("Wait complete: X3_DRF (1 ms)", 1.0);
+        }
+        r.feed("[10000] [INF] [MEM] Free: 1 bytes, Total: 2 bytes, Min Free: 1 bytes, MaxAlloc: 1 bytes", 10.0);
+        assert_eq!(r.verdict(None, 5.0, 10.0), Verdict::Waiting);
+        assert_eq!(r.verdict(None, 5.0, 13.0), Verdict::Ready("quiet"));
+    }
+
+    #[test]
+    fn a_boot_to_home_is_unchanged_by_activity_lines() {
+        let mut r = Readiness::new();
+        for line in ["[1120] [DBG] [ACT] Entering activity: Boot", "[2276]   Wait complete:  X3_DRF (935 ms)", "[2951]   Wait complete:  X3_DRF (383 ms)",
+            "[3002] [DBG] [ACT] Entering activity: Home", "[3441]   Wait complete:  X3_DRF (382 ms)"] {
+            r.feed(line, 1.0);
+        }
+        r.feed("[10053] [INF] [MEM] Free: 154556 bytes, Total: 265020 bytes, Min Free: 153812 bytes, MaxAlloc: 114676 bytes", 2.0);
+        assert_eq!(r.verdict(None, 5.0, 2.0), Verdict::Ready("home"));
+        assert_eq!((r.home_fw_ms, r.screen.as_deref()), (Some(3441), Some("Home")));
+        // Opening a book after the boot changes nothing about it.
+        r.feed("[11654] [DBG] [ACT] Entering activity: EpubReader", 3.0);
+        assert_eq!(r.verdict(None, 5.0, 3.0), Verdict::Ready("home"));
     }
 }

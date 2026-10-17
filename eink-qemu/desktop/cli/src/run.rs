@@ -184,7 +184,10 @@ pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option
             return setup_error(&printer, &dir, "setup", e, EXIT_SETUP);
         }
     };
-    let start = launch::start_record(&prepared, &session, None);
+    let mut start = launch::start_record(&prepared, &session, None);
+    // Input pacing changes what a run measures (a page turn's time counts
+    // from its press): numbers compare only at the same pacing.
+    start["pacing"] = json!({"input_quiet_ms": args.input_quiet, "settle_ms": args.settle, "panel_idle_ms": args.panel_idle, "key_hold_ms": steps::DEFAULT_HOLD_MS});
     let _ = std::fs::write(dir.join("run.json"), serde_json::to_string_pretty(&start).unwrap_or_default());
     runner.emit(&start);
     crate::control::remember_trace_starts(&mut runner.trace_names, steps);

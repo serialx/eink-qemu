@@ -1,9 +1,9 @@
 //! Measurements read from the firmware log. For any ESP-IDF firmware: its
 //! own timestamps (`I (1234) tag: text`) and how many errors and warnings
 //! it logged. For CrossPoint (eink-qemu/profiles/crosspoint.json), with the
-//! device-test skill's definitions: page render and total render times,
-//! cold layout preparation, and its periodic memory report; its lines look
-//! like `[<ms since boot>] [LEVEL] [ORIGIN] text`.
+//! device-test skill's definitions: its own errors and warnings, page render
+//! and total render times, cold layout preparation, and its periodic memory
+//! report; its lines look like `[<ms since boot>] [LEVEL] [ORIGIN] text`.
 
 use crate::profiles::CROSSPOINT;
 use regex::Regex;
@@ -60,9 +60,9 @@ fn median(values: &[u64]) -> Option<f64> {
     Some(if n % 2 == 1 { v[n / 2] as f64 } else { (v[n / 2 - 1] + v[n / 2]) as f64 / 2.0 })
 }
 
-/// Summary of a run's log (or a slice of it): ESP-IDF's error and warning
-/// counts, and CrossPoint's measurements under "crosspoint" when it logged
-/// any.
+/// Summary of a run's log (or a slice of it): error and warning lines
+/// (ESP-IDF's, and CrossPoint's own `[ERR]` lines), and CrossPoint's
+/// measurements under "crosspoint" when it logged any.
 pub fn summarize<'a>(lines: impl IntoIterator<Item = &'a str>) -> Value {
     let cp = &*CROSSPOINT;
     let (mut bw, mut total, mut tiled) = (Vec::new(), Vec::new(), 0usize);
@@ -82,6 +82,11 @@ pub fn summarize<'a>(lines: impl IntoIterator<Item = &'a str>) -> Value {
                 _ => {}
             }
             continue;
+        }
+        if cp.error.is_match(line) {
+            errors += 1;
+        } else if cp.warning.is_match(line) {
+            warnings += 1;
         }
         if let Some(c) = cp.page_render.captures(line) {
             let (at, b, t): (u64, u64, u64) = (c[1].parse().unwrap_or(0), c[3].parse().unwrap_or(0), c[4].parse().unwrap_or(0));
@@ -132,8 +137,10 @@ mod tests {
             "[1900] [DBG] [ERS] Page render (tiled): prewarm=1ms bw_render=400ms gray=3ms total=1300ms",
             "[3000] [DBG] [ERS] Page render: bw_render=300ms total=900ms",
             "[4000] [INF] [MEM] Free: 70000 bytes, Total: 200000 bytes, Min Free: 40000 bytes, MaxAlloc: 48000 bytes",
+            "[4100] [ERR] [DEC] No decoder found for image: EPUB/images/cover.svg",
         ];
         let s = summarize(lines);
+        assert_eq!((s["log_errors"].as_u64(), s["log_warnings"].as_u64()), (Some(1), Some(0)));
         let c = &s["crosspoint"];
         assert_eq!(c["page_renders"], 2);
         assert_eq!(c["page_renders_tiled"], 1);

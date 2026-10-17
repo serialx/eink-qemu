@@ -65,6 +65,9 @@ pub fn describe(r: &Value) -> Option<String> {
                     let mut d = s(&r["file"]);
                     if r["step"] == "heap" {
                         d += &format!(" free {} largest {}", s(&r["free"]), s(&r["largest"]));
+                        if let Some(line) = r["on_log"].as_str() {
+                            d += &format!(" · on {line}");
+                        }
                     }
                     if r["step"] == "trace-stop" {
                         d += &format!(" allocs {} kept {} B", s(&r["allocs"]), s(&r["kept_bytes"]));
@@ -72,8 +75,13 @@ pub fn describe(r: &Value) -> Option<String> {
                     d
                 }
                 "wait-screen" => s(&r["frame"]),
+                "repeat" => format!("{} passes, ended by {}{}", s(&r["passes"]), s(&r["ended"]), r["line"].as_str().map(|l| format!(": {l}")).unwrap_or_default()),
                 "hmp" => s(&r["output"]).lines().next().unwrap_or_default().to_string(),
                 _ => String::new(),
+            };
+            let detail = match r["loop_ended"].as_str() {
+                Some(l) => format!("ended its until-log loop: {l}"),
+                None => detail,
             };
             let mut line = format!("{side}{mark} {:>7.2}s  {}  {}", r["t"].as_f64().unwrap_or(0.0), s(&r["text"]), detail);
             if let Some(e) = r["error"].as_str() {
@@ -94,6 +102,7 @@ pub fn describe(r: &Value) -> Option<String> {
             r["report"].as_str().or(r["run_dir"].as_str()).unwrap_or_default()
         )),
         "error" => Some(format!("{side}error: {}", s(&r["error"]))),
+        "warning" => Some(format!("{side}warning: {}", s(&r["warning"]))),
         "done" => Some(format!("{}{}{}", if r["ok"] == true { "done" } else { "done (a step failed)" },
             r["screen"].as_str().map(|p| format!(" · screen {p}")).unwrap_or_default(),
             if r["stopped"] == true { " · stopped" } else { "" })),
