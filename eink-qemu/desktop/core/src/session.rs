@@ -457,6 +457,23 @@ impl Session {
         self.card.lock().unwrap().as_ref().map(|card| card.path.clone())
     }
 
+    /// Reopen our selected path while idle, retaining its path reservation.
+    /// Returns false when the caller needs to open a different card.
+    pub async fn reopen_card(&self, locks: &Path, path: &Path) -> Result<bool, AppError> {
+        let _ops = self.ops.lock().await;
+        let selected = self.card.lock().unwrap();
+        let Some(card) = selected.as_ref().filter(|card| card.path == crate::cards::card_key(path)) else {
+            return Ok(false);
+        };
+        if self.info().state != "idle" || self.pending_card.lock().unwrap().is_some() {
+            return Err(AppError::new("EBUSY", "Stop the emulator before reopening the selected SD card. Wait until QEMU has exited."));
+        }
+        crate::cards::validate_card(&card.path)?;
+        card.lock.lock().unwrap().refresh(locks, &card.path)?;
+        card.verify()?;
+        Ok(true)
+    }
+
     fn checked_card_path(&self) -> Result<PathBuf, AppError> {
         if self.pending_card.lock().unwrap().is_some() {
             return Err(AppError::busy());
