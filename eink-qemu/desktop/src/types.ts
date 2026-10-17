@@ -59,6 +59,7 @@ export interface Attached {
   autostart: boolean;
   pane: string | null;
   problems: string[];
+  cardNotices: string[];
 }
 /** A card just made or resized (src-tauri/src/lib.rs `MadeCard`); `note` is
     something the backend wants said about it. */

@@ -625,7 +625,7 @@ export const browser: Backend = {
     void loadCard(params.get('sd') ?? 'blank-sd.img', !params.has('sd'));
     return {
       session, settings, card, firmware: firmware?.info ?? null, elf: null, platform: 'browser',
-      autostart: !!flash && !!firmware, pane: null, problems,
+      autostart: !!flash && !!firmware, pane: null, problems, cardNotices: [],
     };
   },
   note: () => {},

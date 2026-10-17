@@ -111,15 +111,17 @@ every folder and file, with file times, into a new card of the chosen size,
 which takes the old one's place; folder times become the time of the copy. The explorer
 edits the image in Rust with the `fatfs` crate. While the emulator runs, each
 operation pauses the guest; a change resets the device so the firmware mounts
-the card again. Upload and Upload folder use native dialogs to choose files
-or folders. Dropping either on the panel also copies them into the open
-folder. Hidden entries and symbolic links in folders are skipped. The card's path keeps its file name in view, and the folder
+the card again. The labelled Upload and Upload folder… buttons sit together
+above the card tools and use native dialogs to choose files or folders.
+Dropping either on the panel also copies them into the open folder. Hidden
+entries and symbolic links in folders are skipped. The card's path keeps its file name in view, and the folder
 button beside it shows the image in Finder (File Explorer, the file manager).
 A card is used by one app instance at a time; an instance that
 cannot lock its card opens without one and says so. If a saved card outside
 the default location no longer exists, the app opens the default card,
-creating it if needed, and reports both paths. Existing cards that are
-invalid, unreadable or locked keep their error. A saved firmware file that
+creating it if needed, and shows both paths as a notice in the SD panel and
+console. The notice clears from the panel when another card is chosen.
+Existing cards that are invalid, unreadable or locked keep their error. A saved firmware file that
 is missing and a settings file that cannot be read are also reported when
 the window opens; firmware contents are checked at Start.
 

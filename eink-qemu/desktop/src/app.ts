@@ -34,6 +34,7 @@ let firmware: FileInfo | null = null;
 let card: CardInfo | null = null;
 let pending = false; // Preparing firmware before the session starts.
 let screen: Screen | null = null;
+let cardNotices: string[] = [];
 
 const status = (text: string) => { $('status').textContent = text; };
 const timingLabel = () => session.turbo ? 'Turbo (not timing-accurate)' : 'Accurate timing';
@@ -462,9 +463,12 @@ function paintCard() {
   line.classList.toggle('error', !card || !!card.error);
   $('sd-reveal').hidden = !card || !api.can.cardReveal;
   $('sd-small-card').hidden = !card?.isDefault || card.size > 64 * 1024 ** 2;
+  $('sd-notice').textContent = cardNotices.join('\n');
+  $('sd-notice').hidden = !cardNotices.length;
 }
 function onCard(next: CardInfo | null, changed: boolean) {
   card = next;
+  if (changed) cardNotices = [];
   paintCard();
   if (changed && next && !next.error && !next.busy) {
     // A card that loads clears what the last one failed with.
@@ -923,6 +927,7 @@ export async function boot(backend: Backend) {
     firmware = setup.firmware;
     setElf(setup.elf);
   } catch (error) { state.problems.push(errorMessage(error)); }
+  cardNotices = state.cardNotices;
   paintCard();
   if (session.machine && session.state !== 'idle') {
     // A reloaded WebView: the session kept running; the screen follows. Its
@@ -932,11 +937,15 @@ export async function boot(backend: Backend) {
     createScreen(session.machine);
     status(`${deviceLabel()} · ${timingLabel()} · ${session.state === 'running' ? 'Running' : 'Starting…'}`);
   } else status(firmware ? 'Start boots the chosen firmware.' : 'Choose a flash image to begin.');
+  for (const notice of cardNotices) {
+    appendLines([`Notice: ${notice}`]);
+    api.note(`Notice: ${notice}`);
+  }
   for (const problem of state.problems) {
     appendLines([`Error: ${problem}`]);
     api.note(`Error: ${problem}`);
   }
-  if (state.problems.length) status(state.problems[0]);
+  if (state.problems.length || cardNotices.length) status(state.problems[0] ?? cardNotices[0]);
   paintControls();
   void sdRefresh();
   if (state.autostart && firmware && session.state === 'idle') void start();

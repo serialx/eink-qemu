@@ -78,6 +78,7 @@ struct App {
     grants: Mutex<HashSet<PathBuf>>,
     /// Startup problems the WebView shows once it attaches.
     problems: Mutex<Vec<String>>,
+    card_notices: Mutex<Vec<String>>,
     /// The heap view: ELF, symbols, allocation log, history.
     heap: tokio::sync::Mutex<heapview::HeapView>,
     /// A scripted run's finalizer (`eink-qemu run --gui`), run before the app quits.
@@ -143,6 +144,7 @@ struct Attached {
     pane: Option<String>,
     /// Startup problems to show: a saved card or firmware that is unusable.
     problems: Vec<String>,
+    card_notices: Vec<String>,
 }
 
 fn file_info(path: &Path) -> Option<FileInfo> {
@@ -260,6 +262,7 @@ fn attach(
         autostart: std::env::var_os("EINK_QEMU_AUTOSTART").is_some_and(|v| v == "1"),
         pane: std::env::var("EINK_QEMU_PANE").ok(),
         problems: std::mem::take(&mut *app.problems.lock().unwrap()),
+        card_notices: std::mem::take(&mut *app.card_notices.lock().unwrap()),
     }
 }
 
@@ -560,7 +563,7 @@ async fn card_use_recent(app: State<'_, App>, path: PathBuf) -> Result<FileInfo,
     let card = if default {
         let mut settings = Settings::default();
         let mut problems = Vec::new();
-        startup_card(&mut settings, app.default_card.parent().unwrap(), &app.locks, &mut problems)
+        startup_card(&mut settings, app.default_card.parent().unwrap(), &app.locks, &mut problems, &mut Vec::new())
             .ok_or_else(|| AppError::new("EIO", problems.join(" ")))?
     } else { open_card(&app.locks, &path)? };
     use_card(&app, card).await
@@ -918,7 +921,7 @@ fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
 
 /// Open the saved card, or the default when none was chosen or it is missing. Problems
 /// are reported, never fatal: the app opens without a card instead.
-fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &mut Vec<String>) -> Option<Card> {
+fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &mut Vec<String>, notices: &mut Vec<String>) -> Option<Card> {
     let default = data.join("sd.img");
     let missing = settings.card.clone().filter(|path| {
         card_key(path) != card_key(&default)
@@ -948,7 +951,7 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
                 AppError::new("EIO", format!("Could not create the default SD card {}: {}", default.display(), error.message))
             })?;
             if !made.sparse {
-                problems.push(format!(
+                notices.push(format!(
                     "{} cannot hold sparse files, so the new SD card is 128 MiB with 1 KiB clusters, not a 16 GiB card \
                      with the stock card's 32 KiB clusters. Make another from the card menu on a disk that can.",
                     data.display()
@@ -962,7 +965,7 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
         Ok(card) => {
             settings.remember_card(card.path.clone());
             if let Some(missing) = missing {
-                problems.push(format!("The SD card {} no longer exists. Using the default card {}.", missing.display(), card.path.display()));
+                notices.push(format!("The SD card {} no longer exists. Using the default card {}.", missing.display(), card.path.display()));
             }
             Some(card)
         }
@@ -1005,6 +1008,7 @@ pub fn run() {
             std::fs::create_dir_all(&data)?;
             let settings_path = config.join("settings.json");
             let mut problems = Vec::new();
+            let mut card_notices = Vec::new();
             let mut settings = Settings::load(&settings_path, &mut problems);
             let locks = locks_dir(app.handle());
             // EINK_QEMU_AUTOMATION: a scripted run from `eink-qemu run --gui`
@@ -1030,7 +1034,7 @@ pub fn run() {
                     settings.card = Some(spec.card.clone());
                     Some(open_card(&locks, &spec.card).map_err(|e| e.message)?)
                 }
-                None => startup_card(&mut settings, &data, &locks, &mut problems),
+                None => startup_card(&mut settings, &data, &locks, &mut problems, &mut card_notices),
             };
             if let Some(firmware) = settings.firmware.as_deref() {
                 if let Err(error) = check_firmware(firmware) {
@@ -1062,6 +1066,7 @@ pub fn run() {
                 locks,
                 grants: Mutex::default(),
                 problems: Mutex::new(problems),
+                card_notices: Mutex::new(card_notices),
                 heap: Default::default(),
                 automation: finalizer,
             });
@@ -1166,11 +1171,13 @@ mod card_tests {
         let default = dir.path().join("sd.img");
         let mut settings = Settings { card: Some(missing.clone()), ..Settings::default() };
         let mut problems = Vec::new();
-        let card = startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems).unwrap();
+        let mut notices = Vec::new();
+        let card = startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems, &mut notices).unwrap();
         assert_eq!(card.path, card_key(&default));
         assert_eq!(settings.card.as_ref(), Some(&card.path));
         assert_eq!(sd::list(&card.path, "/").unwrap().fs_type, "FAT32");
-        assert!(problems.iter().any(|p| p.contains(missing.to_str().unwrap()) && p.contains(default.to_str().unwrap())));
+        assert!(problems.is_empty());
+        assert!(notices.iter().any(|p| p.contains(missing.to_str().unwrap()) && p.contains(default.to_str().unwrap())));
     }
 
     #[test]
@@ -1181,13 +1188,16 @@ mod card_tests {
         let mut settings = Settings { card: Some(saved.clone()), ..Settings::default() };
         std::fs::write(&saved, b"invalid").unwrap();
         let mut problems = Vec::new();
-        assert!(startup_card(&mut settings, dir.path(), &locks, &mut problems).is_none());
+        let mut notices = Vec::new();
+        assert!(startup_card(&mut settings, dir.path(), &locks, &mut problems, &mut notices).is_none());
         assert!(!dir.path().join("sd.img").exists());
         sd::create_blank(&saved).unwrap();
         let _held = reserve(&locks, &saved).unwrap();
-        assert!(startup_card(&mut settings, dir.path(), &locks, &mut problems).is_none());
+        assert!(startup_card(&mut settings, dir.path(), &locks, &mut problems, &mut notices).is_none());
         assert!(!dir.path().join("sd.img").exists());
         assert_eq!(settings.card, Some(saved));
+        assert_eq!(problems.len(), 2);
+        assert!(notices.is_empty());
     }
 
     #[test]
@@ -1195,7 +1205,9 @@ mod card_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings { card: Some(dir.path().join("sd.img")), ..Settings::default() };
         let mut problems = Vec::new();
-        assert!(startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems).is_some());
+        let mut notices = Vec::new();
+        assert!(startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems, &mut notices).is_some());
         assert!(problems.is_empty());
+        assert!(notices.is_empty());
     }
 }

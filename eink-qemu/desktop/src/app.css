@@ -269,6 +269,9 @@ button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint)
 }
 
 .sd-card-note { margin: 0; padding: 0 16px 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+#sd-notice { padding-top: 10px; overflow-wrap: anywhere; }
+.sd-tools { flex-wrap: wrap; }
+.sd-upload-actions { display: flex; flex: 1 0 100%; gap: 4px; }
 .card-recent { display: flex; flex-direction: column; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
 .card-recent button { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

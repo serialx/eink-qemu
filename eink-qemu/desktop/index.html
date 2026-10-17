@@ -175,10 +175,13 @@
           <button id="sd-reveal" class="icon-button small" type="button" aria-label="Show in Finder" title="Show in Finder" hidden><svg class="icon"><use href="#i-folder"/></svg></button>
         </div>
       </div>
+      <p id="sd-notice" class="sd-card-note" role="status" hidden></p>
       <p id="sd-small-card" class="sd-card-note" hidden>This default card is small. Choose Resize card… from the card menu for more space.</p>
       <div class="sd-tools">
-        <button id="sd-upload" disabled class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
-        <button id="sd-upload-folder" disabled class="icon-button" type="button" aria-label="Upload folder" title="Upload folder"><svg class="icon"><use href="#i-folder"/></svg></button>
+        <div class="sd-upload-actions">
+          <button id="sd-upload" disabled class="tint" type="button" aria-label="Upload files" title="Upload files"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>Upload</button>
+          <button id="sd-upload-folder" disabled class="tint" type="button" aria-label="Upload folder" title="Upload folder"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Upload folder…</button>
+        </div>
         <button id="sd-mkdir" disabled class="icon-button" type="button" aria-label="New folder" title="New folder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
         <div class="card-choice">
           <button id="sd" class="icon-button" type="button" aria-label="Change SD card" title="Open another SD image or make a blank card" aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu"><svg class="icon"><use href="#i-card"/></svg></button>
