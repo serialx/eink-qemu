@@ -36,9 +36,10 @@ and Kohei Tokunaga's WebAssembly JIT. Where each piece came from is in
 | Xteink X4 | ESP32-C3 | `x4` | `qemu-system-riscv32` | Runs firmware; panel refresh timing simplified, no ghosting |
 | BOOX Picco | ESP32-S3 | `picco` | `qemu-system-xtensa` | Runs firmware; panel waveforms and charging simplified |
 
-The launchers pick the board from the firmware's chip: an ESP32-S3 image runs
-as the X4 Pro and an ESP32-C3 image as the X3. **The X4 and the Picco must be
-selected explicitly**, because their chips match the other boards.
+The board defaults to X4 Pro for ESP32-S3 firmware and X3 for ESP32-C3.
+The desktop app, browser and Rust CLI also recognize X4 and Picco filename
+hints, as described below. Select the board explicitly when the default or
+filename hint does not match the device.
 
 ## Try it in the browser
 
@@ -61,8 +62,8 @@ your own card image, and download the card.
 
 The page starts with **Turbo** on, which runs fast but not with real device
 timing. Turn it off, or open the page with `?turbo=0`, for accurate timing.
-**Ghosting** is on to show real e-ink artifacts. Turn it off, or use
-`?ghosting=0`, when you need clean pixels.
+**Ghosting** is on for X3 and X4 Pro to show real e-ink artifacts. Turn it off,
+or use `?ghosting=0`, when you need clean pixels.
 
 ## Desktop app
 
