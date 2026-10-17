@@ -86,7 +86,7 @@ try {
   const saved = JSON.parse(localStorage.getItem('eink-qemu-panels') || '{}');
   for (const side of ['sd', 'output'] as const) if (Number.isFinite(saved?.[side])) widths[side] = saved[side];
 } catch {}
-// The SD minimum fits its toolbar (Upload and four icon buttons).
+// The SD minimum fits both labelled upload actions.
 const limits = { sd: [260, 420], output: [280, 720] } as const;
 const MIN_STAGE = 360;
 function clampWidths(changed: 'sd' | 'output' = 'output') {

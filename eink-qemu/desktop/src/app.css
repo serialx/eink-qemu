@@ -26,7 +26,7 @@ body { user-select: none; -webkit-user-select: none; }
 .app.resizing * { pointer-events: none; }
 
 /* macOS: traffic lights sit over the top bar; the bar is the drag region. */
-html[data-platform="macos"] .topbar { padding-left: 84px; }
+html[data-platform="macos"] .topbar { height: 64px; padding-left: 100px; }
 
 /* Tauri hands files over as paths, so file inputs become buttons. */
 button.file-chip { padding: 6px 10px; font-weight: 500; color: var(--text-2); justify-content: flex-start; }
@@ -267,3 +267,12 @@ button.toggle[aria-pressed="true"]:hover:enabled { background: var(--brand-tint)
   .tabs [role=tab] { font: inherit; }
   .output-head { flex-wrap: wrap; }
 }
+
+.sd-card-note { margin: 0; padding: 0 16px 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+#sd-notice { padding-top: 10px; overflow-wrap: anywhere; }
+.sd-tools { flex-wrap: wrap; }
+.sd-upload-actions { display: flex; flex: 1 0 100%; gap: 4px; }
+.card-recent { display: flex; flex-direction: column; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.card-recent button { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.card-recent[hidden] { display: none; }

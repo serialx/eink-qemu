@@ -15,7 +15,8 @@ Build QEMU first ([EINK-QEMU.md](../../EINK-QEMU.md#build-and-run)); in
 development the app runs `build/qemu-system-riscv32` and
 `build/qemu-system-xtensa` from the repository root, or the directory in
 `EINK_QEMU_BIN`. QEMU must include the `eink` display (`ui/eink.c`). Then,
-with Node 22.12+, pnpm 10+ and Rust 1.90+:
+with Node 22.12+, pnpm 10+ and Rust 1.90+ (required by Tauri; the core
+and CLI alone require Rust 1.89+):
 
 ```sh
 cd eink-qemu/desktop
@@ -65,13 +66,20 @@ The top bar's firmware chip names the firmware, its device and whether its
 ELF is loaded; it opens the firmware card. The card shows the file (chip,
 app version, size, date), offers only the devices that take its chip (X3 and
 X4 for ESP32-C3, X4 Pro and Picco for ESP32-S3), holds the ELF for the Heap
-tab, the X4 Pro's display panel, and recent firmware. Each firmware keeps the
+tab, the X4 Pro's display panel, and recent firmware. New firmware defaults
+to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens of ASCII letters
+and digits ignore case and can select X4 (`x4` without
+`x3`), X3 (`x3` without `x4`), or Picco (`picco` on S3). Both `x3` and `x4`,
+or neither, use the C3 default; `x4pro` is a separate token. Folder names
+and hints for another chip are ignored. Each firmware keeps the
 device and ELF it last used, so `.pio/build/default` comes back as an X3 and
 `.pio/build/x4pro` as an X4 Pro. When a firmware is chosen, an ELF beside it
 (the same name with `.elf`, or `firmware.elf`, as PlatformIO and ESP-IDF
 write) is taken up when its app descriptor shows it built that firmware; one
 from another build is left out and the card says so. Wi-Fi, Ghosting and Turbo
-are the icon toggles beside Start; their tips say what each does.
+are the icon toggles beside Start; their tips say what each does. Ghosting
+appears only for X3 and X4 Pro; its saved preference is kept when using X4
+or Picco.
 
 These persist in `settings.json`, with the SD card, in the app's config
 directory. Theme and zoom stay in the WebView's storage, as on the page, with
@@ -81,7 +89,15 @@ X4 Pro panel restarts it.
 
 The SD card is an image file that QEMU opens directly: `sd.img` in the app's
 data directory unless another card is opened from the card menu, which also
-makes new blank cards and resizes the open one. Cards are sparse files, so the
+makes new blank cards, resizes the open one and lists up to six recent cards,
+newest first. Missing files and the open card are omitted from that list;
+Default card is always offered. Opening another card while the device runs
+pauses it, switches the image and resets it to mount the new card. If the
+switch fails, the old card stays selected and the emulator stops; card
+operations stay disabled until QEMU confirms it has exited. This also applies
+when startup times out or is cancelled: card reservations remain held and
+card operations stay disabled until the process exits. New cards
+and resizing require stopping the device. Cards are sparse files, so the
 16 GiB card made on first run starts at about 5 MiB on disk and grows as
 files are written; "Save a copy" keeps the copy sparse, but copying the file
 elsewhere by hand may write it out in full. Every card is MBR + FAT32 with the
@@ -89,20 +105,31 @@ stock X3 card's 32 KiB clusters, from 2 GiB (the stock card's 2050 MiB, the
 one for timing comparisons: see the repository README's SD image geometry
 section) to 32 GiB; X3 and X4 Pro firmware reaches Home at the same moment on
 16 GiB as on 2050 MiB. Where the disk cannot hold sparse files, a new card is
-128 MiB with 1 KiB clusters instead, and the app says so. Resizing copies
+128 MiB with 1 KiB clusters instead, and the app says so. An old default card
+of 64 MiB or less shows a note suggesting Resize card…. Erase card… asks for
+confirmation, then formats the open image in place as an empty MBR/FAT32 card,
+keeping its size, cluster size and sparseness. Resizing copies
 every folder and file, with file times, into a new card of the chosen size,
 which takes the old one's place; folder times become the time of the copy. The explorer
 edits the image in Rust with the `fatfs` crate. While the emulator runs, each
 operation pauses the guest; a change resets the device so the firmware mounts
-the card again. Uploads take files from the native dialog, or files and
-folders dropped on the panel; hidden entries and symbolic links in folders
-are skipped. The card's path keeps its file name in view, and the folder
+the card again. The labelled Upload and Upload folder… buttons sit together
+above the card tools and use native dialogs to choose files or folders.
+Dropping either on the panel also copies them into the open folder. Hidden
+entries and symbolic links in folders are skipped. The card's path keeps its file name in view, and the folder
 button beside it shows the image in Finder (File Explorer, the file manager).
 A card is used by one app instance at a time; an instance that
-cannot lock its card opens without one and says so. A saved card that is
-missing or invalid, a saved firmware file that is missing, and a settings
-file that cannot be read are reported when the window opens; firmware
-contents are checked at Start.
+cannot lock its card opens without one and says so. If another program replaces
+the open image, stop the emulator and use Open SD image to open that path again.
+Reopening keeps the path reserved and requires QEMU to have exited before accepting
+the replacement. If reopening fails, the existing reservations remain held.
+If a saved card outside
+the default location no longer exists, the app opens the default card,
+creating it if needed, and shows both paths as a notice in the SD panel and
+console. The notice clears from the panel when another card is chosen.
+Existing cards that are invalid, unreadable or locked keep their error. A saved firmware file that
+is missing and a settings file that cannot be read are also reported when
+the window opens; firmware contents are checked at Start.
 
 The output panel's Heap tab maps the running firmware's ESP-IDF 5.x heaps
 block by block: internal DRAM, RTC and PSRAM, each wrapped into rows at a
@@ -157,6 +184,13 @@ overrides from `turbo-args.sh`, like the other launchers, but keeps idle time
 in real time (`-icount sleep=on`): native QEMU would otherwise run a resting
 device through its 10-minute auto-sleep in under a minute at a full CPU core.
 
+The device keys follow the keyboard press and release: arrows, Enter,
+Esc/Backspace for Back on X3/X4, and P for Power. On the X4 Pro, Esc, H
+and Home press its capacitive Home key. Picco has no Home key. Hold P
+for a long Power press; many firmwares use it to sleep or power off.
+The action and required hold time depend on the firmware. Keys typed into
+fields or the SD card panel stay with those controls.
+
 ### Test hooks
 
 | Variable | Effect |
@@ -175,30 +209,49 @@ without raising it.
 
 ## Packaging
 
-The app ships QEMU inside its resource directory and, in a packaged build,
-runs `<resources>/qemu/bin/qemu-system-{riscv32,xtensa}` with
+The app ships the CLI beside its main executable and QEMU inside its
+resource directory. In a packaged build, the app and CLI both
+run `<resources>/qemu/bin/qemu-system-{riscv32,xtensa}` with
 `-L <resources>/qemu/share`. Stage that directory, then build with the config
 fragment that adds it to the bundle:
 
 ```sh
 # from the repository root: build QEMU first (EINK-QEMU.md), then
 cd eink-qemu/desktop
-scripts/bundle-qemu.sh            # writes src-tauri/qemu (about 48 MiB)
+scripts/bundle-qemu.sh            # stages QEMU and builds the release CLI
 pnpm tauri build --config src-tauri/tauri.bundle.conf.json
 ```
 
 `scripts/bundle-qemu.sh` takes the binaries from `<repo>/build`
-(`EINK_QEMU_BUILD` selects another build directory) and produces:
+(`EINK_QEMU_BUILD` selects another build directory), builds the CLI with
+Cargo, and produces the inputs below. `EINK_QEMU_CLI` can select a prebuilt
+CLI instead (CI uses the standalone release binary). Tauri's `externalBin`
+entry installs `binaries/eink-qemu-<target>[.exe]` as `eink-qemu[.exe]`
+beside the app executable and includes it in signing. This keeps development
+builds independent of staged binaries; the entry is in the bundle config.
+
+```text
+src-tauri/binaries/eink-qemu-<target>[.exe]
+```
+
+QEMU resources:
 
 ```
 src-tauri/qemu/
   COPYING                       QEMU's licence (GPL-2.0)
   bin/qemu-system-riscv32       X3, X4 (ESP32-C3)
   bin/qemu-system-xtensa        X4 Pro, Picco (ESP32-S3)
+  plugins/libheaptrace.dylib    heap allocation tracer (.dll on Windows)
   lib/*.dylib                   every non-system library, recursively
   share/esp32c3-rom.bin         mask ROMs found through qemu_find_file()
   share/esp32s3_rev0_rom.bin
 ```
+
+The installed macOS layout is `eink-qemu.app/Contents/MacOS/{eink-qemu-desktop,eink-qemu}`
+and `Contents/Resources/qemu/{bin,lib,share,plugins}`. On Windows both
+executables and `qemu/` are in the installation directory. See the CLI's
+[install instructions](cli/README.md#install) for adding it to PATH without
+administrator rights, or using the standalone release archives.
 
 Library references are rewritten to `@loader_path/../lib` (binaries) and
 `@loader_path` (libraries), absolute rpaths are removed, and every file is
@@ -221,18 +274,20 @@ and `.dmg`.
 ### Windows
 
 The Windows QEMU is a MinGW build: the repository CI's
-`dist-qemu-*-x86_64-w64-mingw32` archives (static), or a cross build such as
+`dist-qemu-*-x86_64-w64-mingw32` archives (dynamic, so plugins can load),
+or a cross build such as
 QEMU's `tests/docker/dockerfiles/fedora-win64-cross.docker` with
 `--target-list=xtensa-softmmu,riscv32-softmmu --enable-pixman --enable-gcrypt
 --enable-slirp`. `scripts/bundle-qemu-windows.sh <install dir>` stages it
-into `src-tauri/qemu` the same way, with the DLLs beside the `.exe` files
+into `src-tauri/qemu` and builds the CLI sidecar, with the DLLs beside
+the QEMU `.exe` files
 (Windows finds them there). It strips debug information and, with
 `llvm-objdump` or `x86_64-w64-mingw32-objdump`, fails if an imported DLL is
 neither bundled nor part of Windows.
 
 On Windows, `pnpm tauri build --config src-tauri/tauri.bundle.conf.json`
 builds the NSIS and MSI installers. From macOS or Linux the NSIS installer
-can be cross-built with `cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
+and CLI can be cross-built with `cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
 (`brew install llvm lld nsis`, `cargo install --locked cargo-xwin`):
 
 ```sh
@@ -241,7 +296,7 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc \
   --bundles nsis --config src-tauri/tauri.bundle.conf.json
 ```
 
-The app links the C runtime statically and needs no Visual C++
+The app and CLI link the C runtime statically and need no Visual C++
 redistributable; the installer fetches WebView2 when Windows lacks it.
 Installers are unsigned, so SmartScreen warns on first run.
 
@@ -256,8 +311,9 @@ Windows yet.
 ### Distribution notes
 
 - **Signing:** ad-hoc signatures run locally but do not pass Gatekeeper on
-  other machines. For a Developer ID build, sign every file in `qemu/bin` and
-  `qemu/lib` with the same identity before `tauri build`. The hardened runtime
+  other machines. For a Developer ID build, sign every file in `qemu/bin`,
+  `qemu/lib` and `qemu/plugins` with the same identity before `tauri build`,
+  and configure that identity for Tauri to sign the app and CLI. The hardened runtime
   needs `com.apple.security.cs.allow-jit`, because TCG generates code into
   `MAP_JIT` memory. HVF is not used, so `com.apple.security.hypervisor` is not
   needed.

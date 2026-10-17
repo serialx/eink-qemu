@@ -106,9 +106,12 @@ short; the flash copy in it is 0600. Windows uses loopback TCP, which does
 not authenticate the peer: another local user could race QEMU to connect
 during startup. Startup succeeds once QMP has negotiated and the display has
 sent its first size; it fails after 30 seconds, when QEMU exits, or when
-Stop cancels it. Any later loss of QEMU, the monitor or the display ends the
-run as crashed. SIGTERM and SIGINT quit the app like the menu does; a run
-directory left by a killed app is removed at the next launch.
+Stop cancels it. If termination after a startup failure is not confirmed,
+the session stays stopping with its run directory and card reservations held.
+The same fault watcher used for a running session observes the eventual exit
+and returns the session to idle. Any later loss of QEMU, the monitor or the
+display ends the run as crashed. SIGTERM and SIGINT quit the app like the
+menu does; a run directory left by a killed app is removed at the next launch.
 
 ## Host files
 
@@ -145,7 +148,7 @@ so a reloaded WebView gets the current screen when it attaches.
 ## Control: QMP
 
 `qmp_capabilities`, `stop`, `cont`, `system_reset`, `input-send-event`,
-`qom-set` and `quit`. Keys are qcodes (`esc ret left right up down p`);
+`qom-set`, `blockdev-change-medium` and `quit`. Keys are qcodes (`esc ret left right up down p`);
 the X4 Pro Home key is `qom-set /machine/gt911 home`. Touch on the X4 Pro and
 Picco is absolute 0..32767 with the left button as the finger. Key and touch
 commands are synchronous Tauri commands that queue onto one task per run, so
@@ -177,6 +180,20 @@ explorer's read-only path, copies the tree into a new card beside it with
 file times kept (fatfs cannot set folder times or attributes), and renames it
 into place, so a failure leaves the card as it was. `sparse_copy` writes only
 what SEEK_DATA finds and blocks that are not all zero, for "Save a copy".
+`erase` prepares an empty MBR/FAT32 image with the same size and cluster size,
+then copies it into the existing file under `with_card`, retaining its inode
+and sparse storage so QEMU keeps using the same file. A failure during that
+copy marks the card changed and stops the guest.
+
+`select_card` holds both card reservations while the running guest is paused,
+changes the `sd-card` drive with QMP `blockdev-change-medium`, then resets
+and resumes before persisting and committing the selection. A failed switch
+keeps the old selection and stops QEMU with both reservations held. Until
+QEMU confirms its exit, the session stays stopping and refuses card operations;
+only then is the target reservation released. Recent cards use this same path.
+The front end serializes card selection with explorer operations, and the
+backend checks the selected file still has the identity it reserved before
+using it. A file replaced outside the app must be opened again.
 
 While the emulator runs, every operation is bracketed: QMP `stop`, the
 operation, then `system_reset` if it may have changed the card (the firmware

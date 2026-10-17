@@ -36,9 +36,10 @@ and Kohei Tokunaga's WebAssembly JIT. Where each piece came from is in
 | Xteink X4 | ESP32-C3 | `x4` | `qemu-system-riscv32` | Runs firmware; panel refresh timing simplified, no ghosting |
 | BOOX Picco | ESP32-S3 | `picco` | `qemu-system-xtensa` | Runs firmware; panel waveforms and charging simplified |
 
-The launchers pick the board from the firmware's chip: an ESP32-S3 image runs
-as the X4 Pro and an ESP32-C3 image as the X3. **The X4 and the Picco must be
-selected explicitly**, because their chips match the other boards.
+The board defaults to X4 Pro for ESP32-S3 firmware and X3 for ESP32-C3.
+The desktop app, browser and Rust CLI also recognize X4 and Picco filename
+hints, as described below. Select the board explicitly when the default or
+filename hint does not match the device.
 
 ## Try it in the browser
 
@@ -48,9 +49,12 @@ selected explicitly**, because their chips match the other boards.
    example), a merged firmware `.bin`, an X4 Pro `.xota` update, or a 16 MiB
    flash dump. The
    emulator starts as soon as the file loads.
-3. The device follows from the firmware's chip: ESP32-S3 firmware runs on the
-   X4 Pro. For the X3 or the X4, and for the BOOX Picco, pick the device in the
-   firmware card (the chip at the top of the page).
+3. New firmware defaults to X3 for ESP32-C3 and X4 Pro for ESP32-S3. An `x4`
+   filename token without `x3` selects X4; `picco` selects Picco on S3.
+   Tokens are ASCII alphanumeric runs and ignore case. A remembered choice
+   for that firmware wins over the filename. Change the device in the
+   firmware card (the chip at the top of the page), or use `?device=x4`
+   to override the choice in a link.
 
 Use the arrow keys, Enter, Esc and `P` (Power). On boards with a touchscreen,
 click the screen to touch it. The SD card panel lets you add books, swap in
@@ -58,8 +62,8 @@ your own card image, and download the card.
 
 The page starts with **Turbo** on, which runs fast but not with real device
 timing. Turn it off, or open the page with `?turbo=0`, for accurate timing.
-**Ghosting** is on to show real e-ink artifacts. Turn it off, or use
-`?ghosting=0`, when you need clean pixels.
+**Ghosting** is on for X3 and X4 Pro to show real e-ink artifacts. Turn it off,
+or use `?ghosting=0`, when you need clean pixels.
 
 ## Desktop app
 

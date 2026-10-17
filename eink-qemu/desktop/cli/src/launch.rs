@@ -152,8 +152,8 @@ pub fn point_latest(dir: &Path) {
     }
 }
 
-/// Where the QEMU binaries are: --qemu, EINK_QEMU_BIN, a build/ or bin/
-/// directory above this executable, or the repository's build directory.
+/// Where the QEMU binaries are: overrides, the app bundle, an unpacked
+/// release or a build directory above this executable, then the source tree.
 pub fn find_qemu(explicit: Option<&Path>, machine: &str) -> Result<QemuPaths, String> {
     let name = if machine == "x3" || machine == "x4" { "qemu-system-riscv32" } else { "qemu-system-xtensa" };
     let exe_name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
@@ -164,8 +164,9 @@ pub fn find_qemu(explicit: Option<&Path>, machine: &str) -> Result<QemuPaths, St
     } else if let Some(dir) = std::env::var_os("EINK_QEMU_BIN") {
         candidates.push(PathBuf::from(dir));
     } else {
-        if let Ok(exe) = std::env::current_exe() {
+        if let Ok(exe) = std::env::current_exe().and_then(dunce::canonicalize) {
             for ancestor in exe.ancestors().skip(1).take(7) {
+                candidates.push(ancestor.join("Resources").join("qemu").join("bin"));
                 candidates.push(ancestor.join("build"));
                 candidates.push(ancestor.join("bin"));
                 candidates.push(ancestor.join("qemu").join("bin"));
@@ -183,7 +184,10 @@ pub fn find_qemu(explicit: Option<&Path>, machine: &str) -> Result<QemuPaths, St
                     .find(|p| p.is_dir())
                     .unwrap_or_else(|| dir.join("contrib").join("plugins"))
             });
-            let share = std::env::var_os("EINK_QEMU_SHARE").map(PathBuf::from);
+            let share = std::env::var_os("EINK_QEMU_SHARE").map(PathBuf::from).or_else(|| {
+                // Release tarballs use share/qemu; desktop bundles use share.
+                [dir.join("../share/qemu"), dir.join("../share")].into_iter().find(|p| p.join("esp32c3-rom.bin").is_file())
+            });
             return Ok(QemuPaths { bin: dir, share, plugins });
         }
         tried.push(binary);

@@ -59,7 +59,7 @@
               <svg class="icon icon-fill" aria-hidden="true"><use href="#i-github"/></svg>github.com/serialx/eink-qemu</a>
           </div>
         </div>
-        <a id="github" class="icon-button" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener" aria-label="eink-qemu on GitHub" title="eink-qemu on GitHub">
+        <a id="github" class="icon-button" data-only="browser" href="https://github.com/serialx/eink-qemu" target="_blank" rel="noopener" aria-label="eink-qemu on GitHub" title="eink-qemu on GitHub">
           <svg class="icon icon-fill"><use href="#i-github"/></svg>
         </a>
         <button id="theme" class="icon-button" type="button" aria-label="Switch to dark mode">
@@ -137,7 +137,7 @@
             <button id="ghosting" class="toggle" type="button" aria-pressed="true" aria-label="Ghosting" aria-describedby="ghosting-help"><svg class="icon"><use href="#i-ghost"/></svg></button>
             <div id="ghosting-help" class="tip" role="tooltip">
               <strong>E-ink ghosting <span class="tip-state"></span></strong>
-              <p>Available on X3 and X4 Pro. X4 shows completed frames without ghosting.</p>
+              <p>Available on X3 and X4 Pro. X4 and Picco show completed frames without ghosting.</p>
               <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
                 Turn it off for clean, stable pixels when comparing screenshots.</p>
               <p class="fine">Applies when the emulator starts. <span data-only="browser"><code>?ghosting=0</code> opens the page with it off.</span></p>
@@ -175,8 +175,13 @@
           <button id="sd-reveal" class="icon-button small" type="button" aria-label="Show in Finder" title="Show in Finder" hidden><svg class="icon"><use href="#i-folder"/></svg></button>
         </div>
       </div>
+      <p id="sd-notice" class="sd-card-note" role="status" hidden></p>
+      <p id="sd-small-card" class="sd-card-note" hidden>This default card is small. Choose Resize card… from the card menu for more space.</p>
       <div class="sd-tools">
-        <button id="sd-upload" disabled class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
+        <div class="sd-upload-actions">
+          <button id="sd-upload" disabled class="tint" type="button" aria-label="Upload files" title="Upload files"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>Upload</button>
+          <button id="sd-upload-folder" disabled class="tint" type="button" aria-label="Upload folder" title="Upload folder"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Upload folder…</button>
+        </div>
         <button id="sd-mkdir" disabled class="icon-button" type="button" aria-label="New folder" title="New folder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
         <div class="card-choice">
           <button id="sd" class="icon-button" type="button" aria-label="Change SD card" title="Open another SD image or make a blank card" aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu"><svg class="icon"><use href="#i-card"/></svg></button>
@@ -184,6 +189,8 @@
             <button type="button" role="menuitem" data-card="open"><svg class="icon"><use href="#i-card"/></svg>Open SD image…</button>
             <button type="button" role="menuitem" data-card="new"><svg class="icon"><use href="#i-file"/></svg>New blank card…</button>
             <button type="button" role="menuitem" data-card="resize"><svg class="icon"><use href="#i-expand"/></svg>Resize card…</button>
+            <button type="button" role="menuitem" data-card="erase"><svg class="icon"><use href="#i-trash"/></svg>Erase card…</button>
+            <div id="card-recent" class="card-recent" role="group" aria-label="Recent cards" hidden></div>
           </div>
         </div>
         <button id="download" class="icon-button" type="button" aria-label="Save a copy of the SD card" title="Save a copy of the SD card"><svg class="icon"><use href="#i-download"/></svg></button>
@@ -224,7 +231,8 @@
                 partition table), a merged <code>.bin</code>, a 16 MiB flash dump, or an official X4 Pro <code>.xota</code> update.
                 For example, <code>crosspoint-&lt;ver&gt;-x3-x4.bin</code> or <code>-x4pro.bin</code> from the
                 <a href="https://github.com/crosspoint-reader/crosspoint-reader/releases" target="_blank" rel="noopener">CrossPoint Reader releases</a>.
-                An S3 image runs on the X4 Pro unless you pick the Picco; for a C3 image pick the X3 or the X4 in the
+                New firmware defaults to X3 for C3 and X4 Pro for S3. An <code>x4</code> filename token without
+                <code>x3</code> selects X4; <code>picco</code> selects Picco on S3. Change the device in the
                 firmware card. Drop the file here or choose it; loading it starts the emulator.</p>
               <button class="button" type="button" data-for="flash"><svg class="icon"><use href="#i-chip"/></svg>Choose firmware…</button>
               <p class="fine" data-only="tauri">The SD card is an image file on disk. A blank 16 GiB FAT32 card is created on first run; it takes a few MiB until files are written.</p>
@@ -297,7 +305,7 @@
     <footer class="statusbar">
       <span class="dot" aria-hidden="true"></span>
       <p id="status" role="status">Choose a flash image to begin.</p>
-      <span id="key-hint" class="key-hint">Keyboard: arrows · Enter · Esc · P</span>
+      <span id="key-hint" class="key-hint">Keyboard: arrows · Enter · Esc / Backspace · hold P for a long press</span>
     </footer>
   </div>
 </body>

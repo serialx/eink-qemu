@@ -12,10 +12,11 @@ The serial number and LAN address are scrubbed.
 
 ## 1. Compare a simulated boot with the device
 
-The sim should log the same panel identity as the device:
+The X4 Pro defaults to UC8279 revision `0x68`. Select the legacy UC8179
+profile to compare with this device log:
 
 ```sh
-eink-qemu/drive.py flash.bin sd.img sim.log wait:30
+X4PANEL=uc8179 python3 eink-qemu/drive.py flash.bin sd.img sim.log wait:30
 grep -h "\[PANEL\] VER=\|\[PANEL\] MTP\|OTP VCOM" eink-qemu/testdata/device/boot-reader-1002p.txt sim.log
 ```
 
@@ -26,16 +27,18 @@ had read the OTP on an earlier boot; the sim reads it fresh each time.)
 Other lines to compare (grep the tag in both logs):
 - `[ACT] Entering activity:` order of screens.
 - `Wait complete: 8179_DRF (N ms)` panel busy time. Device: about 1492 ms full
-  refresh, 545-560 ms fast; the sim holds BUSY for its `busy-ms` (300 ms by
-  default, `-global uc8179.busy-ms=1492` to match a full refresh).
+  refresh, 545-560 ms fast. The legacy profile defaults to `busy-ms=0`,
+  deriving BUSY from waveform frames (30 frames each way at 25 ms gives
+  1500 ms for a full OTP refresh). A nonzero `busy-ms` overrides every
+  refresh with a fixed duration.
 - `[SYS] heap free=... maxAlloc=...` internal heap after boot.
 
 ## 2. Boot the sim with the device's battery history
 
 ```sh
 rm -f sd.img
-eink-qemu/mksd.py sd.img 2050 eink-qemu/testdata/sdcard   # add your books folder the same way
-eink-qemu/run.sh flash.bin sd.img
+python3 eink-qemu/mksd.py sd.img 2050 eink-qemu/testdata/sdcard   # add your books folder the same way
+X4PANEL=uc8179 eink-qemu/run.sh flash.bin sd.img
 ```
 
 The image uses 32 KiB clusters, matching the measured stock X3 card. See

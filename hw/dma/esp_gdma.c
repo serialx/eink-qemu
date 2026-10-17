@@ -277,8 +277,11 @@ bool esp_gdma_get_channel_periph(ESPGdmaState *s, GdmaPeripheral periph, int dir
     for (int i = 0; i < class->m_channel_count; i++) {
         /* IN/OUT PERI registers have the same organization, can use any macro.
          * Look for the channel that was configured with the given peripheral. It must be marked as "started" too */
-        if ( FIELD_EX32(s->ch_conf[dir][i].peripheral, GDMA_PERI_SEL, PERI_SEL) == periph ||
-             FIELD_EX32(s->ch_conf[dir][i].link, GDMA_OUT_LINK, START)) {
+        const uint32_t start_mask = (dir == ESP_GDMA_IN_IDX) ?
+            R_GDMA_IN_LINK_START_MASK : R_GDMA_OUT_LINK_START_MASK;
+        if (FIELD_EX32(s->ch_conf[dir][i].peripheral, GDMA_PERI_SEL,
+                       PERI_SEL) == periph &&
+            (s->ch_conf[dir][i].link & start_mask)) {
 
             *chan = i;
             return true;

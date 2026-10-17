@@ -8,8 +8,7 @@ globalThis.FlashImage = (() => {
         if (chip !== 5 && chip !== 9) throw new Error(`Unsupported ESP chip ID ${chip}.`);
         const chips = {x3: 5, x4: 5, x4pro: 9, picco: 9};
         if (selected === 'auto') {
-            if (chip === 5) throw new Error('Choose X3 or X4 in Device; both use ESP32-C3.');
-            return 'x4pro';
+            return chip === 5 ? 'x3' : 'x4pro';
         }
         if (!Object.hasOwn(chips, selected)) throw new Error(`Unknown device: ${selected}.`);
         if (chips[selected] !== chip) throw new Error(`Device ${selected} conflicts with this ESP32-${chip === 5 ? 'C3' : 'S3'} firmware.`);

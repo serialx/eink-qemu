@@ -71,10 +71,13 @@ Alternatively put copies of your images in web-dist and open:
   http://127.0.0.1:8000/?flash=flash.bin&sd=sd.img
   http://127.0.0.1:8000/?flash=crosspoint-1.6.5-x3-x4.bin&sd=sd.img
 Query images must be same-origin or provide appropriate CORS/CORP headers.
-The device is remembered between visits. Auto selects X4 Pro for ESP32-S3;
-ESP32-C3 requires an explicit X3 or X4 choice in the firmware card because
-both use the same chip, and the card offers only the devices that take the
-firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to
+Each firmware's device is remembered between visits. New firmware defaults
+to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens of ASCII letters
+and digits ignore case and select X4 with x4 but no x3,
+X3 with x3 but no x4, or Picco with picco on S3. Both x3 and x4, or neither,
+use the C3 default; x4pro is a separate token. Folder names and hints for the
+other chip are ignored. A remembered device wins over the filename hint.
+The firmware card offers only the devices that take the firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to
 select a board in a link; a device/chip mismatch is rejected before boot.
 Wi-Fi, Ghosting and Turbo are remembered too; ?wifi=off, ?ghosting=0 and
 ?turbo=0 override them for one visit.
@@ -109,8 +112,8 @@ The Emscripten SDL2 port renders the device's portrait panel. The runtime runs
 QEMU main on a pthread; the page remains responsive. An Emscripten-only guard
 yields in SDL event polling so queued browser input reaches the application
 pthread even while the e-ink screen is idle. The default parallel text console
-is disabled because Emscripten SDL has one canvas. Wi-Fi networking is disabled as in the
-Node wasm launcher.
+is disabled because Emscripten SDL has one canvas. Browser Wi-Fi networking is
+enabled by default; see the Wi-Fi section below for downloads and limitations.
 
 The canvas and runtime iframe retain the native panel resolution: 528x792 for
 X3 and 480x800 for X4/X4 Pro/Picco. The page scales the iframe in whole physical-pixel
@@ -120,8 +123,11 @@ If a narrow window cannot fit even one physical pixel per panel pixel, the
 device section scrolls horizontally. Avoid percentage sizing on the canvas:
 SDL adopts that size and resamples the framebuffer, producing moire in dithering.
 
-Use the on-screen controls or arrows, Enter, Backspace/Esc, and P. X4 Pro also
-has a Home control (keyboard: Home) and accepts pointer/touch input on its canvas.
+Use the on-screen controls or arrows, Enter, Backspace/Esc for Back on X3/X4,
+and P for Power. X4 Pro has a Home control (keyboard: Esc, H or Home) and
+accepts pointer/touch input on its canvas. Picco has no Home key. P holds Power
+while the key is down: hold it for a long press, which many firmwares use to
+sleep or power off. The action and required hold time depend on the firmware.
 Reset resets the machine. Stop pauses
 the guest, copies the current SD image, and removes the iframe and its workers.
 Start then boots again with that SD image. "Save a copy of the SD card" pauses
@@ -137,8 +143,11 @@ site data removes the saved card, and the browser may evict it when storage
 is scarce. Save a copy for a portable backup. If storage is unavailable
 or full, a warning appears and the card remains usable in memory. Opening
 another SD image, or a new blank card, from the card menu (the card button in
-the SD panel) replaces the saved card. An explicit ?sd= URL loads that image
-instead of restoring the saved card, and saves it as the new card.
+the SD panel) replaces the saved card. Erase card… asks for confirmation and
+empties the current image, keeping its size and cluster size; it saves the
+empty card in this browser and resets a running device. There is one stored
+card, so the browser has no recent-card list. An explicit ?sd= URL loads
+that image instead of restoring the saved card, and saves it as the new card.
 The full image is stored atomically in IndexedDB, separately for each hosted
 application path, and numbered with each save. Tabs of the page share the
 card: an idle tab takes up another tab's save, and a tab whose card is older
@@ -150,8 +159,8 @@ The last six firmware files chosen are kept in this browser too: after a
 reload Start runs the last one, and the firmware card lists the others.
 
 The SD card panel is a file explorer for the in-memory card: browse folders,
-upload files (picker or drag-and-drop, folders included), create folders,
-rename, delete, and download single files. It works before the first Start
+upload files or folders (Upload, Upload folder, or drag-and-drop), create
+folders, rename, delete, and download single files. It works before the first Start
 (the blank card or the picked image loads as soon as the page opens), while the
 emulator runs, and after Stop. fat.js (plain JavaScript, no dependencies)
 edits the FAT32 image in place; exFAT, FAT12 and FAT16 cards are reported as
@@ -175,7 +184,7 @@ been quiet for 5 s (as in the CLI), unless the ROM keeps rebooting it.
 TRMNL X4 acceptance uses the same server and isolated Chrome setup below:
   TRMNL_FIRMWARE=/absolute/path/FW1.8.17.bin \
     node eink-qemu/wasm/web/trmnl-smoke.mjs http://127.0.0.1:8000/
-It verifies C3 ambiguity, chip mismatch rejection, unchanged merged firmware,
+It verifies the C3 default, chip mismatch rejection, unchanged merged firmware,
 480x800 output, Reset, Stop and remembered selection. Optional REFERENCE_PPM
 compares the panel bytes against a native X4 capture with
 `-nic hubport,hubid=0,model=esp32_wifi`. This keeps the radio present without a
@@ -184,7 +193,8 @@ host connection, matching the browser with Wi-Fi downloads off.
 The acceptance tests below drive the page's own controls. File pickers are
 hidden inputs the page waits on once a button asks for a file (#flash-file
 after Choose… in the firmware card, #sd-file after "Open SD image…" in the
-card menu, #sd-files after Upload), which the tests set through DevTools.
+card menu, #sd-files after Upload, #sd-folders after Upload folder), which
+the tests set through DevTools.
 window.einkQemu exposes the explorer's operations and the card for them, and
 window.bootTimeSeconds the measured boot.
 

@@ -29,6 +29,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
+#include "qemu/log.h"
 
 #include "net/net.h"
 
@@ -80,7 +81,7 @@ void Esp32_WLAN_init_ap_frame(Esp32WifiState *s, mac80211_frame *frame) {
 }
 
 static mac80211_frame *new_frame(unsigned type, unsigned subtype) {
-    mac80211_frame *frame = (mac80211_frame *)malloc(sizeof(mac80211_frame));
+    mac80211_frame *frame = g_malloc0(sizeof(mac80211_frame));
     frame->next_frame = NULL;
     frame->frame_control.protocol_version = 0;
     frame->frame_control.type = type;
@@ -89,6 +90,7 @@ static mac80211_frame *new_frame(unsigned type, unsigned subtype) {
     frame->duration_id = 314;
     frame->sequence_control.fragment_number = 0;
     frame->pos=0;
+    frame->frame_length = IEEE80211_HEADER_SIZE;
     return frame;
 }
 
@@ -98,6 +100,9 @@ static void add_rates(mac80211_frame *frame) {
 }
 
 static void add_ssid(mac80211_frame *frame, const char *ssid) {
+    if (!ssid) {
+        ssid = "";
+    }
     add_tag(frame,IEEE80211_BEACON_PARAM_SSID,strlen(ssid),(uint8_t *)ssid);
 }
 
@@ -287,7 +292,15 @@ mac80211_frame *Esp32_WLAN_create_disassociation(void) {
     return frame;
 }
 
-mac80211_frame *Esp32_WLAN_create_data_packet(Esp32WifiState *s, const uint8_t *buf, int size) {
+mac80211_frame *Esp32_WLAN_create_data_packet(Esp32WifiState *s,
+                                            const uint8_t *buf, size_t size)
+{
+    if (size < 14 || size > IEEE80211_FRAME_CAPACITY -
+                           IEEE80211_HEADER_SIZE + 2) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Wi-Fi invalid Ethernet frame size: %zu\n", size);
+        return NULL;
+    }
     mac80211_frame *frame=new_frame(IEEE80211_TYPE_DATA,IEEE80211_TYPE_DATA_SUBTYPE_DATA);
 
     frame->frame_control.flags = 0x2; /* from station back to station via AP */

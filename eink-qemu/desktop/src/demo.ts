@@ -2,6 +2,7 @@
    SD listing, a console log, a running X4 Pro with a drawn page and heaps
    that change with every snapshot. */
 import type { Setup } from './types';
+import { keyboardHint, keyHint, keyTitle } from './keyboard';
 /** Whether the mock firmware card has an ELF: without one, snapshots are unlabelled. */
 let demoElf = true;
 import { attachHeap, heapSession, setElf } from './heap';
@@ -88,19 +89,19 @@ function renderSd() {
   }
 }
 
-const keyHints: Record<string, string> = { Back: 'Esc', Confirm: 'Enter', Left: '←', Right: '→', Up: '↑', Down: '↓', Power: 'P', Home: 'Home' };
 function renderKeys(machine: string) {
   const keys = $('keys');
   keys.replaceChildren();
   keys.dataset.machine = machine;
   const names = machine === 'x3' || machine === 'x4' ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power']
     : machine === 'picco' ? ['Up', 'Down', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
-  $('key-hint').textContent = machine === 'x4pro' ? 'Keyboard: ↑ ↓ · Home · P · touch the screen' : 'Keyboard: arrows · Enter · Esc · P';
+  $('key-hint').textContent = keyboardHint(machine);
   for (const name of names) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = name;
-    button.dataset.kbd = keyHints[name];
+    button.dataset.kbd = keyHint(machine, name);
+    button.title = keyTitle(machine, name);
     keys.append(button);
   }
 }

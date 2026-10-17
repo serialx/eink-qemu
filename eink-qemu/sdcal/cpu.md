@@ -1,9 +1,10 @@
 # X3 CPU costs and SD refit
 
 The X3 now uses **`-icount shift=0,sleep=on`**: one tick is one nanosecond.
-Both `eink-qemu/run.sh` and `eink-qemu/drive.py` select this for X3; X4 Pro keeps
-shift=2 and ordinary instruction counting. Direct QEMU launches must use
-shift=0 with the X3 defaults below. Shift=2 would multiply these costs by four.
+Both `eink-qemu/run.sh` and `eink-qemu/drive.py` select this for X3. X4 Pro
+also uses shift=0 with its own [calibrated Xtensa costs](../x4cal/README.md).
+Direct QEMU launches must use shift=0 with the X3 defaults below. Shift=2
+would multiply these costs by four.
 
 ## CPU defaults and interpretation
 

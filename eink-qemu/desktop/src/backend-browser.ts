@@ -9,6 +9,8 @@
    returns it. Explorer operations go to whichever owns it. */
 import type { AttachHandlers, Backend, DropHandlers, FileRef, Screen } from './backend';
 import { firmwareStore, type KeptFirmware } from './firmware-store';
+import { deviceOf } from './devices';
+import { forwardKeyboard } from './keyboard';
 import {
   AppError, type CardInfo, type FirmwareInfo, type MadeCard, type SdListing, type SessionInfo,
   type Settings, type Setup, type StartOptions, type UploadPlan,
@@ -16,6 +18,7 @@ import {
 
 const params = new URLSearchParams(location.search);
 const MACHINES: Machine[] = ['x3', 'x4', 'x4pro', 'picco'];
+const deviceOverride = MACHINES.find((device) => device === params.get('device'));
 const PANELS: Settings['panel'][] = ['uc8279-68', 'uc8179'];
 const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' };
 const MiB = 1024 ** 2;
@@ -93,7 +96,7 @@ async function fileOf(ref: string): Promise<File> {
 
 /* Hidden file inputs, one per purpose, so a picker is one element automation
    can set files on. A pick waits for the input's next change or cancel. */
-const inputs = { firmware: 'flash-file', card: 'sd-file', sd: 'sd-files' } as const;
+const inputs = { firmware: 'flash-file', card: 'sd-file', sd: 'sd-files', folders: 'sd-folders' } as const;
 function input(id: string, accept: string, multiple: boolean) {
   let element = document.getElementById(id) as HTMLInputElement | null;
   if (!element) {
@@ -107,6 +110,7 @@ function input(id: string, accept: string, multiple: boolean) {
   }
   element.accept = accept;
   element.multiple = multiple;
+  element.webkitdirectory = id === inputs.folders;
   return element;
 }
 function pick(id: string, accept: string, multiple = false): Promise<File[]> {
@@ -168,6 +172,8 @@ const keptId = (file: File) => `${file.name} · ${file.size} bytes · ${new Date
 async function useFile(file: File, keep = true): Promise<Setup> {
   const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
   const info = { ...describeFirmware(file.name, file.size, head, file.lastModified || null), path: keptId(file) };
+  const remembered = recent.find((r) => r.id === info.path)?.device;
+  settings.device = deviceOverride ?? deviceOf(info.chip, file.name, remembered) ?? 'auto';
   firmware = { source: { kind: 'file', file }, info, bytes: null };
   if (keep) {
     // The list changes now; the copy is kept in the background.
@@ -182,11 +188,8 @@ const setupOf = (): Setup => ({
   firmware: firmware?.info ?? null, elf: null, elfMatches: null, elfSkipped: null,
   recent: recent.map((r) => ({ path: r.id, name: r.name, parent: '', device: r.device, elf: false })),
 });
-/** The devices a chip can be. */
-const devicesOf = (chip: FirmwareInfo['chip']): Machine[] => chip === 'ESP32-C3' ? ['x3', 'x4'] : chip === 'ESP32-S3' ? ['x4pro', 'picco'] : [];
-
 /* The screen: the runtime iframe, which keeps the panel's resolution and is
-   scaled as a whole. SDL inside it takes the pointer and the keyboard. */
+   scaled as a whole. SDL inside it takes the pointer. */
 class FrameScreen implements Screen {
   el: HTMLIFrameElement;
   width: number;
@@ -201,6 +204,12 @@ class FrameScreen implements Screen {
     this.el.title = `${shortNames[machine]} display`;
     // The canvas exists once the runtime page loads; size it then too.
     this.el.addEventListener('load', resized);
+    this.el.addEventListener('load', () => {
+      // Keys typed after touching the canvas use the page's device mapping too.
+      for (const type of ['keydown', 'keyup']) this.el.contentWindow?.addEventListener(type, (event) => {
+        forwardKeyboard(event as KeyboardEvent, this.el);
+      }, true);
+    });
   }
   resize(scale: number, exact: boolean) {
     // Keep SDL's viewport at the panel resolution: resizing it to the layout
@@ -536,7 +545,10 @@ async function collect(refsList: string[]): Promise<Item[]> {
   }
   for (const ref of refsList) {
     const source = sourceOf(ref);
-    if (source.kind === 'file') items.push({ path: source.file.name, file: source.file });
+    if (source.kind === 'file') {
+      const path = source.file.webkitRelativePath || source.file.name;
+      if (!path.split('/').slice(1).some((name) => name.startsWith('.'))) items.push({ path, file: source.file });
+    }
     else if (source.kind === 'entry') await walk(source.entry, '');
   }
   return items;
@@ -574,7 +586,7 @@ function dropped(transfer: DataTransfer): FileRef[] {
 }
 
 export const browser: Backend = {
-  can: { heap: false, cardOpen: true, cardNew: true, cardResize: false, cardReveal: false },
+  can: { heap: false, cardOpen: true, cardNew: true, cardResize: false, cardRecent: false, cardSwitchRunning: false, cardReveal: false },
   cardSizes: [{ size: 64 * MiB, label: '64 MiB', note: 'The blank card bundled with this page' }],
   cardDefaultSize: 64 * MiB,
   cardSizeNote: 'The card lives in this browser: a card takes its full size in memory, so the bundled blank card is small. Open an SD image for a bigger one.',
@@ -599,6 +611,7 @@ export const browser: Backend = {
         const bytes = await fetchBytes(flash);
         const name = flash.split('/').pop() || flash;
         firmware = { source: { kind: 'url', url: flash }, info: describeFirmware(name, bytes.length, bytes.subarray(0, HEAD), null), bytes };
+        settings.device = deviceOverride ?? deviceOf(firmware.info.chip, name) ?? 'auto';
       } catch (error) { problems.push(`Firmware: ${errorMessage(error)}`); }
     } else if (recent.length) {
       // The firmware last chosen in this browser, ready for Start.
@@ -612,7 +625,7 @@ export const browser: Backend = {
     void loadCard(params.get('sd') ?? 'blank-sd.img', !params.has('sd'));
     return {
       session, settings, card, firmware: firmware?.info ?? null, elf: null, platform: 'browser',
-      autostart: !!flash && !!firmware, pane: null, problems,
+      autostart: !!flash && !!firmware, pane: null, problems, cardNotices: [],
     };
   },
   note: () => {},
@@ -645,13 +658,7 @@ export const browser: Backend = {
       recent = recent.filter((r) => r.id !== id);
       throw new AppError('ENOENT', 'That firmware is no longer kept in this browser; choose the file again.');
     }
-    const setup = await useFile(file);
-    // The device last used with it, when it suits the chip.
-    if (kept.device !== 'auto' && kept.device !== settings.device && devicesOf(firmware!.info.chip).includes(kept.device)) {
-      await browser.settings({ device: kept.device });
-      return setupOf();
-    }
-    return setup;
+    return useFile(file);
   },
   setup: async () => setupOf(),
   async readFirmware() {
@@ -728,6 +735,9 @@ export const browser: Backend = {
     return null;
   },
 
+  recentCards: async () => [],
+  useRecentCard: () => notSupported('Recent cards'),
+  eraseCard: () => sdCall<void>('erase'),
   async pickOpenCard() {
     const [file] = await pick(inputs.card, '.img');
     if (!file) return null;
@@ -759,8 +769,8 @@ export const browser: Backend = {
       entries: result.entries.map((e) => ({ name: e.name, size: e.size, isDir: e.isDir, mtime: e.mtime ? e.mtime.getTime() : null })),
     };
   },
-  async sdPickSources() {
-    const files = await pick(inputs.sd, '', true);
+  async sdPickSources(folders = false) {
+    const files = await pick(folders ? inputs.folders : inputs.sd, '', true);
     return files.map((file) => register({ kind: 'file', file }).ref);
   },
   async sdPlanUpload(dir, refsList): Promise<UploadPlan> {
@@ -769,11 +779,14 @@ export const browser: Backend = {
     const { replaced } = await plan(dir, items);
     return { files: items.length, bytes: items.reduce((sum, { file }) => sum + file.size, 0), conflicts: replaced };
   },
-  async sdUpload(dir, refsList): Promise<UploadPlan> {
+  async sdUpload(dir, refsList, confirmed): Promise<UploadPlan> {
     const items = plans.get(refsList.join('\n')) ?? await collect(refsList);
     plans.delete(refsList.join('\n'));
     // Checked again: the firmware may have written to the card since the plan.
-    const { dirs, files, needed, free } = await plan(dir, items);
+    const { dirs, files, needed, free, replaced } = await plan(dir, items);
+    if (replaced.some((path) => !confirmed.some((name) => name.toUpperCase() === path.toUpperCase()))) {
+      throw new AppError('EEXIST', 'The files on the SD card changed. Try the upload again to confirm replacements.');
+    }
     if (needed > free) throw new AppError('ENOSPC', `Not enough space: ${(needed / MiB).toFixed(1)} MiB more is needed, ${(free / MiB).toFixed(1)} MiB is free.`);
     const writes = await Promise.all(files.map(async ({ path, file }) => ({ path, bytes: new Uint8Array(await file.arrayBuffer()) })));
     await sdCall('write', { dirs, files: writes }, writes.map(({ bytes }) => bytes.buffer));

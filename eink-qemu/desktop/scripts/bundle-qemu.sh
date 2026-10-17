@@ -174,3 +174,5 @@ print(f'bundled {len(bundled)} libraries into {libdir}' + (', and the heaptrace 
 PY
 
 du -sh "$out" | sed 's/^/qemu bundle: /'
+
+sh "$desktop/scripts/bundle-cli.sh"

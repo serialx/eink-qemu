@@ -7,12 +7,17 @@ review; it does not change implementation files.
 
 ## Findings ranked by severity
 
-**One P1 regression is confirmed and reproduced.** No P0, P2 or P3 port
-regressions were confirmed. Completeness and the fresh build pass, but the
-port is not behaviorally faithful until the selective-reset regression is
-fixed. No source fix was made during this review.
+**One P1 regression was confirmed and reproduced, then resolved in
+`d01ff66f48`.** No P0, P2 or P3 port regressions were confirmed. Completeness
+and the fresh build passed. The evidence below records the original review;
+the selective-reset fix landed afterward.
 
-### P1 — Xtensa CPU-only resets now reset peripherals and RTC
+### P1 — Xtensa CPU-only resets reset peripherals and RTC (resolved)
+
+**Resolution:** `d01ff66f48` sets `ResettableClass.child_foreach = NULL` in
+both `hw/xtensa/esp32.c` and `hw/xtensa/esp32s3.c`, leaving peripheral and
+RTC resets to their selective handlers. The fix records paired old/new qtest
+checks for CPU-only preservation and digital/full-reset behavior.
 
 **Locations:** `hw/xtensa/esp32.c:553` and `hw/xtensa/esp32s3.c:451`, with
 legacy handlers installed at `hw/xtensa/esp32.c:661` and
@@ -137,7 +142,7 @@ all of those hunks; absence of a finding does not certify silicon accuracy.
 | Deadline/unwind | `accel/tcg/cpu-exec.c:779`, `:927`; `accel/tcg/translate-all.c:122`, `:139`, `:158`, `:203`: signed exhausted-budget check, whole-instruction budget conversion, atomic fallback flags, cost-column encode/decode, faulting-instruction refunds and borrow reversal retained. All decoder callers consume the extra column. |
 | Helper arity | Four helper expansion headers retain eight-argument support; `include/tcg/helper-info.h:29` and `tcg/tcg.c:2595` correct old capacity gaps, and the wrapper now passes the actual function pointer. These are documented fixes, not weakened semantics. |
 | SHA/HMAC/XTS | All 18 internal SHA/HMAC files preserve executable text after include/comment/whitespace normalization; constants, padding, state-word order and native-word HMAC output agree. Restored XTS source/header are byte-identical to the reference and still built unconditionally. |
-| Static slirp | `meson.build:1282` changes forced static linkage to `prefer_static`; this changes the normal linkage default but is explicitly approved/documented in `core.md`. Windows CI retains `--static`, which sets `prefer_static=true`, and the conditional `LIBSLIRP_STATIC` define. Windows linking was not run here. |
+| Static slirp | `meson.build:1282` changes forced static linkage to `prefer_static`; this changes the normal linkage default but is explicitly approved/documented in `core.md`. Windows CI now builds dynamically so TCG plugins can load (`d961c589dd`); `configure-win.sh` omits `--static`, and `bundle-win-dlls.sh` ships the DLLs. Windows linking was not run in this review. |
 | `dup_const` | Upstream's constant branch/invalid-width diagnostic replaces the old revert. The deliberate drop and host-limited evidence are recorded in `core.md`; no unrecorded change was found. |
 | RISC-V property interface | `target/riscv/cpu.c:2848`: eight properties remain uint8, with identical spelling/defaults: `cost-rom-ns`, `cost-sram-ns`, `cost-flash-ns` = 1; `cost-load`, `cost-store`, `cost-mul`, `cost-div`, `cost-branch` = 0. Internal `cost_clock_scale` remains uint32, zero meaning 1x. |
 | RISC-V regions/classification | `target/riscv/tcg/translate.c:1372`, `:1410`: identical compressed and full-width opcode predicates; classify the instruction start. Flash is `[0x42000000,0x42800000)`, ROM `[0x40000000,0x40060000)`, SRAM everywhere else. No endpoint widened or narrowed. |
@@ -829,6 +834,6 @@ git status --short
 ```
 
 The required commit subject is `x4prosim: review the QEMU 11.1 port`.
-Outstanding implementation work is the P1 selective-reset fix and its paired
-regression checks; inherited concerns are listed separately above. Review
-completion does not imply those fixes have been made.
+The P1 selective-reset fix and its paired regression checks were completed in
+`d01ff66f48`. The inherited concerns listed separately above remain outside
+that fix.

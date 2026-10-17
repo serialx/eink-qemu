@@ -15,6 +15,7 @@ pub struct Settings {
     pub turbo: bool,
     pub firmware: Option<PathBuf>,
     pub card: Option<PathBuf>,
+    pub recent_cards: Vec<PathBuf>,
     /// The firmware's ELF, for the heap view.
     pub elf: Option<PathBuf>,
     /// Whether the ELF was found beside the firmware rather than chosen.
@@ -44,6 +45,7 @@ impl Default for Settings {
             turbo: true,
             firmware: None,
             card: None,
+            recent_cards: Vec::new(),
             elf: None,
             elf_auto: false,
             recent: Vec::new(),
@@ -134,6 +136,13 @@ impl Settings {
         Ok(())
     }
 
+    pub fn remember_card(&mut self, path: PathBuf) {
+        self.recent_cards.retain(|p| *p != path);
+        self.recent_cards.insert(0, path.clone());
+        self.recent_cards.truncate(MAX_RECENT);
+        self.card = Some(path);
+    }
+
     /// Record the chosen firmware's device and ELF in its recent entry.
     pub fn remember(&mut self) {
         let Some(firmware) = self.firmware.clone() else { return };
@@ -141,5 +150,25 @@ impl Settings {
         self.recent.retain(|r| r.firmware != entry.firmware);
         self.recent.insert(0, entry);
         self.recent.truncate(MAX_RECENT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_cards_persist_newest_first_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut settings = Settings::default();
+        for n in 0..8 { settings.remember_card(PathBuf::from(format!("card-{n}.img"))); }
+        settings.remember_card(PathBuf::from("card-4.img"));
+        settings.save(&path).unwrap();
+        let loaded = Settings::load(&path, &mut Vec::new());
+        assert_eq!(loaded.recent_cards, [4, 7, 6, 5, 3, 2].map(|n| PathBuf::from(format!("card-{n}.img"))));
+        assert_eq!(loaded.card, Some(PathBuf::from("card-4.img")));
+        let old: Settings = serde_json::from_str(r#"{"card":"old.img"}"#).unwrap();
+        assert!(old.recent_cards.is_empty());
     }
 }

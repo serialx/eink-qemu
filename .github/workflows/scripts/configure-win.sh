@@ -8,9 +8,6 @@ set -euo pipefail
 TARGET=${TARGET:-xtensa-softmmu}
 VERSION=${VERSION:-dev}
 
-echo DBG
-./configure --help
-
 ./configure \
     --bindir=bin \
     --datadir=share/qemu \
