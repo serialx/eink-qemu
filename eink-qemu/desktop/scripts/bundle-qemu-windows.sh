@@ -75,3 +75,5 @@ else
     fi
 fi
 du -sh "$out" | sed 's/^/qemu bundle: /'
+
+sh "$desktop/scripts/bundle-cli.sh" x86_64-pc-windows-msvc

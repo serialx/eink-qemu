@@ -17,15 +17,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-/// The desktop app: EINK_QEMU_DESKTOP, a build beside this executable
-/// (`pnpm tauri build`), or the installed app.
+/// The desktop app: EINK_QEMU_DESKTOP, the app bundled beside this CLI,
+/// a workspace build, or the installed macOS app.
 fn find_desktop() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("EINK_QEMU_DESKTOP") {
         return Ok(PathBuf::from(path));
     }
     let name = if cfg!(windows) { "eink-qemu-desktop.exe" } else { "eink-qemu-desktop" };
     let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = std::env::current_exe().and_then(dunce::canonicalize) {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(name));
             // A debug CLI beside a release app build in the same workspace.
@@ -125,6 +125,7 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     if let Err(e) = std::fs::write(&spec_path, serde_json::to_string_pretty(&spec).unwrap_or_default()) {
         return setup_error(format!("cannot write {}: {e}", spec_path.display()));
     }
+    let qemu = prepared.qemu.clone();
     drop(prepared);
     let log = match std::fs::File::create(dir.join("desktop.log")) {
         Ok(f) => f,
@@ -133,7 +134,9 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
     let mut child = match tokio::process::Command::new(&desktop)
         .env("EINK_QEMU_AUTOMATION", &spec_path)
         .env("EINK_QEMU_DATA_DIR", dir.join("desktop"))
-        .env("EINK_QEMU_BIN", spec_qemu_bin(&args, &spec))
+        .env("EINK_QEMU_BIN", &qemu.bin)
+        .env("EINK_QEMU_PLUGINS", &qemu.plugins)
+        .envs(qemu.share.as_ref().map(|share| ("EINK_QEMU_SHARE", share)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(log))
@@ -180,11 +183,6 @@ pub async fn run(firmware: PathBuf, tokens: Vec<String>, args: RunArgs) -> u8 {
         printer.record(&json!({"type": "error", "stage": "record", "error": error}));
     }
     if ok && steps_done && recorded.is_ok() { 0 } else if steps_done && !setup_failed { EXIT_FAIL } else { EXIT_SETUP }
-}
-
-/// The QEMU directory the CLI resolved, for the app.
-fn spec_qemu_bin(args: &RunArgs, spec: &Automation) -> PathBuf {
-    launch::find_qemu(args.qemu.as_deref(), &spec.machine).map(|q| q.bin).unwrap_or_default()
 }
 
 /// The summary files and end record, from what the app wrote; an error when
