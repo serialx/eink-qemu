@@ -162,6 +162,6 @@ _Static_assert(ESP32C3_INT_MATRIX_INPUTS == ETS_MAX_INTR_SOURCE,
                "ESP32C3_INT_MATRIX_INPUTS macro doesn't match the number of interrupt sources");
 
 /**
- * @brief Since wifi is not supported on ESP32-C3 target emulation, reuse its interrupt source for ethernet
+ * @brief OpenCores Ethernet reuses the Wi-Fi MAC source; both NICs share this IRQ if enabled.
  */
 #define ETS_ETH_MAC_INTR_SOURCE     ETS_WIFI_MAC_INTR_SOURCE

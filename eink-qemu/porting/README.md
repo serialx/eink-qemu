@@ -1,28 +1,31 @@
-# Porting eink-qemu to QEMU 11.1.2
+# Port of eink-qemu to QEMU 11.1.2
 
-Branch `serialx/qemu-rebase` starts at upstream **v11.1.2** and re-applies the
-fork in layers. The fork used to sit on Espressif's `esp-develop` (QEMU 9.2.2 +
-126 Espressif commits) plus 53 eink-qemu commits; Espressif never moved past
-9.2.2, so the whole stack is ported by hand. The old history stays on branch
-`x4prosim` and tag `x4prosim-pre-rebase` (f9339150cd).
+The port to upstream **v11.1.2** is complete. The fork previously used
+Espressif's `esp-develop` (QEMU 9.2.2 plus 126 Espressif commits), followed by
+53 eink-qemu commits. The port reapplied that stack in layers and adapted it
+to QEMU 11.1 APIs. The original tree is preserved at
+`x4prosim-pre-rebase` (`f9339150cd`). These notes record the port's decisions
+and review evidence; they are not an active work assignment.
+
+The [port review](review.md) compares the original delta with the completed
+port at `49f40e8a82`. Its selective-reset finding was fixed in `d01ff66f48`.
 
 ## Reference material
 
-- Original fork tree: `git show x4prosim-pre-rebase:<path>`; original change
-  to an upstream file: `git diff v9.2.2 x4prosim-pre-rebase -- <path>`; new
-  file: `git checkout x4prosim-pre-rebase -- <path>` and then adapt it.
-- Upstream churn on a file you touch: `git diff v9.2.2 v11.1.2 -- <path>`,
-  and `git log --oneline v9.2.2..v11.1.2 -- <path>` for the why.
-- `docs/devel/` in this tree documents the 11.1 APIs (reset, qdev, memory,
-  translator). Look for how an upstream device of the same kind does it today.
-- Read-only reference checkout with the old build and firmware images:
-  `/Users/serialx/workspace/x4prosim` (branch `x4prosim`): `build/qemu-system-riscv32`,
-  `build/qemu-system-xtensa`, `x3-flash.bin` (CrossPoint 1.6.5 for the X3,
-  ESP32-C3), `sd.img`. Never modify that checkout.
-- Project docs: `EINK-QEMU.md` and `README.md` in this tree (ported in the
-  scripts/docs layer), and `eink-qemu/` for run scripts.
+- Original file: `git show x4prosim-pre-rebase:<path>`; original fork delta:
+  `git diff v9.2.2 x4prosim-pre-rebase -- <path>`.
+- Upstream changes: `git diff v9.2.2 v11.1.2 -- <path>` and
+  `git log --oneline v9.2.2..v11.1.2 -- <path>`.
+- `docs/devel/` documents the current reset, qdev, memory and translator APIs.
+- The paired review used an old QEMU 9.2.2 build from the reference tag.
+  Reproducing those comparisons requires a separate checkout and build of
+  that tag; no particular local checkout path is required.
+- Current project instructions: `EINK-QEMU.md`, `README.md` and the run
+  scripts under `eink-qemu/`.
 
-## Build (every worktree builds in its own `build/`)
+## Native build used for the port
+
+Each checkout uses its own build directory:
 
 ```sh
 mkdir -p build && cd build
@@ -32,13 +35,13 @@ mkdir -p build && cd build
 ninja qemu-system-xtensa qemu-system-riscv32
 ```
 
-Host: macOS, Apple clang 21, Homebrew Python 3.14 (`/opt/homebrew/bin/python3`),
-ninja 1.13, no system meson (configure uses the bundled wheel). Record any extra
-configure flag or host workaround you needed in `eink-qemu/porting/host.md`.
+The port was built on macOS with Apple clang 21, Homebrew Python 3.14,
+ninja 1.13 and configure's bundled Meson wheel. Host adaptations are recorded
+in [host.md](host.md).
 
-## Layers and ownership
+## Port layers
 
-| layer | owns | notes |
+| Layer | Files | Notes |
 | --- | --- | --- |
 | core | `accel/tcg`, `include/exec`, `include/tcg`, `tcg`, `meson.build`, `crypto`, `python`, `util/oslib-win32.c`, `block/file-win32.c`, machine Kconfig symbols | icount tick-cost hook, `DEF_HELPER_8`, dup_const revert, static slirp |
 | target-xtensa | `target/xtensa` | ESP32 and ESP32-S3 cores, TIE translate, gdb env knobs |
@@ -50,34 +53,21 @@ configure flag or host workaround you needed in `eink-qemu/porting/host.md`.
 | scripts-docs-ci | `eink-qemu/` (except `porting/`), `EINK-QEMU.md`, `README.md`, `test_qemu.sh`, `.github`, `.gitlab-ci.yml` | |
 | machines | `hw/xtensa`, `hw/riscv`, `include/hw/xtensa`, `include/hw/riscv`, `configs/devices`, `pc-bios` | wires everything; boots firmware |
 
-Each layer also owns the `meson.build`, `Kconfig` and `trace-events` of the
-directories it lists. A device layer may add `select FOO` lines for its own
-devices under the machine entries in `hw/xtensa/Kconfig` and `hw/riscv/Kconfig`.
-Do not edit files outside your layer; if you must, say so in your report.
+The layers included their directories' `meson.build`, `Kconfig` and
+`trace-events` entries. The machine symbols `XTENSA_ESP32`, `XTENSA_ESP32S3`,
+`RISCV_ESP32C3` and `RISCV_ESP32C6` were introduced in the core layer;
+individual device symbols are selected by the machines that use them.
 
-The machine config symbols `XTENSA_ESP32`, `XTENSA_ESP32S3`, `RISCV_ESP32C3`,
-`RISCV_ESP32C6` exist from the core layer on (default y), so device sources
-gated on them compile as soon as their meson lines are in. A device gated on
-its own symbol (`CONFIG_BQ27220`, ...) is compiled once a machine selects it;
-to compile-check before that, add the `select` to the machine Kconfig entry.
+## Porting decisions
 
-## Rules
+The port aimed to preserve registers, timings, properties, defaults and the
+command-line interface so firmware could boot unchanged. The layer notes
+record API adaptations and deliberate drops where upstream already supplied
+an implementation.
 
-- Port behaviour faithfully: same registers, same timings, same properties and
-  defaults, same command-line interface (`-machine x3`, `-machine x4pro`,
-  `-global` property names). Firmware must boot unchanged (rule zero).
-- Use the 11.1 idioms (`ResettableClass` or `device_class_set_legacy_reset`,
-  `DEFINE_PROP_*` arrays without end markers, the split `exec/` and
-  `accel/tcg/` headers, `qemu/target-info.h`, ...). Do not re-introduce
-  removed compatibility shims.
-- If an Espressif change is now obsolete upstream (fixed or restructured), drop
-  it and record that in your layer's notes file `eink-qemu/porting/<layer>.md`,
-  one line per decision. Record anything the next layer or reviewer must know.
-- QEMU C style, 4-space indent. Keep the original file header comments.
-- Build must stay warning-free for your files. Commit per layer with the
-  message `eink-qemu: port <layer> to QEMU 11.1` and a body listing what was
-  adapted, with `Ported-from: x4prosim-pre-rebase` and the original authors
-  credited (`git log --format='%an' v9.2.2..x4prosim-pre-rebase -- <paths>`).
-- Before `worker_done`: `git status` clean, `git diff --stat v11.1.2..HEAD`
-  limited to your paths, and the acceptance command from your task output
-  pasted in the report.
+QEMU 11.1 adaptations include `ResettableClass` and
+`device_class_set_legacy_reset`, `DEFINE_PROP_*` arrays without end markers,
+the split `exec/` and `accel/tcg/` headers, and `qemu/target-info.h`. Port
+commits record `Ported-from: x4prosim-pre-rebase` and credit the original
+authors. The review contains the per-file accounting, build evidence and
+behavioral checks, including their limits.

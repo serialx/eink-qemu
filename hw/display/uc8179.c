@@ -49,8 +49,8 @@
  * Shown lightness is linear in position (L* from black to white), which puts
  * the vendor gray LUT's levels at even steps.
  * UC8279-68 maps gates 120..599 to the visible panel and honors TRES and
- * partial RAM addressing. Timing is fitted only at the observed PLL=0x0e;
- * other PLL values are recorded in traces but do not scale the clock.
+ * partial RAM addressing. Register timing uses measured PLL=0x0d/0x0e/0x0f
+ * profiles; other values use the 0x0e baseline. OTP has its own timing state.
  * Power commands assert BUSY. Booster, VCOM and temperature settings are
  * accepted without electrical effects. Optical parameters remain approximate.
  *
