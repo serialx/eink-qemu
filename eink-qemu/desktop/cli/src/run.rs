@@ -211,7 +211,7 @@ pub async fn execute(firmware: &Path, args: &RunArgs, dir: PathBuf, side: Option
     let ok = runner.failed.is_none() && !was_interrupted && !emulator_exited;
     let end = finish(&mut runner, &session, ok, started, was_interrupted).await;
     // The end record itself, or the files before it, may not have been written.
-    let ok = ok && runner.record_error.is_none();
+    let ok = ok && runner.lost_record().is_none();
     let code = if was_interrupted { EXIT_INTERRUPTED } else if ok { 0 } else { EXIT_FAIL };
     Outcome { code, dir, end }
 }
@@ -252,7 +252,7 @@ pub async fn finish(runner: &mut Runner, session: &Arc<eink_core::session::Sessi
     });
     runner.emit(&end);
     if ok {
-        if let Some(error) = runner.record_error.clone() {
+        if let Some(error) = runner.lost_record() {
             runner.emit(&json!({"type": "error", "stage": "record", "error": error}));
         }
     }

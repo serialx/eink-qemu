@@ -424,6 +424,11 @@ impl Runner {
         (self.sink)(record);
     }
 
+    /// The first failure to write run.jsonl, log.txt or console.jsonl, if any.
+    pub fn lost_record(&self) -> Option<String> {
+        self.record_error.clone().or_else(|| self.events.write_error())
+    }
+
     fn note_record_error(&mut self, written: std::io::Result<()>) {
         if let Err(e) = written {
             let path = self.opts.dir.join("run.jsonl");
@@ -454,8 +459,8 @@ impl Runner {
             return false;
         }
         // Steps that passed but could not be recorded do not make a passed run.
-        if let Some(error) = self.record_error.clone() {
-            self.record_failure("record", "(writing run.jsonl)", &[], Instant::now(), Failure::new(error)).await;
+        if let Some(error) = self.lost_record() {
+            self.record_failure("record", "(writing the run directory)", &[], Instant::now(), Failure::new(error)).await;
             return false;
         }
         true

@@ -7,7 +7,7 @@ use crate::session::{Events, SessionInfo};
 use serde_json::json;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -32,6 +32,9 @@ pub struct RunEvents {
     screen: Mutex<ScreenState>,
     state: Mutex<Option<SessionInfo>>,
     echo: bool,
+    dir: PathBuf,
+    /// The first failure to write log.txt or console.jsonl.
+    write_error: Mutex<Option<String>>,
 }
 
 impl RunEvents {
@@ -48,7 +51,23 @@ impl RunEvents {
             screen: Mutex::default(),
             state: Mutex::default(),
             echo,
+            dir: dir.to_path_buf(),
+            write_error: Mutex::default(),
         })
+    }
+
+    /// The first failure to write the log files, if any: the saved
+    /// firmware log is incomplete.
+    pub fn write_error(&self) -> Option<String> {
+        self.write_error.lock().unwrap().clone()
+    }
+
+    fn note_write(&self, written: std::io::Result<()>) {
+        if let Err(e) = written {
+            self.write_error.lock().unwrap().get_or_insert_with(|| {
+                format!("cannot write log.txt or console.jsonl in {}: {e}; the saved firmware log is incomplete", self.dir.display())
+            });
+        }
     }
 
     /// Host seconds since the run started.
@@ -84,8 +103,8 @@ impl RunEvents {
     /// Flush the log files (they are flushed after every batch anyway).
     pub fn flush(&self) {
         if let Some((log, jsonl)) = self.files.lock().unwrap().as_mut() {
-            let _ = log.flush();
-            let _ = jsonl.flush();
+            self.note_write(log.flush());
+            self.note_write(jsonl.flush());
         }
     }
 }
@@ -101,11 +120,11 @@ impl Events for RunEvents {
             let mut files = self.files.lock().unwrap();
             if let Some((log, jsonl)) = files.as_mut() {
                 for line in &batch {
-                    let _ = writeln!(log, "{line}");
-                    let _ = writeln!(jsonl, "{}", json!({"t": (t * 1000.0).round() / 1000.0, "line": line}));
+                    self.note_write(writeln!(log, "{line}"));
+                    self.note_write(writeln!(jsonl, "{}", json!({"t": (t * 1000.0).round() / 1000.0, "line": line})));
                 }
-                let _ = log.flush();
-                let _ = jsonl.flush();
+                self.note_write(log.flush());
+                self.note_write(jsonl.flush());
             }
         }
         if self.echo {
@@ -124,5 +143,26 @@ impl Events for RunEvents {
         screen.updates += 1;
         screen.first_update.get_or_insert(now);
         screen.last_update = Some(now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_log_write_is_kept_and_the_line_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = RunEvents::new(dir.path(), false).unwrap();
+        events.logs(vec!["I (10) boot: first".into()]);
+        assert_eq!(events.write_error(), None);
+        // Files that cannot be written, as on a full disk.
+        let read_only = || BufWriter::new(File::open(dir.path().join("log.txt")).unwrap());
+        *events.files.lock().unwrap() = Some((read_only(), read_only()));
+        events.logs(vec!["I (20) boot: second".into()]);
+        let error = events.write_error().expect("the failed write");
+        assert!(error.contains("the saved firmware log is incomplete"), "{error}");
+        // The run still sees every line.
+        assert_eq!(events.line_count(), 2);
     }
 }
