@@ -71,7 +71,9 @@ device and ELF it last used, so `.pio/build/default` comes back as an X3 and
 (the same name with `.elf`, or `firmware.elf`, as PlatformIO and ESP-IDF
 write) is taken up when its app descriptor shows it built that firmware; one
 from another build is left out and the card says so. Wi-Fi, Ghosting and Turbo
-are the icon toggles beside Start; their tips say what each does.
+are the icon toggles beside Start; their tips say what each does. Ghosting
+appears only for X3 and X4 Pro; its saved preference is kept when using X4
+or Picco.
 
 These persist in `settings.json`, with the SD card, in the app's config
 directory. Theme and zoom stay in the WebView's storage, as on the page, with

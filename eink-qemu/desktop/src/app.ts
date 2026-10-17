@@ -7,7 +7,7 @@ import { choose, confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
 import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
 import { Readiness } from './readiness';
-import { attachSetup, closeSetup, paintSetup } from './setup';
+import { attachSetup, closeSetup, hasGhosting, paintSetup } from './setup';
 import { AppError, type CardInfo, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -155,7 +155,8 @@ async function start() {
     // The session events say how the start went; the result only adds
     // what an event may not have delivered yet.
     onSession(await api.start(flash, {
-      machine, panel: settings.panel, wifi: settings.wifi, turbo: settings.turbo, ghosting: settings.ghosting,
+      machine, panel: settings.panel, wifi: settings.wifi, turbo: settings.turbo,
+      ghosting: hasGhosting(machine) && settings.ghosting,
     }));
     paintControls();
   } catch (error) {

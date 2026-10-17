@@ -24,6 +24,7 @@ const otherChip: Record<string, string> = {
 };
 const panels: Record<Settings['panel'], string> = { 'uc8279-68': 'UC8279 (0x68, default)', uc8179: 'UC8179' };
 const options: RunOption[] = ['wifi', 'ghosting', 'turbo'];
+export const hasGhosting = (device: Machine | null) => device === 'x3' || device === 'x4pro';
 
 const chip = $<HTMLButtonElement>('flash');
 const card = $('setup-card');
@@ -127,6 +128,7 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
   }).join('');
 
   // The run options.
+  $('ghosting').closest<HTMLElement>('.option')!.hidden = !hasGhosting(device);
   for (const option of options) {
     const on = next?.settings[option] ?? true;
     const toggle = $<HTMLButtonElement>(option);
