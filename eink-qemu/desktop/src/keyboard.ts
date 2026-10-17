@@ -6,6 +6,15 @@ const keyHints: Record<string, string> = {
   Back: 'Esc / Backspace', Confirm: 'Enter', Left: '←', Right: '→', Up: '↑', Down: '↓', Power: 'P', Home: 'Home',
 };
 
+export function forwardKeyboard(event: KeyboardEvent, target: EventTarget) {
+  if (!event.isTrusted) return; // Backend-generated device events go to SDL.
+  const forwarded = new KeyboardEvent(event.type, event);
+  target.dispatchEvent(forwarded);
+  // Even rejected shortcuts must not reach SDL through a second route.
+  event.stopImmediatePropagation();
+  if (forwarded.defaultPrevented) event.preventDefault();
+}
+
 export function keyboardKey(machine: string | null, code: string): string | undefined {
   if (machine === 'x4pro' && (code === 'Escape' || code === 'KeyH')) return 'Home';
   return keyboard[code];

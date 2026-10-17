@@ -9,6 +9,7 @@
    returns it. Explorer operations go to whichever owns it. */
 import type { AttachHandlers, Backend, DropHandlers, FileRef, Screen } from './backend';
 import { firmwareStore, type KeptFirmware } from './firmware-store';
+import { forwardKeyboard } from './keyboard';
 import {
   AppError, type CardInfo, type FirmwareInfo, type MadeCard, type SdListing, type SessionInfo,
   type Settings, type Setup, type StartOptions, type UploadPlan,
@@ -204,14 +205,7 @@ class FrameScreen implements Screen {
     this.el.addEventListener('load', () => {
       // Keys typed after touching the canvas use the page's device mapping too.
       for (const type of ['keydown', 'keyup']) this.el.contentWindow?.addEventListener(type, (event) => {
-        const key = event as KeyboardEvent;
-        if (!key.isTrusted) return; // Backend-generated device events go to SDL.
-        const forwarded = new KeyboardEvent(type, key);
-        this.el.dispatchEvent(forwarded);
-        if (forwarded.defaultPrevented) {
-          key.preventDefault();
-          key.stopImmediatePropagation();
-        }
+        forwardKeyboard(event as KeyboardEvent, this.el);
       }, true);
     });
   }
