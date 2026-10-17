@@ -406,6 +406,13 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           unsigned char ethernet_frame[1518];
           struct mac80211_frame *reply = NULL;
 
+            if (size < 14 + 4) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Wi-Fi short encapsulated action frame\n");
+                g_free(frame);
+                return size;
+            }
+
           //discard packages from others channels
             if ((buf[12] & 0x0F) != esp32_wifi_channel) {
                 g_free(frame);
@@ -425,7 +432,8 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
 
           //action frame
           Esp32_WLAN_init_ap_frame(s, frame);
-          memcpy(frame->data_and_fcs, buf+14, size-14);
+          /* Encapsulation includes FCS; insertion supplies a replacement. */
+          memcpy(frame->data_and_fcs, buf + 14, size - 14 - 4);
           memcpy(frame->destination_address, &buf[0], 6);
           memcpy(frame->source_address, &buf[6], 6);
           memset(frame->bssid_address, 0xff, 6);
@@ -433,7 +441,7 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           frame->frame_control.sub_type= IEEE80211_TYPE_MGT_SUBTYPE_ACTION;
           frame->frame_control.flags=  ((buf[12] & 0xF0) == IEEE80211_ENCAPSULATED_PROTECTED) ? 0x40 : 00;
           frame->duration_id= 0 ;
-          frame->frame_length = IEEE80211_HEADER_SIZE + size - 14;
+          frame->frame_length = IEEE80211_HEADER_SIZE + size - 14 - 4;
           Esp32_WLAN_insert_frame(s, frame);
 
 
@@ -622,6 +630,8 @@ static bool esp32_wlan_frame_valid(const mac80211_frame *frame)
         case IEEE80211_TYPE_MGT_SUBTYPE_AUTHENTICATION:
         case IEEE80211_TYPE_MGT_SUBTYPE_ASSOCIATION_RESP:
             return body >= 6;
+        case IEEE80211_TYPE_MGT_SUBTYPE_ACTION:
+            return body >= 4;
         default:
             break;
         }
