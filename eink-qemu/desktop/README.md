@@ -15,7 +15,8 @@ Build QEMU first ([EINK-QEMU.md](../../EINK-QEMU.md#build-and-run)); in
 development the app runs `build/qemu-system-riscv32` and
 `build/qemu-system-xtensa` from the repository root, or the directory in
 `EINK_QEMU_BIN`. QEMU must include the `eink` display (`ui/eink.c`). Then,
-with Node 22.12+, pnpm 10+ and Rust 1.90+:
+with Node 22.12+, pnpm 10+ and Rust 1.90+ (required by Tauri; the core
+and CLI alone require Rust 1.89+):
 
 ```sh
 cd eink-qemu/desktop
@@ -175,30 +176,49 @@ without raising it.
 
 ## Packaging
 
-The app ships QEMU inside its resource directory and, in a packaged build,
-runs `<resources>/qemu/bin/qemu-system-{riscv32,xtensa}` with
+The app ships the CLI beside its main executable and QEMU inside its
+resource directory. In a packaged build, the app and CLI both
+run `<resources>/qemu/bin/qemu-system-{riscv32,xtensa}` with
 `-L <resources>/qemu/share`. Stage that directory, then build with the config
 fragment that adds it to the bundle:
 
 ```sh
 # from the repository root: build QEMU first (EINK-QEMU.md), then
 cd eink-qemu/desktop
-scripts/bundle-qemu.sh            # writes src-tauri/qemu (about 48 MiB)
+scripts/bundle-qemu.sh            # stages QEMU and builds the release CLI
 pnpm tauri build --config src-tauri/tauri.bundle.conf.json
 ```
 
 `scripts/bundle-qemu.sh` takes the binaries from `<repo>/build`
-(`EINK_QEMU_BUILD` selects another build directory) and produces:
+(`EINK_QEMU_BUILD` selects another build directory), builds the CLI with
+Cargo, and produces the inputs below. `EINK_QEMU_CLI` can select a prebuilt
+CLI instead (CI uses the standalone release binary). Tauri's `externalBin`
+entry installs `binaries/eink-qemu-<target>[.exe]` as `eink-qemu[.exe]`
+beside the app executable and includes it in signing. This keeps development
+builds independent of staged binaries; the entry is in the bundle config.
+
+```text
+src-tauri/binaries/eink-qemu-<target>[.exe]
+```
+
+QEMU resources:
 
 ```
 src-tauri/qemu/
   COPYING                       QEMU's licence (GPL-2.0)
   bin/qemu-system-riscv32       X3, X4 (ESP32-C3)
   bin/qemu-system-xtensa        X4 Pro, Picco (ESP32-S3)
+  plugins/libheaptrace.dylib    heap allocation tracer (.dll on Windows)
   lib/*.dylib                   every non-system library, recursively
   share/esp32c3-rom.bin         mask ROMs found through qemu_find_file()
   share/esp32s3_rev0_rom.bin
 ```
+
+The installed macOS layout is `eink-qemu.app/Contents/MacOS/{eink-qemu-desktop,eink-qemu}`
+and `Contents/Resources/qemu/{bin,lib,share,plugins}`. On Windows both
+executables and `qemu/` are in the installation directory. See the CLI's
+[install instructions](cli/README.md#install) for adding it to PATH without
+administrator rights, or using the standalone release archives.
 
 Library references are rewritten to `@loader_path/../lib` (binaries) and
 `@loader_path` (libraries), absolute rpaths are removed, and every file is
@@ -221,18 +241,20 @@ and `.dmg`.
 ### Windows
 
 The Windows QEMU is a MinGW build: the repository CI's
-`dist-qemu-*-x86_64-w64-mingw32` archives (static), or a cross build such as
+`dist-qemu-*-x86_64-w64-mingw32` archives (dynamic, so plugins can load),
+or a cross build such as
 QEMU's `tests/docker/dockerfiles/fedora-win64-cross.docker` with
 `--target-list=xtensa-softmmu,riscv32-softmmu --enable-pixman --enable-gcrypt
 --enable-slirp`. `scripts/bundle-qemu-windows.sh <install dir>` stages it
-into `src-tauri/qemu` the same way, with the DLLs beside the `.exe` files
+into `src-tauri/qemu` and builds the CLI sidecar, with the DLLs beside
+the QEMU `.exe` files
 (Windows finds them there). It strips debug information and, with
 `llvm-objdump` or `x86_64-w64-mingw32-objdump`, fails if an imported DLL is
 neither bundled nor part of Windows.
 
 On Windows, `pnpm tauri build --config src-tauri/tauri.bundle.conf.json`
 builds the NSIS and MSI installers. From macOS or Linux the NSIS installer
-can be cross-built with `cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
+and CLI can be cross-built with `cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
 (`brew install llvm lld nsis`, `cargo install --locked cargo-xwin`):
 
 ```sh
@@ -241,7 +263,7 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc \
   --bundles nsis --config src-tauri/tauri.bundle.conf.json
 ```
 
-The app links the C runtime statically and needs no Visual C++
+The app and CLI link the C runtime statically and need no Visual C++
 redistributable; the installer fetches WebView2 when Windows lacks it.
 Installers are unsigned, so SmartScreen warns on first run.
 
@@ -256,8 +278,9 @@ Windows yet.
 ### Distribution notes
 
 - **Signing:** ad-hoc signatures run locally but do not pass Gatekeeper on
-  other machines. For a Developer ID build, sign every file in `qemu/bin` and
-  `qemu/lib` with the same identity before `tauri build`. The hardened runtime
+  other machines. For a Developer ID build, sign every file in `qemu/bin`,
+  `qemu/lib` and `qemu/plugins` with the same identity before `tauri build`,
+  and configure that identity for Tauri to sign the app and CLI. The hardened runtime
   needs `com.apple.security.cs.allow-jit`, because TCG generates code into
   `MAP_JIT` memory. HVF is not used, so `com.apple.security.hypervisor` is not
   needed.

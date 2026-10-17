@@ -20,7 +20,62 @@ time). What it knows about particular firmware is data in
 milestones, render times and memory reports, and the stock Xteink
 firmware's boot gate.
 
-## Build and run
+## Install
+
+### From the desktop app
+
+The macOS app and Windows installer include the CLI, QEMU, ROMs and the
+heaptrace plugin. No Cargo installation or environment variables are needed.
+On macOS, with the app in `/Applications` and `~/.local/bin` on your PATH:
+
+```sh
+mkdir -p ~/.local/bin && ln -s /Applications/eink-qemu.app/Contents/MacOS/eink-qemu ~/.local/bin/eink-qemu
+```
+
+The app can also live in `~/Applications`; adjust the symlink accordingly.
+On Windows, add the install directory to PATH for the current PowerShell:
+
+```powershell
+$env:Path += ";$env:LOCALAPPDATA\eink-qemu"
+```
+
+Use the folder selected in the installer if it differs from that default.
+To keep it on PATH, add that directory (containing `eink-qemu.exe` and
+`eink-qemu-desktop.exe`) to your **user** Path in Environment Variables,
+then open a new terminal.
+Neither method needs administrator rights. Keep the CLI inside the app's
+layout so it can find QEMU; `--gui` opens the app beside it.
+
+### From a release archive
+
+Download `eink-qemu-cli-<version>-<platform>.tar.xz` and the matching QEMU
+archives from the same release. CLI platforms are `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-pc-windows-msvc`,
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. QEMU uses
+`x86_64-w64-mingw32` for Windows and drops `unknown-` on Linux.
+Take `xtensa-softmmu` for X4 Pro/Picco, `riscv32-softmmu` for X3/X4, or both.
+Extract all the archives into the same directory; they share this layout:
+
+```text
+qemu/
+  bin/eink-qemu[.exe]
+  bin/qemu-system-{xtensa,riscv32}[.exe]
+  share/qemu/esp*.bin
+  plugins/libheaptrace.{dylib,dll,so}
+```
+
+Put `qemu/bin` on PATH, or invoke the CLI there directly. It finds QEMU,
+ROMs and plugins beside it. The standalone CLI does not include the desktop
+app; `--gui` requires a separate desktop installation or
+`EINK_QEMU_DESKTOP` pointing to its executable. The QEMU archives retain
+their host-library requirements (on macOS, the Homebrew libraries used to
+build QEMU); use the desktop bundle for a self-contained macOS installation.
+
+`--qemu DIR` overrides `EINK_QEMU_BIN`, which overrides automatic discovery.
+`EINK_QEMU_SHARE` overrides the ROM directory passed as `-L`, and
+`EINK_QEMU_PLUGINS` overrides the plugin directory.
+
+### From source
 
 Build QEMU first ([EINK-QEMU.md](../../../EINK-QEMU.md#build-and-run)). The
 tool finds `build/qemu-system-*` in the repository, or takes `--qemu DIR`
@@ -32,7 +87,9 @@ eink-qemu/cli run .pio/build/default ready shot:home
 
 `eink-qemu/cli` builds the tool when its sources changed and runs it. The
 binary is `eink-qemu/desktop/target/debug/eink-qemu` (Rust 1.89 or newer);
-run it directly when the checkout must not be rebuilt.
+run it directly when the checkout must not be rebuilt. The examples below
+use this wrapper; with an installed CLI, replace `eink-qemu/cli` with
+`eink-qemu`.
 
 The firmware can be a PlatformIO or ESP-IDF build directory, a release app
 `.bin`, a merged `.bin`, or a 16 MiB flash image, as `mkflash.py` takes them.
@@ -61,8 +118,9 @@ the `wait-screen` after it is what fails when nothing changes:
 
 ```sh
 eink-qemu/cli run build/ ready touch:240,400 wait-screen shot:next
-``` The firmware log
-comes from USB Serial/JTAG, where ESP-IDF mirrors its console by default;
+```
+
+The firmware log comes from USB Serial/JTAG, where ESP-IDF mirrors its console by default;
 firmware that logs only to UART0 needs `--console uart0`. The emulated
 boards' ROM prints its boot lines only on USB, so on UART0 the log starts
 with the firmware's own lines, and a boot after `reset` counts from the
@@ -440,8 +498,10 @@ deep sleep, which `ready` reports instead of waiting out.
 Heap tab with live maps. The steps run as they would headless and their
 records still come out here, followed by a `steps-done` record when they
 finish. The window stays open after the steps; close it (or send SIGTERM to
-the app) to finish. It needs a built app (`pnpm tauri build --no-bundle` in
-`eink-qemu/desktop`, or the installed app on macOS), or `EINK_QEMU_DESKTOP`.
+the app) to finish. The bundled CLI opens its own desktop app. A standalone
+CLI finds a sibling app executable or `/Applications/eink-qemu.app` on
+macOS; otherwise, set `EINK_QEMU_DESKTOP` to the app executable. From source,
+build it with `pnpm tauri build --no-bundle` in `eink-qemu/desktop`.
 
 ## In a sandbox
 
@@ -470,6 +530,7 @@ than calling it dead.
 | `--sd IMG` | Start from this card; the run uses a copy unless `--sd-in-place` |
 | `--put HOST[=/DIR]` | Copy a file or folder onto the card before boot (repeatable) |
 | `--machine x3\|x4\|x4pro\|picco` | The board, when the chip does not decide it |
+| `--panel uc8279-68\|uc8179` | X4 Pro display panel (default `uc8279-68`) |
 | `--partitions CSV\|BIN` | The firmware's partition table, for an app `.bin` or a build directory |
 | `--power-hold MS` | Hold Power this long at a cold boot (default 1500; stock Xteink firmware: 3000) |
 | `--console usb\|uart0` | Where the firmware log comes from (USB Serial/JTAG by default) |
