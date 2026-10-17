@@ -9,6 +9,7 @@
 //! CrossPoint's (eink-qemu/profiles/crosspoint.json). X4 Pro .xota updates
 //! are composed by the desktop app and the browser page only.
 
+use crate::firmware::Chip;
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +28,7 @@ pub struct Flash {
     pub image: Vec<u8>,
     /// The ESP chip in the image's header: 5 (ESP32-C3) or 9 (ESP32-S3).
     pub chip: u16,
-    /// The board it runs on: the requested one, else the chip's default.
+    /// The board it runs on: requested, hinted by the filename, or the chip's default.
     pub machine: String,
     /// The app image the flash was composed from, for matching an ELF.
     pub app: Option<PathBuf>,
@@ -41,11 +42,7 @@ pub struct Flash {
 
 /// The boards that take a chip, default first.
 pub fn machines(chip: u16) -> &'static [&'static str] {
-    match chip {
-        5 => &["x3", "x4"],
-        9 => &["x4pro", "picco"],
-        _ => &[],
-    }
+    Chip::from_id(chip).map_or(&[], Chip::devices)
 }
 
 fn chip_name(chip: u16) -> &'static str {
@@ -489,8 +486,8 @@ fn build_files(dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
 }
 
 /// Compose the emulator's flash from `source`: an app or merged .bin, a
-/// build directory, or a 16 MiB image. `machine` picks the board (needed
-/// for the X4 and the Picco, whose chips the X3 and X4 Pro share).
+/// build directory, or a 16 MiB image. `machine` overrides the filename
+/// hint and the chip's default board.
 pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String> {
     make_flash_with(source, machine, None)
 }
@@ -498,7 +495,7 @@ pub fn make_flash(source: &Path, machine: Option<&str>) -> Result<Flash, String>
 /// `make_flash` with a partition table (CSV or binary) for an app or build
 /// directory instead of the bundled or the build's own.
 pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<&Path>) -> Result<Flash, String> {
-    let pick = |chip: u16| machine.map(str::to_string).unwrap_or_else(|| machines(chip)[0].to_string());
+    let pick = |chip: u16, path: &Path| machine.unwrap_or_else(|| Chip::from_id(chip).unwrap().device(path, None)).to_string();
     let given = partitions.map(read_partition_file).transpose()?;
     let given_name = || partitions.map(|p| format!("from {}", p.display())).unwrap_or_default();
     if source.is_dir() {
@@ -509,8 +506,9 @@ pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<
             Some(table) => (table, given_name()),
             None => (read(&table_path)?, format!("the build's {}", table_path.file_name().unwrap_or_default().to_string_lossy())),
         };
-        let (image, chip, nvs_seed) = compose(&app, &boot, &table, machine)?;
-        return Ok(Flash { image, chip, machine: pick(chip), app: Some(app_path), kind: "build", partitions, nvs_seed });
+        let board = pick(detect_chip(&app, machine)?, &app_path);
+        let (image, chip, nvs_seed) = compose(&app, &boot, &table, Some(&board))?;
+        return Ok(Flash { image, chip, machine: board, app: Some(app_path), kind: "build", partitions, nvs_seed });
     }
     let data = std::fs::read(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
     if data.starts_with(b"XOTA") {
@@ -527,7 +525,7 @@ pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<
             Some(_) => detect_chip(&data, machine)?,
             None => detect_chip(&data, None).unwrap_or(9),
         };
-        return Ok(Flash { image: data, chip, machine: pick(chip), app: None, kind: "dump", partitions: "the dump's own".into(), nvs_seed: None });
+        return Ok(Flash { image: data, chip, machine: pick(chip, source), app: None, kind: "dump", partitions: "the dump's own".into(), nvs_seed: None });
     }
     let chip = detect_chip(&data, machine)?;
     if data.len() > TABLE_OFFSET + 2 && data[TABLE_OFFSET..TABLE_OFFSET + 2] == [0xAA, 0x50] {
@@ -547,9 +545,11 @@ pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<
         }
         let mut image = data;
         image.resize(FLASH_SIZE, 0xFF);
-        return Ok(Flash { image, chip, machine: pick(chip), app: None, kind: "merged", partitions: "the image's own".into(), nvs_seed: None });
+        return Ok(Flash { image, chip, machine: pick(chip, source), app: None, kind: "merged", partitions: "the image's own".into(), nvs_seed: None });
     }
     validate_app(&data)?;
+    let board = pick(chip, source);
+    let machine = Some(board.as_str());
     let boot = if chip == 5 { BOOT_C3 } else { BOOT_S3 };
     let (table, partitions) = match given {
         Some(table) => (table, given_name()),
@@ -557,7 +557,7 @@ pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<
         None => (partition_table(PARTITIONS)?, "Arduino-ESP32's 16 MB default (bundled)".into()),
     };
     let (image, chip, nvs_seed) = compose(&data, boot, &table, machine)?;
-    Ok(Flash { image, chip, machine: pick(chip), app: Some(source.to_path_buf()), kind: "app", partitions, nvs_seed })
+    Ok(Flash { image, chip, machine: board, app: Some(source.to_path_buf()), kind: "app", partitions, nvs_seed })
 }
 
 /// Check an ESP application image the way the ROM loader would: every
@@ -645,6 +645,26 @@ mod tests {
         std::fs::write(&path, &dump).unwrap();
         assert!(make_flash(&path, Some("x4pro")).is_err());
         assert_eq!(make_flash(&path, None).unwrap().machine, "x3");
+    }
+
+    #[test]
+    fn filename_hint_applies_before_composition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crosspoint-x4.bin");
+        std::fs::write(&path, crosspoint_app()).unwrap();
+        let x4 = make_flash(&path, None).unwrap();
+        assert_eq!(x4.machine, "x4");
+        assert!(x4.nvs_seed.is_none());
+        let x3 = make_flash(&path, Some("x3")).unwrap();
+        assert_eq!(x3.machine, "x3");
+        assert!(x3.nvs_seed.is_some());
+
+        let path = dir.path().join("firmware-picco.bin");
+        let app = test_app(9);
+        std::fs::write(&path, &app).unwrap();
+        let picco = make_flash(&path, None).unwrap();
+        assert_eq!(picco.machine, "picco");
+        assert_eq!(&picco.image[0xe0000..0xe0000 + app.len()], app);
     }
 
     #[test]

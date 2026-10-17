@@ -354,8 +354,8 @@ async fn setup(app: &App, detect: bool) -> Result<Setup, AppError> {
 }
 
 /// Make `path` the firmware. Its device is the one it ran on before, else
-/// one that takes its chip; its ELF is the one beside it that built it, else
-/// the one chosen for it before.
+/// its filename hint or chip default; its ELF is the one beside it that
+/// built it, else the one chosen for it before.
 async fn choose_firmware(app: &App, path: PathBuf) -> Result<Setup, AppError> {
     let image = read_image(&path).await?;
     let chip = firmware::chip(&path, &image);
@@ -363,15 +363,11 @@ async fn choose_firmware(app: &App, path: PathBuf) -> Result<Setup, AppError> {
     let found_path = found.as_ref().map(|(p, _)| p.clone());
     let settings = app.update(|settings| {
         let before = settings.recent.iter().find(|r| r.firmware == path).cloned();
-        let fits = |device: &str| chip.map_or(device != "auto", |chip| chip.devices().contains(&device));
-        if let Some(device) = before.as_ref().map(|r| r.device.clone()).filter(|d| fits(d)) {
-            settings.device = device;
-        } else if !fits(&settings.device) {
-            if let Some(chip) = chip {
-                // The device last used with this chip, else its default.
-                settings.device = settings.recent.iter().map(|r| r.device.as_str()).find(|d| chip.devices().contains(d))
-                    .unwrap_or(chip.devices()[0]).to_string();
-            }
+        let remembered = before.as_ref().map(|r| r.device.as_str());
+        if let Some(chip) = chip {
+            settings.device = chip.device(&path, remembered).to_string();
+        } else if let Some(device) = remembered.filter(|&d| d != "auto") {
+            settings.device = device.to_string();
         }
         let same = settings.firmware.as_ref() == Some(&path);
         if let Some(elf) = found_path {

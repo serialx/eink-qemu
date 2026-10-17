@@ -19,10 +19,34 @@ pub enum Chip {
 }
 
 impl Chip {
+    pub fn from_id(id: u16) -> Option<Self> {
+        match id {
+            CHIP_C3 => Some(Self::C3),
+            CHIP_S3 => Some(Self::S3),
+            _ => None,
+        }
+    }
+
+    /// A saved choice wins; otherwise only the filename can hint at a board.
+    pub fn device(self, path: &Path, remembered: Option<&str>) -> &'static str {
+        let devices = self.devices();
+        if let Some(device) = devices.iter().find(|&&d| Some(d) == remembered) {
+            return device;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let tokens: Vec<_> = name.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+        let has = |token: &str| tokens.iter().any(|t| t.eq_ignore_ascii_case(token));
+        match self {
+            Self::C3 if has("x4") && !has("x3") => "x4",
+            Self::S3 if has("picco") => "picco",
+            _ => devices[0],
+        }
+    }
+
     /// The devices that run this chip's firmware, the default first.
     pub fn devices(self) -> &'static [&'static str] {
         match self {
-            Chip::C3 => &["x4", "x3"],
+            Chip::C3 => &["x3", "x4"],
             Chip::S3 => &["x4pro", "picco"],
         }
     }
@@ -37,11 +61,7 @@ pub fn chip(path: &Path, image: &[u8]) -> Option<Chip> {
     if image.first() != Some(&0xE9) {
         return None;
     }
-    match u16::from_le_bytes([*image.get(12)?, *image.get(13)?]) {
-        CHIP_C3 => Some(Chip::C3),
-        CHIP_S3 => Some(Chip::S3),
-        _ => None,
-    }
+    Chip::from_id(u16::from_le_bytes([*image.get(12)?, *image.get(13)?]))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +152,31 @@ mod tests {
         image[32..36].copy_from_slice(&0xABCD_5432u32.to_le_bytes());
         image[48..48 + version.len()].copy_from_slice(version.as_bytes());
         image
+    }
+
+    #[test]
+    fn chooses_device_from_filename_or_saved_choice() {
+        for (chip, path, remembered, expected) in [
+            (Chip::C3, "crosspoint-1.6.5-x3.bin", None, "x3"),
+            (Chip::C3, "crosspoint-1.6.5-x4.bin", None, "x4"),
+            (Chip::C3, "crosspoint-1.6.5-x3-x4.bin", None, "x3"),
+            (Chip::C3, "CROSSPOINT_X4.BIN", None, "x4"),
+            (Chip::C3, "crosspoint-x4pro.bin", None, "x3"),
+            (Chip::C3, "/build/x4/firmware.bin", None, "x3"),
+            (Chip::C3, "/build/x3/firmware-x4.bin", None, "x4"),
+            (Chip::C3, "picco.bin", None, "x3"),
+            (Chip::S3, "firmware.bin", None, "x4pro"),
+            (Chip::S3, "firmware-PICCO.bin", None, "picco"),
+            (Chip::S3, "/build/picco/firmware.bin", None, "x4pro"),
+            (Chip::S3, "firmware-x3-x4.bin", None, "x4pro"),
+            (Chip::C3, "x4.bin", Some("x3"), "x3"),
+            (Chip::C3, "x3.bin", Some("x4"), "x4"),
+            (Chip::S3, "picco.bin", Some("x4pro"), "x4pro"),
+            (Chip::C3, "x4.bin", Some("picco"), "x4"),
+            (Chip::C3, "x4.bin", Some("auto"), "x4"),
+        ] {
+            assert_eq!(chip.device(Path::new(path), remembered), expected, "{chip:?} {path} {remembered:?}");
+        }
     }
 
     #[test]

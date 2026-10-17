@@ -42,11 +42,11 @@ test('rejects overlapping and out-of-range partitions', () => {
     assert.throws(() => FlashImage.expandMerged(data), /partition table/);
 });
 
-test('device selection requires a C3 board choice and validates the chip', () => {
+test('device selection defaults C3 to X3 and validates the chip', () => {
     assert.equal(FlashImage.selectMachine(9, 'auto'), 'x4pro');
     assert.equal(FlashImage.selectMachine(5, 'x3'), 'x3');
     assert.equal(FlashImage.selectMachine(5, 'x4'), 'x4');
-    assert.throws(() => FlashImage.selectMachine(5, 'auto'), /X3 or X4/);
+    assert.equal(FlashImage.selectMachine(5, 'auto'), 'x3');
     assert.throws(() => FlashImage.selectMachine(9, 'x4'), /conflicts/);
     assert.throws(() => FlashImage.selectMachine(5, 'x4pro'), /conflicts/);
     assert.throws(() => FlashImage.selectMachine(261, 'x4'), /Unsupported/);

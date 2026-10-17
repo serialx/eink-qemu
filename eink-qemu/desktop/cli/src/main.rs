@@ -183,7 +183,7 @@ pub struct RunArgs {
     /// Copy a host file or folder onto the card before boot: HOST or HOST=/CARD/DIR (default /). Repeatable.
     #[arg(long, value_name = "HOST[=DIR]")]
     pub put: Vec<String>,
-    /// Board: x3, x4, x4pro or picco. Default: from the firmware's chip (ESP32-C3 = x3, ESP32-S3 = x4pro).
+    /// Board: x3, x4, x4pro or picco. Default: filename hint, else the chip's default (ESP32-C3 = x3, ESP32-S3 = x4pro).
     #[arg(long, value_parser = ["x3", "x4", "x4pro", "picco"])]
     pub machine: Option<String>,
     /// X4 Pro display panel: uc8279-68 or uc8179.

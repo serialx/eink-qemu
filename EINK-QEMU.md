@@ -780,9 +780,13 @@ Notes:
 ## Xteink X4 (`-machine x4`, ESP32-C3)
 
 The X4 shares the X3's ESP32-C3, so the chip header cannot tell them apart.
-CLI chip detection defaults a C3 image to `x3`; select the X4 explicitly with
-`X4MACHINE=x4` in the launchers and `--machine x4` in the composer. In the
-browser, choose **X4** or use `?device=x4`; the page remembers the choice.
+The desktop app, browser page, CLI and composer default a C3 image to `x3`.
+The desktop app, browser page and Rust CLI also recognize filename tokens:
+`x4` without `x3` selects X4; both or neither select X3. Tokens ignore case
+and are separated by non-alphanumeric characters; folders and `x4pro` do not
+count as `x4`. A saved choice for that firmware wins over the filename.
+Select X4 explicitly with `X4MACHINE=x4` in the launchers or `--machine x4`
+in the CLI and composer. In the browser, choose **X4** or use `?device=x4`.
 TRMNL's merged firmware `.bin` runs here.
 
 ```sh

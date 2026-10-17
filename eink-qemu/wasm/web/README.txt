@@ -71,10 +71,13 @@ Alternatively put copies of your images in web-dist and open:
   http://127.0.0.1:8000/?flash=flash.bin&sd=sd.img
   http://127.0.0.1:8000/?flash=crosspoint-1.6.5-x3-x4.bin&sd=sd.img
 Query images must be same-origin or provide appropriate CORS/CORP headers.
-The device is remembered between visits. Auto selects X4 Pro for ESP32-S3;
-ESP32-C3 requires an explicit X3 or X4 choice in the firmware card because
-both use the same chip, and the card offers only the devices that take the
-firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to
+Each firmware's device is remembered between visits. New firmware defaults
+to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens, separated by
+non-alphanumeric characters and ignoring case, select X4 with x4 but no x3,
+X3 with x3 but no x4, or Picco with picco on S3. Both x3 and x4, or neither,
+use the C3 default; x4pro is a separate token. Folder names and hints for the
+other chip are ignored. A remembered device wins over the filename hint.
+The firmware card offers only the devices that take the firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to
 select a board in a link; a device/chip mismatch is rejected before boot.
 Wi-Fi, Ghosting and Turbo are remembered too; ?wifi=off, ?ghosting=0 and
 ?turbo=0 override them for one visit.
@@ -175,7 +178,7 @@ been quiet for 5 s (as in the CLI), unless the ROM keeps rebooting it.
 TRMNL X4 acceptance uses the same server and isolated Chrome setup below:
   TRMNL_FIRMWARE=/absolute/path/FW1.8.17.bin \
     node eink-qemu/wasm/web/trmnl-smoke.mjs http://127.0.0.1:8000/
-It verifies C3 ambiguity, chip mismatch rejection, unchanged merged firmware,
+It verifies the C3 default, chip mismatch rejection, unchanged merged firmware,
 480x800 output, Reset, Stop and remembered selection. Optional REFERENCE_PPM
 compares the panel bytes against a native X4 capture with
 `-nic hubport,hubid=0,model=esp32_wifi`. This keeps the radio present without a

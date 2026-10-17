@@ -9,6 +9,7 @@
    returns it. Explorer operations go to whichever owns it. */
 import type { AttachHandlers, Backend, DropHandlers, FileRef, Screen } from './backend';
 import { firmwareStore, type KeptFirmware } from './firmware-store';
+import { deviceOf } from './devices';
 import {
   AppError, type CardInfo, type FirmwareInfo, type MadeCard, type SdListing, type SessionInfo,
   type Settings, type Setup, type StartOptions, type UploadPlan,
@@ -168,6 +169,8 @@ const keptId = (file: File) => `${file.name} · ${file.size} bytes · ${new Date
 async function useFile(file: File, keep = true): Promise<Setup> {
   const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
   const info = { ...describeFirmware(file.name, file.size, head, file.lastModified || null), path: keptId(file) };
+  const remembered = recent.find((r) => r.id === info.path)?.device;
+  settings.device = deviceOf(info.chip, file.name, remembered) ?? 'auto';
   firmware = { source: { kind: 'file', file }, info, bytes: null };
   if (keep) {
     // The list changes now; the copy is kept in the background.
@@ -182,9 +185,6 @@ const setupOf = (): Setup => ({
   firmware: firmware?.info ?? null, elf: null, elfMatches: null, elfSkipped: null,
   recent: recent.map((r) => ({ path: r.id, name: r.name, parent: '', device: r.device, elf: false })),
 });
-/** The devices a chip can be. */
-const devicesOf = (chip: FirmwareInfo['chip']): Machine[] => chip === 'ESP32-C3' ? ['x3', 'x4'] : chip === 'ESP32-S3' ? ['x4pro', 'picco'] : [];
-
 /* The screen: the runtime iframe, which keeps the panel's resolution and is
    scaled as a whole. SDL inside it takes the pointer and the keyboard. */
 class FrameScreen implements Screen {
@@ -599,6 +599,9 @@ export const browser: Backend = {
         const bytes = await fetchBytes(flash);
         const name = flash.split('/').pop() || flash;
         firmware = { source: { kind: 'url', url: flash }, info: describeFirmware(name, bytes.length, bytes.subarray(0, HEAD), null), bytes };
+        if (!params.has('device') || settings.device === 'auto') {
+          settings.device = deviceOf(firmware.info.chip, name) ?? 'auto';
+        }
       } catch (error) { problems.push(`Firmware: ${errorMessage(error)}`); }
     } else if (recent.length) {
       // The firmware last chosen in this browser, ready for Start.
@@ -645,13 +648,7 @@ export const browser: Backend = {
       recent = recent.filter((r) => r.id !== id);
       throw new AppError('ENOENT', 'That firmware is no longer kept in this browser; choose the file again.');
     }
-    const setup = await useFile(file);
-    // The device last used with it, when it suits the chip.
-    if (kept.device !== 'auto' && kept.device !== settings.device && devicesOf(firmware!.info.chip).includes(kept.device)) {
-      await browser.settings({ device: kept.device });
-      return setupOf();
-    }
-    return setup;
+    return useFile(file);
   },
   setup: async () => setupOf(),
   async readFirmware() {
