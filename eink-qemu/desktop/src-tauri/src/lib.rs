@@ -72,6 +72,7 @@ struct App {
     events: Arc<DesktopEvents>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    default_card: PathBuf,
     locks: PathBuf,
     /// Host paths the user chose in a dialog or dropped on the window.
     grants: Mutex<HashSet<PathBuf>>,
@@ -92,6 +93,12 @@ impl App {
         next.save(&self.settings_path)?;
         *settings = next;
         Ok(settings.clone())
+    }
+
+    fn card_info(&self, path: &Path) -> Option<FileInfo> {
+        let mut info = file_info(path)?;
+        info.is_default = card_key(path) == card_key(&self.default_card);
+        Some(info)
     }
 
     fn grant(&self, paths: impl IntoIterator<Item = PathBuf>) {
@@ -117,6 +124,7 @@ struct FileInfo {
     path: String,
     name: String,
     size: u64,
+    is_default: bool,
 }
 
 #[derive(Serialize)]
@@ -143,6 +151,7 @@ fn file_info(path: &Path) -> Option<FileInfo> {
         path: path.to_string_lossy().into_owned(),
         name: path.file_name()?.to_string_lossy().into_owned(),
         size,
+        is_default: false,
     })
 }
 
@@ -175,7 +184,7 @@ fn check_firmware(path: &Path) -> Result<FileInfo, AppError> {
 /// Native dialogs, run from Rust so the WebView never names host paths.
 enum Pick<'a> {
     Open { title: &'a str, filter: Option<(&'a str, &'a [&'a str])> },
-    OpenMany { title: &'a str },
+    OpenMany { title: &'a str, folders: bool },
     Save { title: &'a str, name: &'a str, filter: Option<(&'a str, &'a [&'a str])> },
 }
 
@@ -196,11 +205,13 @@ async fn pick(app: &tauri::AppHandle, pick: Pick<'_>) -> Vec<PathBuf> {
                 let _ = tx.send(one(path));
             });
         }
-        Pick::OpenMany { title } => {
-            builder.set_title(title).pick_files(move |paths| {
+        Pick::OpenMany { title, folders } => {
+            let selected = move |paths: Option<Vec<tauri_plugin_dialog::FilePath>>| {
                 let paths = paths.unwrap_or_default().into_iter().filter_map(|p| p.into_path().ok()).collect();
                 let _ = tx.send(paths);
-            });
+            };
+            if folders { builder.set_title(title).pick_folders(selected); }
+            else { builder.set_title(title).pick_files(selected); }
         }
         Pick::Save { title, name, filter } => {
             builder = builder.set_title(title).set_file_name(name);
@@ -243,7 +254,7 @@ fn attach(
         elf,
         session: app.session.info(),
         firmware,
-        card: app.session.card_path().as_deref().and_then(file_info),
+        card: app.session.card_path().as_deref().and_then(|p| app.card_info(p)),
         settings,
         platform: std::env::consts::OS,
         autostart: std::env::var_os("EINK_QEMU_AUTOSTART").is_some_and(|v| v == "1"),
@@ -502,21 +513,18 @@ async fn use_card(app: &App, card: Card) -> Result<FileInfo, AppError> {
     app.session
         .select_card(card, |path| {
             app.update(|settings| {
-                settings.card = Some(path.to_path_buf());
+                settings.remember_card(path.to_path_buf());
                 Ok(())
             })
             .map(|_| ())
         })
         .await?;
-    file_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
+    app.card_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
 }
 
 /// Open another SD image (native dialog). None when cancelled.
 #[tauri::command]
 async fn card_pick_open(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Option<FileInfo>, AppError> {
-    if app.session.info().state != "idle" {
-        return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
-    }
     let Some(path) = pick(&handle, Pick::Open { title: "Open SD image", filter: Some(("SD image", &["img", "bin"])) })
         .await
         .into_iter()
@@ -526,6 +534,44 @@ async fn card_pick_open(handle: tauri::AppHandle, app: State<'_, App>) -> Result
     };
     let card = open_card(&app.locks, &path)?;
     use_card(&app, card).await.map(Some)
+}
+
+#[tauri::command]
+fn card_recent(app: State<'_, App>) -> Vec<FileInfo> {
+    let current = app.session.card_path();
+    let settings = app.settings.lock().unwrap();
+    let mut cards = vec![FileInfo {
+        path: app.default_card.to_string_lossy().into_owned(), name: "Default card".into(),
+        size: std::fs::metadata(&app.default_card).map(|m| m.len()).unwrap_or(0), is_default: true,
+    }];
+    cards.extend(settings.recent_cards.iter()
+        .filter(|path| current.as_ref().is_none_or(|p| card_key(p) != card_key(path))
+            && card_key(path) != card_key(&app.default_card))
+        .filter_map(|path| app.card_info(path)));
+    cards
+}
+
+#[tauri::command]
+async fn card_use_recent(app: State<'_, App>, path: PathBuf) -> Result<FileInfo, AppError> {
+    let default = card_key(&path) == card_key(&app.default_card);
+    if !default && !app.settings.lock().unwrap().recent_cards.contains(&path) {
+        return Err(AppError::new("EPERM", "That SD card is not in the recent cards."));
+    }
+    if app.session.card_path().is_some_and(|p| card_key(&p) == card_key(&path)) {
+        return app.card_info(&path).ok_or_else(|| AppError::new("ENOENT", "No SD card is open."));
+    }
+    let card = if default {
+        let mut settings = Settings::default();
+        let mut problems = Vec::new();
+        startup_card(&mut settings, app.default_card.parent().unwrap(), &app.locks, &mut problems)
+            .ok_or_else(|| AppError::new("EIO", problems.join(" ")))?
+    } else { open_card(&app.locks, &path)? };
+    use_card(&app, card).await
+}
+
+#[tauri::command]
+async fn card_erase(app: State<'_, App>) -> Result<(), AppError> {
+    app.session.with_card(true, sd::erase).await
 }
 
 /// A card just made or resized: the file, and its size, cluster size and
@@ -578,7 +624,7 @@ async fn card_pick_new(handle: tauri::AppHandle, app: State<'_, App>, size: u64)
         .await?;
     let card = match made.0 {
         Some(lock) => Some(use_card(&app, Card { path: validate_card(&path)?, lock: lock.into() }).await?),
-        None => file_info(&path),
+        None => app.card_info(&path),
     };
     Ok(Some(MadeCard { card, made: made.1 }))
 }
@@ -599,7 +645,7 @@ async fn card_resize(app: State<'_, App>, size: u64) -> Result<MadeCard, AppErro
             Ok(made)
         })
         .await?;
-    Ok(MadeCard { card: app.session.card_path().as_deref().and_then(file_info), made })
+    Ok(MadeCard { card: app.session.card_path().as_deref().and_then(|p| app.card_info(p)), made })
 }
 
 /// Save a copy of the card (native save dialog; the guest is paused while
@@ -644,8 +690,8 @@ async fn sd_list(app: State<'_, App>, path: String) -> Result<sd::SdListing, App
 /// Choose host files to copy onto the card (native dialog). They become
 /// valid sources for sd_plan_upload and sd_upload.
 #[tauri::command]
-async fn sd_pick_sources(handle: tauri::AppHandle, app: State<'_, App>) -> Result<Vec<String>, AppError> {
-    let paths = pick(&handle, Pick::OpenMany { title: "Copy to the SD card" }).await;
+async fn sd_pick_sources(handle: tauri::AppHandle, app: State<'_, App>, folders: bool) -> Result<Vec<String>, AppError> {
+    let paths = pick(&handle, Pick::OpenMany { title: "Copy to the SD card", folders }).await;
     app.grant(paths.iter().cloned());
     Ok(paths.iter().map(|p| p.to_string_lossy().into_owned()).collect())
 }
@@ -873,20 +919,25 @@ fn qemu_paths(app: &tauri::AppHandle) -> QemuPaths {
     QemuPaths { plugins: env_plugins().unwrap_or_else(|| build.join("contrib").join("plugins")), bin: build, share: None }
 }
 
-/// Open the saved card, or the default card when none was chosen. Problems
+/// Open the saved card, or the default when none was chosen or it is missing. Problems
 /// are reported, never fatal: the app opens without a card instead.
 fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &mut Vec<String>) -> Option<Card> {
     let default = data.join("sd.img");
-    // A deleted default card is simply made again.
-    let saved = settings.card.clone().filter(|saved| !(card_key(saved) == card_key(&default) && !saved.exists()));
+    let missing = settings.card.clone().filter(|path| {
+        card_key(path) != card_key(&default)
+            && std::fs::metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    });
+    let saved = settings.card.clone().filter(|path| {
+        missing.is_none() && !(card_key(path) == card_key(&default)
+            && std::fs::metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+    });
     if let Some(saved) = saved {
         return match open_card(locks, &saved) {
-            Ok(card) => Some(card),
+            Ok(card) => { settings.remember_card(card.path.clone()); Some(card) }
             Err(error) => {
                 problems.push(format!(
                     "The SD card {} cannot be used: {} Open another card or make a new one from the card menu.",
-                    saved.display(),
-                    error.message
+                    saved.display(), error.message
                 ));
                 None
             }
@@ -895,7 +946,7 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
     // Reserve the default card before looking at it, so two first launches
     // cannot both create it.
     let opened = reserve(locks, &default).and_then(|mut reservation| {
-        if !default.exists() {
+        if !default.try_exists()? {
             let made = sd::create_card(&default, sd::DEFAULT_CARD).map_err(|error| {
                 AppError::new("EIO", format!("Could not create the default SD card {}: {}", default.display(), error.message))
             })?;
@@ -912,7 +963,10 @@ fn startup_card(settings: &mut Settings, data: &Path, locks: &Path, problems: &m
     });
     match opened {
         Ok(card) => {
-            settings.card = Some(card.path.clone());
+            settings.remember_card(card.path.clone());
+            if let Some(missing) = missing {
+                problems.push(format!("The SD card {} no longer exists. Using the default card {}.", missing.display(), card.path.display()));
+            }
             Some(card)
         }
         Err(error) => {
@@ -1007,6 +1061,7 @@ pub fn run() {
                 events,
                 settings: Mutex::new(settings),
                 settings_path,
+                default_card: data.join("sd.img"),
                 locks,
                 grants: Mutex::default(),
                 problems: Mutex::new(problems),
@@ -1061,6 +1116,9 @@ pub fn run() {
             key,
             touch,
             card_pick_open,
+            card_recent,
+            card_use_recent,
+            card_erase,
             card_pick_new,
             card_pick_copy,
             card_resize,
@@ -1098,4 +1156,49 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+
+    #[test]
+    fn missing_saved_card_falls_back_and_names_both_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.img");
+        let default = dir.path().join("sd.img");
+        let mut settings = Settings { card: Some(missing.clone()), ..Settings::default() };
+        let mut problems = Vec::new();
+        let card = startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems).unwrap();
+        assert_eq!(card.path, card_key(&default));
+        assert_eq!(settings.card.as_ref(), Some(&card.path));
+        assert_eq!(sd::list(&card.path, "/").unwrap().fs_type, "FAT32");
+        assert!(problems.iter().any(|p| p.contains(missing.to_str().unwrap()) && p.contains(default.to_str().unwrap())));
+    }
+
+    #[test]
+    fn existing_invalid_or_locked_card_does_not_fall_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("chosen.img");
+        let locks = dir.path().join("locks");
+        let mut settings = Settings { card: Some(saved.clone()), ..Settings::default() };
+        std::fs::write(&saved, b"invalid").unwrap();
+        let mut problems = Vec::new();
+        assert!(startup_card(&mut settings, dir.path(), &locks, &mut problems).is_none());
+        assert!(!dir.path().join("sd.img").exists());
+        sd::create_blank(&saved).unwrap();
+        let _held = reserve(&locks, &saved).unwrap();
+        assert!(startup_card(&mut settings, dir.path(), &locks, &mut problems).is_none());
+        assert!(!dir.path().join("sd.img").exists());
+        assert_eq!(settings.card, Some(saved));
+    }
+
+    #[test]
+    fn missing_default_is_recreated_without_missing_card_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings { card: Some(dir.path().join("sd.img")), ..Settings::default() };
+        let mut problems = Vec::new();
+        assert!(startup_card(&mut settings, dir.path(), &dir.path().join("locks"), &mut problems).is_some());
+        assert!(problems.is_empty());
+    }
 }

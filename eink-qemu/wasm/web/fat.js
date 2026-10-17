@@ -469,6 +469,57 @@
     }
     freeBytes() { return this.freeClusters * this.clusterSize; }
     free() { return this.freeBytes(); }
+    // Reformat the borrowed image. Build all metadata before clearing any bytes;
+    // callers must discard this Volume afterwards, since its geometry changes.
+    erase() {
+      const size = this.image.length, base = 1024 * 1024;
+      const spc = this.clusterSize / 512, reserved = 32, copies = 2;
+      const sectors = (size - base) / 512;
+      if (size <= base || size % 512 || size / 512 > 0xffffffff || spc > 128) {
+        fail('ENOTSUP', 'The card size and cluster size cannot be formatted as MBR/FAT32');
+      }
+      // Enough FAT entries for every data cluster plus the two reserved entries.
+      const fatSectors = Math.ceil((sectors - reserved + 2 * spc) / (128 * spc + copies));
+      const count = Math.floor((sectors - reserved - copies * fatSectors) / spc);
+      if (count < 65525 || count >= 0x0ffffff5) {
+        fail('ENOTSUP', 'The card is too small or too large for FAT32 with its current cluster size');
+      }
+      const header = new Uint8Array(base + reserved * 512);
+      const view = new DataView(header.buffer);
+      const u16 = (p, n) => view.setUint16(p, n, true);
+      const u32 = (p, n) => view.setUint32(p, n, true);
+      header.set([0, 0xfe, 0xff, 0xff, 0x0c, 0xfe, 0xff, 0xff], 446);
+      u32(454, base / 512); u32(458, sectors); u16(510, 0xaa55);
+      header.set([0xeb, 0x58, 0x90], base);
+      header.set(Array.from('MSWIN4.1', c => c.charCodeAt(0)), base + 3);
+      u16(base + 11, 512); header[base + 13] = spc;
+      u16(base + 14, reserved); header[base + 16] = copies;
+      header[base + 21] = 0xf8;
+      u16(base + 24, 63); u16(base + 26, 255);
+      u32(base + 28, base / 512); u32(base + 32, sectors);
+      u32(base + 36, fatSectors); u32(base + 44, 2);
+      u16(base + 48, 1); u16(base + 50, 6);
+      header[base + 64] = 0x80; header[base + 66] = 0x29;
+      u32(base + 67, 0x45494e4b);
+      header.set(Array.from('NO NAME    FAT32   ', c => c.charCodeAt(0)), base + 71);
+      u16(base + 510, 0xaa55);
+      header.copyWithin(base + 6 * 512, base, base + 512);
+      for (const sector of [1, 7]) {
+        const p = base + sector * 512;
+        u32(p, 0x41615252); u32(p + 484, 0x61417272);
+        u32(p + 488, count - 1); u32(p + 492, 3); u32(p + 508, 0xaa550000);
+      }
+      const fat = new Uint8Array(12), fatView = new DataView(fat.buffer);
+      [0x0ffffff8, 0x0fffffff, 0x0fffffff].forEach((n, i) => fatView.setUint32(i * 4, n, true));
+      try {
+        this.image.fill(0);
+        this.image.set(header);
+        for (let i = 0; i < copies; i++) this.image.set(fat, base + (reserved + i * fatSectors) * 512);
+      } catch (error) {
+        error.changed = true;
+        throw error;
+      }
+    }
   }
   globalThis.FAT = Object.freeze({
     open: image => new Volume(image), FatError,

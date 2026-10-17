@@ -459,13 +459,41 @@ impl Session {
     /// happen under the operations lock, so no start slips in between.
     pub async fn select_card(&self, card: Card, persist: impl FnOnce(&Path) -> Result<(), AppError>) -> Result<(), AppError> {
         let _ops = self.ops.lock().await;
-        if self.info().state != "idle" {
-            return Err(AppError::new("EBUSY", "Stop the emulator before changing the SD card."));
+        match self.info().state {
+            "idle" => {
+                persist(&card.path)?;
+                self.card.lock().unwrap().replace(card);
+                Ok(())
+            }
+            "running" => {
+                let run = self.current().ok_or_else(AppError::busy)?;
+                {
+                    let _gate = run.gate.lock().await;
+                    let _ = run.paused.send(true);
+                }
+                let mut selected = Some(card);
+                let changed: Result<(), AppError> = async {
+                    let card = selected.as_ref().unwrap();
+                    run.qmp.execute("stop", None).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    run.qmp.execute("blockdev-change-medium", Some(json!({
+                        "device": "sd-card", "filename": card.path, "format": "raw"
+                    }))).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    persist(&card.path)?;
+                    self.card.lock().unwrap().replace(selected.take().unwrap());
+                    self.reset_device(&run).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    self.events.sd_reset();
+                    run.qmp.execute("cont", None).await.map_err(|e| AppError::new("EQEMU", e))?;
+                    Ok(())
+                }.await;
+                if let Err(error) = &changed {
+                    // A failed media change may have removed the old medium.
+                    self.finish(&run, Exit { kind: "failed", reason: Some(format!("Changing the SD card failed: {}", error.message)) }).await;
+                }
+                let _ = run.paused.send(false);
+                changed
+            }
+            _ => Err(AppError::busy()),
         }
-        persist(&card.path)?;
-        let previous = self.card.lock().unwrap().replace(card);
-        drop(previous);
-        Ok(())
     }
 
     /// Run `action` while idle with the operations lock held, so no start or
@@ -647,7 +675,7 @@ impl Session {
         }
         args.extend([
             "-drive".into(), format!("file={},if=mtd,format=raw", escape(&flash.to_string_lossy())),
-            "-drive".into(), format!("file={},if=sd,format=raw", escape(&card.to_string_lossy())),
+            "-drive".into(), format!("file={},if=sd,format=raw,id=sd-card", escape(&card.to_string_lossy())),
             "-chardev".into(), "stdio,id=cdc,mux=off".into(),
         ]);
         match options.console.as_deref().unwrap_or("usb") {

@@ -81,7 +81,11 @@ X4 Pro panel restarts it.
 
 The SD card is an image file that QEMU opens directly: `sd.img` in the app's
 data directory unless another card is opened from the card menu, which also
-makes new blank cards and resizes the open one. Cards are sparse files, so the
+makes new blank cards, resizes the open one and lists up to six recent cards,
+newest first. Missing files and the open card are omitted from that list;
+Default card is always offered. Opening another card while the device runs
+pauses it, switches the image and resets it to mount the new card. New cards
+and resizing require stopping the device. Cards are sparse files, so the
 16 GiB card made on first run starts at about 5 MiB on disk and grows as
 files are written; "Save a copy" keeps the copy sparse, but copying the file
 elsewhere by hand may write it out in full. Every card is MBR + FAT32 with the
@@ -89,20 +93,25 @@ stock X3 card's 32 KiB clusters, from 2 GiB (the stock card's 2050 MiB, the
 one for timing comparisons: see the repository README's SD image geometry
 section) to 32 GiB; X3 and X4 Pro firmware reaches Home at the same moment on
 16 GiB as on 2050 MiB. Where the disk cannot hold sparse files, a new card is
-128 MiB with 1 KiB clusters instead, and the app says so. Resizing copies
+128 MiB with 1 KiB clusters instead, and the app says so. An old default card
+of 64 MiB or less shows a note suggesting Resize card…. Erase card… asks for
+confirmation, then formats the open image in place as an empty MBR/FAT32 card,
+keeping its size, cluster size and sparseness. Resizing copies
 every folder and file, with file times, into a new card of the chosen size,
 which takes the old one's place; folder times become the time of the copy. The explorer
 edits the image in Rust with the `fatfs` crate. While the emulator runs, each
 operation pauses the guest; a change resets the device so the firmware mounts
-the card again. Uploads take files from the native dialog, or files and
-folders dropped on the panel; hidden entries and symbolic links in folders
-are skipped. The card's path keeps its file name in view, and the folder
+the card again. Upload and Upload folder use native dialogs to choose files
+or folders. Dropping either on the panel also copies them into the open
+folder. Hidden entries and symbolic links in folders are skipped. The card's path keeps its file name in view, and the folder
 button beside it shows the image in Finder (File Explorer, the file manager).
 A card is used by one app instance at a time; an instance that
-cannot lock its card opens without one and says so. A saved card that is
-missing or invalid, a saved firmware file that is missing, and a settings
-file that cannot be read are reported when the window opens; firmware
-contents are checked at Start.
+cannot lock its card opens without one and says so. If a saved card outside
+the default location no longer exists, the app opens the default card,
+creating it if needed, and reports both paths. Existing cards that are
+invalid, unreadable or locked keep their error. A saved firmware file that
+is missing and a settings file that cannot be read are also reported when
+the window opens; firmware contents are checked at Start.
 
 The output panel's Heap tab maps the running firmware's ESP-IDF 5.x heaps
 block by block: internal DRAM, RTC and PSRAM, each wrapped into rows at a

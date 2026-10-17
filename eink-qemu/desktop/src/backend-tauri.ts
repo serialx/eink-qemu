@@ -114,7 +114,7 @@ function onDisplay(buffer: ArrayBuffer) {
 }
 
 export const tauri: Backend = {
-  can: { heap: true, cardOpen: true, cardNew: true, cardResize: true, cardReveal: true },
+  can: { heap: true, cardOpen: true, cardNew: true, cardResize: true, cardRecent: true, cardSwitchRunning: true, cardReveal: true },
   /** All with the stock card's 32 KiB clusters (sd.rs). */
   cardSizes: [
     { size: 2050 * MiB, label: '2 GiB', note: 'The stock X3 card (2050 MiB): use it to compare timing with a real device' },
@@ -166,13 +166,16 @@ export const tauri: Backend = {
   touch: (x, y, down) => call<void>('touch', { x, y, down }),
   saveScreenshot: (png, name) => call<string | null>('screenshot_save', png, { headers: { 'x-name': name } }),
 
+  recentCards: () => call<CardInfo[]>('card_recent'),
+  useRecentCard: (path) => call<CardInfo>('card_use_recent', { path }),
+  eraseCard: () => call<void>('card_erase'),
   pickOpenCard: () => call<CardInfo | null>('card_pick_open'),
   pickNewCard: (size) => call<MadeCard | null>('card_pick_new', { size }),
   resizeCard: (size) => call<MadeCard>('card_resize', { size }),
   pickCopyCard: () => call<string | null>('card_pick_copy'),
   revealCard: () => call<void>('card_reveal'),
   sdList: (path) => call<SdListing>('sd_list', { path }),
-  sdPickSources: () => call<string[]>('sd_pick_sources'),
+  sdPickSources: (folders = false) => call<string[]>('sd_pick_sources', { folders }),
   sdPlanUpload: (dir, sources) => call<UploadPlan>('sd_plan_upload', { dir, sources }),
   sdUpload: (dir, sources, confirmed) => call<UploadPlan>('sd_upload', { dir, sources, confirmed }),
   sdPickExport: (path) => call<string | null>('sd_pick_export', { path }),

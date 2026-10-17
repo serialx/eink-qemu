@@ -2178,15 +2178,20 @@ fn format_card(file: &File, size: u64, cluster: u32, volume_id: u32, label: [u8;
         .volume_id(volume_id)
         .volume_label(label);
     fatfs::format_volume(slice, options)?;
+    // fatfs can choose a smaller FAT type when the requested geometry cannot
+    // hold FAT32. Refuse that before interpreting FAT32-only boot fields.
+    let geo = geometry(file).map_err(|e| io::Error::other(e.message))?;
+    if geo.kind != FatKind::Fat32 || geo.cluster_size != cluster as u64 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "The card cannot hold FAT32 with its current size and cluster size."));
+    }
     // FSInfo with the real free count (fatfs leaves it unknown, which makes
     // a reader count free clusters through the whole FAT), and its backup
     // after the backup boot sector, as mkfs.fat writes both.
     let mut boot = [0u8; 512];
     read_exact_at(file, &mut boot, PARTITION)?;
     let word = |at: usize| u16::from_le_bytes([boot[at], boot[at + 1]]) as u64;
-    let long = |at: usize| u32::from_le_bytes([boot[at], boot[at + 1], boot[at + 2], boot[at + 3]]) as u64;
-    let (spc, reserved, fats) = (boot[13] as u64, word(14), boot[16] as u64);
-    let clusters = (long(32) - reserved - fats * long(36)) / spc;
+    let clusters = geo.clusters;
     let mut info = [0u8; 512];
     info[0..4].copy_from_slice(&0x4161_5252u32.to_le_bytes());
     info[484..488].copy_from_slice(&0x6141_7272u32.to_le_bytes());
@@ -2233,6 +2238,34 @@ pub fn create_card(dest: &Path, size: u64) -> Result<MadeCard, SdError> {
     let (output, made) = new_card(dest, size, true, VOLUME_ID, NO_NAME)?;
     finish(output, dest)?;
     Ok(made)
+}
+
+/// Empty a card without replacing its file: QEMU may still hold it open.
+/// Prepare and validate the new filesystem before the first destructive write.
+/// Any failure during the in-place copy requires the session to stop.
+pub fn erase(image: &Path) -> Result<(), SdError> {
+    let file = OpenOptions::new().read(true).write(true).open(image).map_err(|e| host(image, e))?;
+    let size = file.metadata().map_err(|e| host(image, e))?.len();
+    let geo = geometry(&file)?;
+    if size <= PARTITION || !size.is_multiple_of(512) || size / 512 > u32::MAX as u64
+        || geo.cluster_size > 128 * 512
+    {
+        return Err(SdError::new("ENOTSUP", "The card's size and cluster size cannot be formatted as MBR/FAT32."));
+    }
+    let output = temporary_beside(image)?;
+    make_sparse(output.as_file());
+    output.as_file().set_len(size).map_err(|e| host(image, e))?;
+    format_card(output.as_file(), size, geo.cluster_size as u32, VOLUME_ID, NO_NAME).map_err(eio)?;
+    // Includes FAT, root directory and FSInfo validation without touching the card.
+    let listing = list(output.path(), "/")?;
+    if listing.fs_type != "FAT32" || !listing.entries.is_empty() {
+        return Err(SdError::new("EIO", "Could not prepare an empty FAT32 card."));
+    }
+    sparse_copy(output.path(), &file).map_err(|e| {
+        let mut error = host(image, e);
+        error.changed = true;
+        error
+    })
 }
 
 /// A small blank card for tests: 64 MiB with 512-byte clusters, not sparse.
@@ -2317,7 +2350,7 @@ pub fn sparse_copy(card: &Path, dest: &File) -> io::Result<()> {
             read_exact_at(&source, &mut buf[..n], at)?;
             for (i, block) in buf[..n].chunks(64 * 1024).enumerate() {
                 if block.iter().any(|&b| b != 0) {
-                    write_all_at(dest, block, at + (i * 64 * 1024) as u64)?;
+                    commit_write(dest, block, at + (i * 64 * 1024) as u64)?;
                 }
             }
             at += n as u64;

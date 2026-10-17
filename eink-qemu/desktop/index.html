@@ -175,8 +175,10 @@
           <button id="sd-reveal" class="icon-button small" type="button" aria-label="Show in Finder" title="Show in Finder" hidden><svg class="icon"><use href="#i-folder"/></svg></button>
         </div>
       </div>
+      <p id="sd-small-card" class="sd-card-note" hidden>This default card is small. Choose Resize card… from the card menu for more space.</p>
       <div class="sd-tools">
         <button id="sd-upload" disabled class="tint" type="button"><svg class="icon"><use href="#i-upload"/></svg>Upload</button>
+        <button id="sd-upload-folder" disabled class="icon-button" type="button" aria-label="Upload folder" title="Upload folder"><svg class="icon"><use href="#i-folder"/></svg></button>
         <button id="sd-mkdir" disabled class="icon-button" type="button" aria-label="New folder" title="New folder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
         <div class="card-choice">
           <button id="sd" class="icon-button" type="button" aria-label="Change SD card" title="Open another SD image or make a blank card" aria-haspopup="menu" aria-expanded="false" aria-controls="card-menu"><svg class="icon"><use href="#i-card"/></svg></button>
@@ -184,6 +186,8 @@
             <button type="button" role="menuitem" data-card="open"><svg class="icon"><use href="#i-card"/></svg>Open SD image…</button>
             <button type="button" role="menuitem" data-card="new"><svg class="icon"><use href="#i-file"/></svg>New blank card…</button>
             <button type="button" role="menuitem" data-card="resize"><svg class="icon"><use href="#i-expand"/></svg>Resize card…</button>
+            <button type="button" role="menuitem" data-card="erase"><svg class="icon"><use href="#i-trash"/></svg>Erase card…</button>
+            <div id="card-recent" class="card-recent" role="group" aria-label="Recent cards" hidden></div>
           </div>
         </div>
         <button id="download" class="icon-button" type="button" aria-label="Save a copy of the SD card" title="Save a copy of the SD card"><svg class="icon"><use href="#i-download"/></svg></button>
