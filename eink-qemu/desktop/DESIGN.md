@@ -183,10 +183,14 @@ and sparse storage so QEMU keeps using the same file. A failure during that
 copy marks the card changed and stops the guest.
 
 `select_card` holds both card reservations while the running guest is paused,
-changes the `sd-card` drive with QMP `blockdev-change-medium`, persists the
-selection and resets before resuming. Each reservation is kept until QEMU
-stops using that image; a failed switch stops the run instead of resuming
-with an uncertain medium. Recent cards use this same path.
+changes the `sd-card` drive with QMP `blockdev-change-medium`, then resets
+and resumes before persisting and committing the selection. A failed switch
+keeps the old selection and stops QEMU with both reservations held. Until
+QEMU confirms its exit, the session stays stopping and refuses card operations;
+only then is the target reservation released. Recent cards use this same path.
+The front end serializes card selection with explorer operations, and the
+backend checks the selected file still has the identity it reserved before
+using it. A file replaced outside the app must be opened again.
 
 While the emulator runs, every operation is bracketed: QMP `stop`, the
 operation, then `system_reset` if it may have changed the card (the firmware

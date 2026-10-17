@@ -482,7 +482,7 @@ function onCard(next: CardInfo | null, changed: boolean) {
   }
   if (changed) {
     sd.cwd = '/';
-    void sdRefresh();
+    return sdRefresh();
   } else sdPaint();
 }
 
@@ -507,24 +507,27 @@ async function cardMenu() {
       });
       return;
     }
-    let chosen: CardInfo | null = null;
-    if (choice?.startsWith('recent:')) chosen = await api.useRecentCard(choice.slice(7));
-    else if (choice === 'open') chosen = await api.pickOpenCard();
-    else if (choice === 'new') {
-      let size = api.cardDefaultSize;
-      if (api.cardSizes.length > 1) {
-        const picked = await choose('New blank card', api.cardSizeNote,
-          api.cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(api.cardDefaultSize), 'Choose where…');
-        if (!picked) return;
-        size = Number(picked);
+    if (!choice) return;
+    await sdRun(async () => {
+      let chosen: CardInfo | null = null;
+      if (choice?.startsWith('recent:')) chosen = await api.useRecentCard(choice.slice(7));
+      else if (choice === 'open') chosen = await api.pickOpenCard();
+      else if (choice === 'new') {
+        let size = api.cardDefaultSize;
+        if (api.cardSizes.length > 1) {
+          const picked = await choose('New blank card', api.cardSizeNote,
+            api.cardSizes.map((c) => ({ value: String(c.size), label: c.label, note: c.note })), String(api.cardDefaultSize), 'Choose where…');
+          if (!picked) return;
+          size = Number(picked);
+        }
+        const made = await api.pickNewCard(size);
+        if (!made) return;
+        chosen = made.card;
+        if (made.made.note) status(made.made.note);
       }
-      const made = await api.pickNewCard(size);
-      if (!made) return;
-      chosen = made.card;
-      if (made.made.note) status(made.made.note);
-    }
-    if (!chosen) return;
-    onCard(chosen, true);
+      if (!chosen) return;
+      await onCard(chosen, true);
+    });
   } catch (error) { sdError(error); }
 }
 

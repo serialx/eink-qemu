@@ -510,6 +510,7 @@ fn touch(app: State<'_, App>, x: f64, y: f64, down: bool) {
 
 async fn use_card(app: &App, card: Card) -> Result<FileInfo, AppError> {
     let path = card.path.clone();
+    let info = app.card_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))?;
     app.session
         .select_card(card, |path| {
             app.update(|settings| {
@@ -519,7 +520,7 @@ async fn use_card(app: &App, card: Card) -> Result<FileInfo, AppError> {
             .map(|_| ())
         })
         .await?;
-    app.card_info(&path).ok_or_else(|| AppError::new("EIO", "Cannot read the SD image."))
+    Ok(info)
 }
 
 /// Open another SD image (native dialog). None when cancelled.
