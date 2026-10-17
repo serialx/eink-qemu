@@ -179,6 +179,27 @@ mod tests {
         assert!(reserve(&locks, &card).is_ok());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_and_normal_paths_share_one_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let locks = dir.path().join("locks");
+        let normal = dunce::canonicalize(dir.path()).unwrap().join("card.img");
+        let verbatim = dir.path().canonicalize().unwrap().join("card.img");
+        assert_ne!(normal, verbatim);
+        assert_eq!(card_key(&normal), card_key(&verbatim));
+        let pending = reserve_path(&locks, &normal).unwrap();
+        assert_eq!(reserve_path(&locks, &verbatim).err().unwrap().code, "EBUSY");
+        drop(pending);
+
+        std::fs::write(&normal, vec![0u8; 1024]).unwrap();
+        let card = open_card(&locks, &verbatim).unwrap();
+        assert_eq!(card.path, normal);
+        assert_eq!(card_key(&verbatim), normal);
+        assert_eq!(open_card(&locks, &normal).err().unwrap().code, "EBUSY");
+        assert_eq!(open_card(&locks, &verbatim).err().unwrap().code, "EBUSY");
+    }
+
     #[test]
     fn hard_links_share_one_owner() {
         let dir = tempfile::tempdir().unwrap();

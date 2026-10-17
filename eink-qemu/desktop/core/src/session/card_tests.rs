@@ -24,7 +24,7 @@ impl Fixture {
     // dropping its connection. Process exit is separate from monitor loss.
     async fn running(fail: Option<&'static str>, disconnect: bool, exits: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
+        let base = dunce::canonicalize(dir.path()).unwrap();
         let old = base.join("old.img");
         let new = base.join("new.img");
         let locks = dir.path().join("locks");
