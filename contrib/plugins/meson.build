@@ -4,6 +4,7 @@ contrib_plugins = [
 'cflow.c',
 'drcov.c',
 'heaptrace.c',
+'iotrace.c',
 'execlog.c',
 'hotblocks.c',
 'hotpages.c',

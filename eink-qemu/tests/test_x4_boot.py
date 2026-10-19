@@ -149,3 +149,61 @@ class X4Panel(unittest.TestCase):
                 actual = {(i % 480, i // 480) for i in range(480 * 800)
                           if pixels[i * 3] == 0x10}
                 self.assertEqual(actual, expected)
+
+    def test_bluetooth_low_power_clock(self):
+        div, source = 0x600C0020, 0x600C0024
+        self.assertEqual(self.read(div), 255)
+        self.assertEqual(self.read(source), 0x02001001)
+        # The controller verifies clock selection and divider by reading back.
+        for bit in [26, 24, 27, 25]:
+            self.write(source, (self.read(source) & 0xFFF000) | (1 << bit))
+            self.assertEqual(self.read(source), 0x1000 | (1 << bit))
+        self.write(div, 40)
+        self.assertEqual(self.read(div), 40)
+        self.write(div, 0xFFFFFFFF)
+        self.write(source, 0xFFFFFFFF)
+        self.assertEqual(self.read(div), 0xFFF)
+        self.assertEqual(self.read(source), 0x1FFFFFFF)
+        self.qmp('system_reset')
+        self.assertEqual(self.read(div), 255)
+        self.assertEqual(self.read(source), 0x02001001)
+
+    def test_bluetooth_exchange_memory(self):
+        # The window at 0x3fc00000 is plain RAM for now, and the mapping
+        # table entries only read back: the model does not translate them,
+        # so this checks the registers exist, not that the controller's heap
+        # buffers become visible to the link layer.
+        for addr, value in [(0x3FC00000, 0xA55A0123),
+                            (0x3FC00100, 0x06040200),
+                            (0x3FC0FFFC, 0x89ABCDEF)]:
+            self.write(addr, value)
+            self.assertEqual(self.read(addr), value)
+        self.write(0x60031204, 0x1000 << 16)
+        self.assertEqual((self.read(0x60031204) >> 18) << 2, 0x1000)
+
+    def test_bluetooth_identity_and_reset_completion(self):
+        control, version = 0x60031000, 0x60031004
+        self.assertEqual(self.read(version), 0x09001B00)
+        self.write(version, 0)
+        self.assertEqual(self.read(version), 0x09001B00)
+        self.write(control, (1 << 31) | 0x100)
+        self.assertEqual(self.read(control), 0x100)
+        self.qmp('system_reset')
+        self.assertEqual(self.read(control), 0)
+        self.assertEqual(self.read(version), 0x09001B00)
+
+    def test_bluetooth_clock_sample(self):
+        coarse, fine = 0x6003101C, 0x60031020
+
+        def sample(expected_coarse, expected_fine):
+            self.write(coarse, 1 << 31)
+            self.assertEqual(self.read(coarse), expected_coarse)
+            self.assertEqual(self.read(fine), expected_fine)
+
+        sample(0, 624)
+        self.command('clock_step 500')
+        sample(0, 623)
+        self.command('clock_step 312000')
+        self.assertEqual(self.read(coarse), 0)
+        self.assertEqual(self.read(fine), 623)
+        sample(1, 624)

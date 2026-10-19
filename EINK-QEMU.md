@@ -664,6 +664,7 @@ the gauge and the SD card readable and writable. Hardware (freeink-sdk
 | IMU | QMI8658 at 0x6B (WHO_AM_I 0x05) | I2C0 | `hw/misc/qmi8658.c`, lying flat, at rest |
 | Sleep | light and deep sleep; deep-sleep wake on GPIO0-5 or the RTC timer | RTC_CNTL | `esp32c3_rtc_cntl.c`: RTC timer, light sleep (timer/GPIO), deep sleep = reset with reason DEEPSLEEP and the wake cause; deep sleep with no wake source = off until a reset; an external reset is POWERON |
 | Wi-Fi | MAC + fake open AP bridged to `-nic user` | n/a | the S3 models at the same bases (`esp32s3_wifi.c`, `esp32s3_ana.c`, `esp32_fe.c`) |
+| Bluetooth | controller comes up, scans find nothing | n/a | `esp32s3_ble.c` at 0x60031000, 64 KiB exchange memory at 0x3fc00000, BT_LPCK clock in `esp32c3_clk.c`; no link layer (below) |
 
 Notes:
 - X3 CPU timing uses `-icount shift=0,sleep=on` (selected by `run.sh` and
@@ -781,7 +782,21 @@ Notes:
   wired for every C3 machine too; `run.sh` adds the NIC like on the X4 Pro. SYSCON's
   first 0x20 bytes are a register stub so the PHY's clock-enable assert passes
   (Settings > Manage Fonts starts Wi-Fi and crashed on it).
-- Not modeled: the frontlight (the X3 has none), USB MSC, flash encryption.
+- Bluetooth: CrossPoint's page turner (C3 builds only; NimBLE over Espressif's
+  `libbtdm_app_flash.a`) enables the controller, which asserts on the SYSTEM
+  BT_LPCK read-back and then drives a RivieraWaves link layer at 0x60031000. Its
+  exchange memory is heap DRAM that the hardware reaches through a mapping table
+  at 0x60031204; the 64 KiB RAM at 0x3fc00000 is a placeholder for the window
+  the ROM reserves there (the controller never touches it, and the model does
+  not translate the table yet). With the clock registers, the register block and
+  the placeholder in place the radio comes up and "Scan for Remotes" runs;
+  nothing answers because the link layer (exchange table, scan and connection
+  events, RWBLE interrupt) is not modeled, so no fake remote exists yet.
+- Not modeled: the frontlight (the X3 has none), USB MSC, flash encryption, the
+  Bluetooth link layer. [eink-qemu/ble/README.md](eink-qemu/ble/README.md) has
+  the traces so far (exchange-memory mapping, control structure, register use)
+  and `contrib/plugins/iotrace.c`, a plugin that logs guest accesses to chosen
+  address ranges with their PC.
 
 ## Xteink X4 (`-machine x4`, ESP32-C3)
 
