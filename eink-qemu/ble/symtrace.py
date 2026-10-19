@@ -10,7 +10,7 @@ import bisect
 import collections
 import sys
 
-from emtab import read_table
+from emtab import read_table, records
 
 MODES = ('runs', 'summary')
 if len(sys.argv) != 4 or sys.argv[3] not in MODES:
@@ -68,19 +68,15 @@ class Runs:
 runs = Runs()
 per = collections.OrderedDict()
 table = read_table(sys.argv[2])
-with open(sys.argv[2]) as f:
-    for seq, ln in enumerate(f):
-        pc, rw, addr, size, val = ln.split()
-        a = int(addr, 16)
-        v = int(val, 16)
-        name = label(table, seq, a)
-        if name is None:
-            continue
-        fn = sym(int(pc, 16))
-        if mode == 'runs':
-            runs.add(fn, '%s%s=%x' % (rw, name, v))
-        else:
-            per.setdefault(fn, collections.Counter())[(rw, name)] += 1
+for seq, pc, rw, a, size, v in records(sys.argv[2]):
+    name = label(table, seq, a)
+    if name is None:
+        continue
+    fn = sym(pc)
+    if mode == 'runs':
+        runs.add(fn, '%s%s=%x' % (rw, name, v))
+    else:
+        per.setdefault(fn, collections.Counter())[(rw, name)] += 1
 if mode == 'runs':
     runs.flush()
 else:

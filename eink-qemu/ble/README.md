@@ -24,7 +24,8 @@ python3 eink-qemu/ble/symtrace.py fw-syms.txt io.txt runs      # accesses in ord
 python3 eink-qemu/ble/symtrace.py fw-syms.txt io.txt summary   # registers per function
 ```
 
-The plugin takes `limit=N` to stop after N lines. `emwins.py` pads each range
+The plugin takes `limit=N` to stop after N lines (the file then ends with a
+`#` line, which the scripts skip). `emwins.py` pads each range
 (here by 0x400 bytes) because the heap addresses drift a little between runs;
 its `emwins.json` is only a record. `symtrace.py` labels register offsets
 (`ble+`), baseband (`bb+`, 0x60011000), interrupt matrix (`intm+`) and exchange

@@ -7,8 +7,9 @@
  *   -plugin libiotrace.so,range=0x60031000-0x60032000,range=0x3fc00000-0x3fc10000[,out=FILE][,limit=N]
  *
  * Lines: <pc> <R|W> <phys addr> <size> <value>. A range is [LO, HI). `limit`
- * stops recording after N lines (default unlimited); the file ends with a
- * line saying so, as it does after a write error.
+ * stops recording after N lines (default unlimited) and ends the file with a
+ * `#` comment line saying so. A write error stops recording and is reported
+ * on stderr.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -91,8 +92,11 @@ static void vcpu_mem(unsigned int cpu_index, qemu_plugin_meminfo_t info,
             fprintf(stderr, "iotrace: write failed: %s\n", strerror(errno));
         } else if (limit && lines >= limit) {
             stopped = true;
-            fprintf(out, "# iotrace: limit of %" PRIu64 " lines reached\n",
-                    limit);
+            n = fprintf(out, "# iotrace: limit of %" PRIu64 " lines reached\n",
+                        limit);
+            if (n < 0) {
+                fprintf(stderr, "iotrace: write failed: %s\n", strerror(errno));
+            }
         }
     }
     g_mutex_unlock(&lock);
@@ -113,6 +117,10 @@ static void vcpu_tb_trans(struct qemu_plugin_tb *tb, void *udata)
 
 static void plugin_exit(void *p)
 {
+    /* A buffered write can fail at the flush, which fclose() may not report. */
+    if (fflush(out) != 0 || ferror(out)) {
+        fprintf(stderr, "iotrace: write failed: %s\n", strerror(errno));
+    }
     if (fclose(out) != 0) {
         fprintf(stderr, "iotrace: close failed: %s\n", strerror(errno));
     }

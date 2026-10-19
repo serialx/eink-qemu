@@ -796,8 +796,10 @@ static void esp32c3_machine_init(MachineState *machine)
                                             sysbus_mmio_get_region(SYS_BUS_DEVICE(d), 0), 1);
 
         /*
-         * Bluetooth link-layer registers and the exchange-memory window the
-         * controller maps its buffers through (same block as the S3's).
+         * Bluetooth link-layer registers (same block as the S3's) and plain
+         * RAM at the exchange-memory window the ROM reserves. The controller
+         * keeps its buffers in heap DRAM and tells the hardware where through
+         * the mapping table at 0x60031204; nothing translates that yet.
          */
         d = qdev_new("misc.esp32s3.ble");
         sysbus_realize_and_unref(SYS_BUS_DEVICE(d), &error_fatal);

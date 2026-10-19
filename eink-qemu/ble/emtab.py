@@ -7,12 +7,15 @@ top of the EM (0xcc00, the 51 KiB of the ROM page table). The enable registers
 span 48 entries, so that many are watched, although the firmware programs 40.
 
 A window's DRAM block is a heap allocation: it is as large as the EM extent of
-its entry (to the next EM base in the table) but no larger than the gap to the
-next-higher block mapped while it is. Both are known only once the whole trace
-has been read, so the table is recorded in a first pass and an access is then
-resolved against the entry that mapped its address at that line of the trace.
+its entry (to the next EM base among the entries in the table at the same
+time) but no larger than the gap to the next-higher block mapped at the same
+time. Both are known only once the whole trace has been read, so the table is
+recorded in a first pass and an access is then resolved against the entry
+that mapped its address at that line of the trace.
+
+A trace line is `<pc> <R|W> <addr> <size> <value>`; lines starting with `#`
+are the plugin's notes (its limit marker) and are skipped.
 """
-import bisect
 
 EMI_BASE = 0x60031204
 EMI_COUNT = 48
@@ -48,17 +51,21 @@ class EmTable:
 
     def finish(self):
         """Turn the writes into epochs with their sizes."""
-        ems = sorted({em for _, _, em, _ in self.writes} | {EM_TOP})
-        spans = []
+        spans = []      # every entry's life: (start, end, em, dram or None)
         for n, (start, idx, em, dram) in enumerate(self.writes):
             end = next((s for s, i, _, _ in self.writes[n + 1:] if i == idx), INF)
-            if dram is not None and em < EM_TOP:
-                spans.append([start, end, em, dram])
+            spans.append((start, end, em, dram))
         self.epochs = []
         for start, end, em, dram in spans:
-            size = ems[bisect.bisect_right(ems, em)] - em
-            for s2, e2, _, d2 in spans:
-                if d2 > dram and s2 < end and start < e2:
+            if dram is None or em >= EM_TOP:
+                continue
+            size = EM_TOP - em
+            for s2, e2, em2, d2 in spans:
+                if not (s2 < end and start < e2):
+                    continue    # not in the table at the same time
+                if em2 > em:
+                    size = min(size, em2 - em)
+                if d2 is not None and d2 > dram:
                     size = min(size, d2 - dram)
             self.epochs.append((start, end, em, dram, size))
         return self
@@ -76,12 +83,28 @@ class EmTable:
                       key=lambda w: (w[1], w[0]))
 
 
+def records(path):
+    """The accesses in an iotrace file as (seq, pc, rw, addr, size, value),
+    seq counting only accesses so both passes agree on it."""
+    with open(path) as f:
+        seq = 0
+        for n, ln in enumerate(f, 1):
+            if ln.startswith('#') or not ln.strip():
+                continue
+            try:
+                pc, rw, addr, size, val = ln.split()
+                yield (seq, int(pc, 16), rw, int(addr, 16), int(size),
+                       int(val, 16))
+            except ValueError:
+                raise SystemExit('%s:%d: not a trace line: %s'
+                                 % (path, n, ln.rstrip()))
+            seq += 1
+
+
 def read_table(path):
     """First pass over an iotrace file."""
     t = EmTable()
-    with open(path) as f:
-        for seq, ln in enumerate(f):
-            pc, rw, addr, size, val = ln.split()
-            if rw == 'W':
-                t.record(seq, int(addr, 16), int(val, 16))
+    for seq, pc, rw, addr, size, val in records(path):
+        if rw == 'W':
+            t.record(seq, addr, val)
     return t.finish()

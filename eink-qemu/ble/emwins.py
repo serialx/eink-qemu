@@ -11,7 +11,12 @@ from emtab import read_table
 
 if len(sys.argv) not in (2, 3):
     sys.exit(__doc__)
-pad = int(sys.argv[2], 0) if len(sys.argv) > 2 else 0
+try:
+    pad = int(sys.argv[2], 0) if len(sys.argv) > 2 else 0
+except ValueError:
+    sys.exit(__doc__)
+if pad < 0:
+    sys.exit('emwins: pad must not be negative')
 wins = read_table(sys.argv[1]).windows()
 if not wins:
     sys.exit('emwins: no EM table writes in %s' % sys.argv[1])
