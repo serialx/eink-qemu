@@ -21,7 +21,7 @@ case "$(uname -s)" in
 esac
 for name in qemu-system-riscv32 qemu-system-xtensa; do
     [ -x "$build/$name" ] || { echo "bundle-qemu.sh: $build/$name is missing; build QEMU first" >&2; exit 1; }
-    case "$("$build/$name" -netdev help)" in
+    case "$("$build/$name" -machine none -netdev help)" in
         *vmnet-bridged*) ;;
         *) echo "bundle-qemu.sh: $name needs --enable-vmnet for bridged Wi-Fi" >&2; exit 1 ;;
     esac

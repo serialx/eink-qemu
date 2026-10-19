@@ -80,3 +80,37 @@ class WifiLauncher(unittest.TestCase):
         result = subprocess.run(['sh', '-c', helper + ' --use-vnet --fd=3 --br=br0'],
                                 capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), ['--use-vnet', '--fd=3', '--br=br0'])
+
+
+class MacBundleWifi(unittest.TestCase):
+    def test_backend_probe_selects_a_machine_and_checks_both_binaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            desktop = root / 'eink-qemu/desktop'
+            scripts = desktop / 'scripts'
+            scripts.mkdir(parents=True)
+            shutil.copyfile(ROOT / 'eink-qemu/desktop/scripts/bundle-qemu.sh', scripts / 'bundle-qemu.sh')
+            build = root / 'build'
+            build.mkdir()
+            uname = build / 'uname'
+            uname.write_text('#!/bin/sh\necho Darwin\n')
+            uname.chmod(0o755)
+            staged = desktop / 'src-tauri/qemu/keep'
+            staged.parent.mkdir(parents=True)
+            staged.write_text('previous bundle')
+            for missing in ('riscv32', 'xtensa'):
+                with self.subTest(missing=missing):
+                    for arch in ('riscv32', 'xtensa'):
+                        binary = build / f'qemu-system-{arch}'
+                        binary.write_text(
+                            '#!/bin/sh\n'
+                            '[ "$*" = "-machine none -netdev help" ] || { echo "No machine specified" >&2; exit 1; }\n'
+                            + ('echo user\n' if arch == missing else 'echo vmnet-bridged\n'))
+                        binary.chmod(0o755)
+                    env = dict(os.environ, PATH=f"{build}{os.pathsep}{os.environ['PATH']}", EINK_QEMU_BUILD=str(build))
+                    result = subprocess.run(['sh', str(scripts / 'bundle-qemu.sh')], env=env,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(f'qemu-system-{missing} needs --enable-vmnet', result.stderr)
+                    self.assertNotIn('No machine specified', result.stderr)
+                    self.assertEqual(staged.read_text(), 'previous bundle')

@@ -147,7 +147,7 @@ privileged helper installation or by running QEMU as root. Use Ethernet for
 this host bridge; an ordinary Wi-Fi station interface cannot be enslaved to it.
 
 **macOS:** Build QEMU with `--enable-vmnet` (enabled in the release build).
-`qemu-system-riscv32 -netdev help` should list `vmnet-bridged`; the Xtensa
+`qemu-system-riscv32 -machine none -netdev help` should list `vmnet-bridged`; the Xtensa
 binary has the same backend. The default interface is `en0`; use
 `networksetup -listallhardwareports` to find another interface and select it
 with `X4BR=en7`, for example. QEMU reports the supported interface names if
