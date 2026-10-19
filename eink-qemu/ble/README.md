@@ -9,32 +9,39 @@ notes are what the traces below established, on CrossPoint `develop` b64d797c
 
 ## Tracing
 
-`contrib/plugins/libiotrace.so` logs every guest access to chosen physical
-ranges with the PC of the instruction:
+`contrib/plugins/iotrace.c` (built as `build/contrib/plugins/libiotrace.so`)
+logs every guest access to chosen physical ranges with the PC of the
+instruction:
 
 ```sh
 eink-qemu/cli run .pio/build/default --machine x3 \
   --qemu-arg=-plugin --qemu-arg=build/contrib/plugins/libiotrace.so,range=0x60031000-0x60032000,range=0x600c2000-0x600c2200,out=io.txt \
   ready ... press:confirm wait:8
 python3 eink-qemu/ble/emwins.py io.txt 0x400     # exchange-memory windows -> emwins.json, range args
-# run again with those ranges added, then:
+# run again with those range args added to the plugin options, then:
 nm -n firmware.elf | grep ' [TtWw] ' > fw-syms.txt
 python3 eink-qemu/ble/symtrace.py fw-syms.txt io.txt runs      # accesses in order, per function
 python3 eink-qemu/ble/symtrace.py fw-syms.txt io.txt summary   # registers per function
 ```
 
-`symtrace.py` labels register offsets (`ble+`), baseband (`bb+`, 0x60011000),
-interrupt matrix (`intm+`) and exchange memory (`em+`, through `emwins.json`
-from the same run; a window counts only once its table entry is written).
+The plugin takes `limit=N` to stop after N lines. `emwins.py` pads each range
+(here by 0x400 bytes) because the heap addresses drift a little between runs;
+its `emwins.json` is only a record. `symtrace.py` labels register offsets
+(`ble+`), baseband (`bb+`, 0x60011000), interrupt matrix (`intm+`) and exchange
+memory (`em+`): it replays the mapping-table writes of the trace it reads, so a
+DRAM block counts as a window only while its table entry maps it. Both share
+`emtab.py`.
 
 ## Exchange memory
 
 The controller never touches the 0x3fc00000 window itself. Its exchange
 memory (EM) is heap DRAM; the hardware reaches it through a mapping table:
 
-- `0x60031204 + 4*i`, i = 0..47 (enable bits in `0x600312c4` for i < 32,
-  `0x600312c8` for 32..47, `0x60031300` beyond): bits [31:18] = EM base
-  offset >> 2, bits [17:0] = DRAM address >> 2, DRAM = 0x3fc00000 + field*4.
+- `0x60031204 + 4*i`: bits [31:18] = EM base offset >> 2, bits [17:0] = DRAM
+  address >> 2, DRAM = 0x3fc00000 + field*4; a zero DRAM field maps nothing.
+  The firmware writes i = 0..39, the last being 0xcc000000 (EM top, unmapped)
+  as the end of the list; the enable registers (`0x600312c4` for i < 32,
+  `0x600312c8` for 32..47) span 48 entries, so the scripts watch that many.
 - Page table in ROM, `em_base_reg_lut` at 0x3ff1f518: 51 entries of 1 KiB EM
   pages, each `{u8 window, u8 pad, u16 base}`; 39 windows cover 51 KiB.
   Window sizes are 1 or 2 KiB; the DRAM block is only as large as needed.

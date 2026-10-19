@@ -4,12 +4,15 @@
  * closed driver talks to a device (register block and the memory it shares
  * with it) before modeling it.
  *
- *   -plugin libiotrace.so,range=0x60031000-0x60032000,range=0x3fc00000-0x3fc10000[,out=FILE]
+ *   -plugin libiotrace.so,range=0x60031000-0x60032000,range=0x3fc00000-0x3fc10000[,out=FILE][,limit=N]
  *
- * Lines: <pc> <R|W> <phys addr> <size> <value>
+ * Lines: <pc> <R|W> <phys addr> <size> <value>. A range is [LO, HI). `limit`
+ * stops recording after N lines (default unlimited); the file ends with a
+ * line saying so, as it does after a write error.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <errno.h>
 #include <glib.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -19,10 +22,17 @@
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-typedef struct { uint64_t lo, hi; } Range;
+typedef struct {
+    uint64_t lo;
+    uint64_t hi;
+} Range;
+
 static GArray *ranges;
 static FILE *out;
 static GMutex lock;
+static uint64_t limit;
+static uint64_t lines;
+static bool stopped;
 
 static bool in_range(uint64_t a)
 {
@@ -40,70 +50,148 @@ static void vcpu_mem(unsigned int cpu_index, qemu_plugin_meminfo_t info,
 {
     struct qemu_plugin_hwaddr *h = qemu_plugin_get_hwaddr(info, vaddr);
     uint64_t addr = h ? qemu_plugin_hwaddr_phys_addr(h) : vaddr;
+    qemu_plugin_mem_value v;
+    char val[33];
+    int n;
 
     if (!in_range(addr)) {
         return;
     }
-    qemu_plugin_mem_value v = qemu_plugin_mem_get_value(info);
-    uint64_t val = v.type == QEMU_PLUGIN_MEM_VALUE_U8 ? v.data.u8 :
-                   v.type == QEMU_PLUGIN_MEM_VALUE_U16 ? v.data.u16 :
-                   v.type == QEMU_PLUGIN_MEM_VALUE_U32 ? v.data.u32 : v.data.u64;
+    v = qemu_plugin_mem_get_value(info);
+    switch (v.type) {
+    case QEMU_PLUGIN_MEM_VALUE_U8:
+        snprintf(val, sizeof(val), "%" PRIx8, v.data.u8);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U16:
+        snprintf(val, sizeof(val), "%" PRIx16, v.data.u16);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U32:
+        snprintf(val, sizeof(val), "%" PRIx32, v.data.u32);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U64:
+        snprintf(val, sizeof(val), "%" PRIx64, v.data.u64);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U128:
+        snprintf(val, sizeof(val), "%016" PRIx64 "%016" PRIx64,
+                 v.data.u128.high, v.data.u128.low);
+        break;
+    default:
+        snprintf(val, sizeof(val), "?");
+        break;
+    }
     g_mutex_lock(&lock);
-    fprintf(out, "%08" PRIx64 " %c %08" PRIx64 " %u %" PRIx64 "\n",
-            (uint64_t)(uintptr_t)udata, qemu_plugin_mem_is_store(info) ? 'W' : 'R',
-            addr, 1u << qemu_plugin_mem_size_shift(info), val);
+    if (!stopped) {
+        n = fprintf(out, "%08" PRIx64 " %c %08" PRIx64 " %u %s\n",
+                    (uint64_t)(uintptr_t)udata,
+                    qemu_plugin_mem_is_store(info) ? 'W' : 'R',
+                    addr, 1u << qemu_plugin_mem_size_shift(info), val);
+        lines++;
+        if (n < 0) {
+            stopped = true;
+            fprintf(stderr, "iotrace: write failed: %s\n", strerror(errno));
+        } else if (limit && lines >= limit) {
+            stopped = true;
+            fprintf(out, "# iotrace: limit of %" PRIu64 " lines reached\n",
+                    limit);
+        }
+    }
     g_mutex_unlock(&lock);
 }
 
 static void vcpu_tb_trans(struct qemu_plugin_tb *tb, void *udata)
 {
     size_t n = qemu_plugin_tb_n_insns(tb);
+
     for (size_t i = 0; i < n; i++) {
         struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);
+        uintptr_t pc = qemu_plugin_insn_vaddr(insn);
+
         qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem, QEMU_PLUGIN_CB_NO_REGS,
-                                         QEMU_PLUGIN_MEM_RW,
-                                         (void *)(uintptr_t)qemu_plugin_insn_vaddr(insn));
+                                         QEMU_PLUGIN_MEM_RW, (void *)pc);
     }
 }
 
 static void plugin_exit(void *p)
 {
-    fclose(out);
+    if (fclose(out) != 0) {
+        fprintf(stderr, "iotrace: close failed: %s\n", strerror(errno));
+    }
+    g_array_free(ranges, TRUE);
+}
+
+/* Parse one unsigned number that takes the whole string. */
+static bool parse_u64(const char *s, uint64_t *v)
+{
+    char *end;
+
+    if (!s || !*s || *s == '-' || *s == '+' || g_ascii_isspace(*s)) {
+        return false;
+    }
+    errno = 0;
+    *v = strtoull(s, &end, 0);
+    return errno == 0 && *end == '\0';
+}
+
+static bool parse_range(const char *s, Range *r)
+{
+    g_auto(GStrv) lh = g_strsplit(s, "-", 2);
+
+    if (!lh[0] || !lh[1] || !parse_u64(lh[0], &r->lo) ||
+        !parse_u64(lh[1], &r->hi) || r->lo >= r->hi) {
+        return false;
+    }
+    return true;
 }
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info, int argc,
                                            char **argv)
 {
-    const char *path = "/tmp/iotrace.txt";
+    g_autofree char *path = g_strdup("/tmp/iotrace.txt");
 
     ranges = g_array_new(FALSE, FALSE, sizeof(Range));
     for (int i = 0; i < argc; i++) {
-        char **kv = g_strsplit(argv[i], "=", 2);
-        if (!strcmp(kv[0], "range") && kv[1]) {
-            char **lh = g_strsplit(kv[1], "-", 2);
-            Range r = { strtoull(lh[0], NULL, 0), lh[1] ? strtoull(lh[1], NULL, 0) : 0 };
+        g_auto(GStrv) kv = g_strsplit(argv[i], "=", 2);
+        const char *key = kv[0];
+        const char *value = kv[0] ? kv[1] : NULL;
+        Range r;
+
+        if (key && value && !strcmp(key, "range")) {
+            if (!parse_range(value, &r)) {
+                fprintf(stderr, "iotrace: bad range '%s', want LO-HI with "
+                        "LO < HI\n", value);
+                goto fail;
+            }
             g_array_append_val(ranges, r);
-            g_strfreev(lh);
-        } else if (!strcmp(kv[0], "out") && kv[1]) {
-            path = g_strdup(kv[1]);
+        } else if (key && value && !strcmp(key, "out")) {
+            g_free(path);
+            path = g_strdup(value);
+        } else if (key && value && !strcmp(key, "limit")) {
+            if (!parse_u64(value, &limit)) {
+                fprintf(stderr, "iotrace: bad limit '%s'\n", value);
+                goto fail;
+            }
         } else {
-            fprintf(stderr, "iotrace: unknown option %s\n", argv[i]);
-            g_strfreev(kv);
-            return -1;
+            fprintf(stderr, "iotrace: unknown option '%s'\n", argv[i]);
+            goto fail;
         }
-        g_strfreev(kv);
     }
     if (!ranges->len) {
         fprintf(stderr, "iotrace: at least one range=LO-HI is required\n");
-        return -1;
+        goto fail;
     }
     out = fopen(path, "w");
     if (!out) {
-        fprintf(stderr, "iotrace: cannot write %s\n", path);
-        return -1;
+        fprintf(stderr, "iotrace: cannot write %s: %s\n", path,
+                strerror(errno));
+        goto fail;
     }
     qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans, NULL);
     qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
     return 0;
+
+fail:
+    g_array_free(ranges, TRUE);
+    ranges = NULL;
+    return -1;
 }

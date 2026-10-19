@@ -164,14 +164,20 @@ class X4Panel(unittest.TestCase):
         self.write(source, 0xFFFFFFFF)
         self.assertEqual(self.read(div), 0xFFF)
         self.assertEqual(self.read(source), 0x1FFFFFFF)
+        self.qmp('system_reset')
+        self.assertEqual(self.read(div), 255)
+        self.assertEqual(self.read(source), 0x02001001)
 
     def test_bluetooth_exchange_memory(self):
+        # The window at 0x3fc00000 is plain RAM for now, and the mapping
+        # table entries only read back: the model does not translate them,
+        # so this checks the registers exist, not that the controller's heap
+        # buffers become visible to the link layer.
         for addr, value in [(0x3FC00000, 0xA55A0123),
                             (0x3FC00100, 0x06040200),
                             (0x3FC0FFFC, 0x89ABCDEF)]:
             self.write(addr, value)
             self.assertEqual(self.read(addr), value)
-        # EMI table entries encode offsets into the exchange-memory bank.
         self.write(0x60031204, 0x1000 << 16)
         self.assertEqual((self.read(0x60031204) >> 18) << 2, 0x1000)
 

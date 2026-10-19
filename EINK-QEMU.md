@@ -784,16 +784,18 @@ Notes:
   (Settings > Manage Fonts starts Wi-Fi and crashed on it).
 - Bluetooth: CrossPoint's page turner (C3 builds only; NimBLE over Espressif's
   `libbtdm_app_flash.a`) enables the controller, which asserts on the SYSTEM
-  BT_LPCK read-back and then drives a RivieraWaves link layer at 0x60031000 with
-  its buffers in an exchange-memory window at 0x3fc00000 (remapped into DRAM by
-  the table at 0x60031204). With the clock registers, the register block and the
-  window in place the radio comes up and "Scan for Remotes" runs; nothing answers
-  because the link layer (exchange table, scan and connection events, RWBLE
-  interrupt) is not modeled, so no fake remote exists yet.
+  BT_LPCK read-back and then drives a RivieraWaves link layer at 0x60031000. Its
+  exchange memory is heap DRAM that the hardware reaches through a mapping table
+  at 0x60031204; the 64 KiB RAM at 0x3fc00000 is a placeholder for the window
+  the ROM reserves there (the controller never touches it, and the model does
+  not translate the table yet). With the clock registers, the register block and
+  the placeholder in place the radio comes up and "Scan for Remotes" runs;
+  nothing answers because the link layer (exchange table, scan and connection
+  events, RWBLE interrupt) is not modeled, so no fake remote exists yet.
 - Not modeled: the frontlight (the X3 has none), USB MSC, flash encryption, the
   Bluetooth link layer. [eink-qemu/ble/README.md](eink-qemu/ble/README.md) has
   the traces so far (exchange-memory mapping, control structure, register use)
-  and `contrib/plugins/libiotrace.so`, which logs guest accesses to chosen
+  and `contrib/plugins/iotrace.c`, a plugin that logs guest accesses to chosen
   address ranges with their PC.
 
 ## Xteink X4 (`-machine x4`, ESP32-C3)
