@@ -791,7 +791,10 @@ Notes:
   because the link layer (exchange table, scan and connection events, RWBLE
   interrupt) is not modeled, so no fake remote exists yet.
 - Not modeled: the frontlight (the X3 has none), USB MSC, flash encryption, the
-  Bluetooth link layer.
+  Bluetooth link layer. [eink-qemu/ble/README.md](eink-qemu/ble/README.md) has
+  the traces so far (exchange-memory mapping, control structure, register use)
+  and `contrib/plugins/libiotrace.so`, which logs guest accesses to chosen
+  address ranges with their PC.
 
 ## Xteink X4 (`-machine x4`, ESP32-C3)
 
