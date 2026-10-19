@@ -3,6 +3,7 @@
 //! stay in the WebView's localStorage, as on the page.
 
 use serde::{Deserialize, Serialize};
+use eink_core::session::WifiMode;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +12,7 @@ pub struct Settings {
     pub device: String,
     pub panel: String,
     pub wifi: bool,
+    pub wifi_mode: String,
     pub ghosting: bool,
     pub turbo: bool,
     pub firmware: Option<PathBuf>,
@@ -41,6 +43,7 @@ impl Default for Settings {
             device: "auto".into(),
             panel: "uc8279-68".into(),
             wifi: true,
+            wifi_mode: WifiMode::default().as_str().into(),
             ghosting: true,
             turbo: true,
             firmware: None,
@@ -60,6 +63,7 @@ pub struct SettingsPatch {
     pub device: Option<String>,
     pub panel: Option<String>,
     pub wifi: Option<bool>,
+    pub wifi_mode: Option<String>,
     pub ghosting: Option<bool>,
     pub turbo: Option<bool>,
 }
@@ -95,6 +99,10 @@ impl Settings {
             problems.push(format!("Unknown X4 Pro panel \"{}\" in the settings; using UC8279 (0x68).", settings.panel));
             settings.panel = "uc8279-68".into();
         }
+        if settings.wifi_mode.parse::<WifiMode>().is_err() {
+            problems.push(format!("Unknown Wi-Fi mode \"{}\" in the settings; using NAT.", settings.wifi_mode));
+            settings.wifi_mode = WifiMode::default().as_str().into();
+        }
         settings
     }
 
@@ -124,6 +132,9 @@ impl Settings {
         }
         if let Some(wifi) = patch.wifi {
             next.wifi = wifi;
+        }
+        if let Some(mode) = patch.wifi_mode {
+            next.wifi_mode = mode.parse::<WifiMode>()?.as_str().into();
         }
         if let Some(ghosting) = patch.ghosting {
             next.ghosting = ghosting;
@@ -156,6 +167,31 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wifi_mode_migrates_persists_and_recovers_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"wifi":false,"firmware":"reader.bin"}"#).unwrap();
+        let mut problems = Vec::new();
+        let mut settings = Settings::load(&path, &mut problems);
+        assert_eq!(settings.wifi_mode, "nat");
+        assert!(!settings.wifi);
+        assert!(problems.is_empty());
+        settings.apply(serde_json::from_str(r#"{"wifiMode":"bridge"}"#).unwrap()).unwrap();
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path, &mut problems).wifi_mode, "bridge");
+        assert!(settings.apply(serde_json::from_str(r#"{"wifi":true,"wifiMode":"typo"}"#).unwrap()).is_err());
+        assert!(!settings.wifi); // Invalid patches must not partially apply.
+        settings.wifi_mode = "typo".into();
+        settings.save(&path).unwrap();
+        let loaded = Settings::load(&path, &mut problems);
+        assert_eq!(loaded.wifi_mode, "nat");
+        assert_eq!(loaded.firmware, Some(PathBuf::from("reader.bin")));
+        assert!(!loaded.wifi);
+        assert_eq!(problems.len(), 1);
+        assert!(!path.with_extension("json.bad").exists());
+    }
 
     #[test]
     fn recent_cards_persist_newest_first_without_duplicates() {

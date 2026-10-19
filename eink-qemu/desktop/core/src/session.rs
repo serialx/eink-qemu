@@ -92,12 +92,40 @@ pub struct SessionInfo {
     pub seq: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WifiMode {
+    #[default]
+    Nat,
+    Bridge,
+}
+
+impl WifiMode {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Nat => "nat", Self::Bridge => "bridge" }
+    }
+}
+
+impl std::str::FromStr for WifiMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "nat" => Ok(Self::Nat),
+            "bridge" => Ok(Self::Bridge),
+            _ => Err(format!("Unknown Wi-Fi mode: {value}; use nat or bridge.")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartOptions {
     pub machine: String,
     pub panel: String,
     pub wifi: bool,
+    #[serde(default)]
+    pub wifi_mode: WifiMode,
     pub turbo: bool,
     pub ghosting: bool,
     /// Whether the panel animates refreshes (X3 and X4 Pro); None keeps
@@ -150,6 +178,42 @@ impl QemuPaths {
     pub fn binary(&self, machine: &str) -> PathBuf {
         let name = if machine == "x3" || machine == "x4" { "qemu-system-riscv32" } else { "qemu-system-xtensa" };
         self.bin.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() })
+    }
+
+    fn wifi_args(&self, mode: WifiMode) -> Vec<String> {
+        if let Ok(net) = std::env::var("X4NET") {
+            return net.split_whitespace().map(String::from).collect();
+        }
+        let bridge = std::env::var("X4BR").ok().filter(|name| !name.is_empty());
+        self.wifi_nic(mode, bridge.as_deref())
+    }
+
+    fn wifi_nic(&self, mode: WifiMode, bridge: Option<&str>) -> Vec<String> {
+        if mode == WifiMode::Nat {
+            return vec!["-nic".into(), "user,model=esp32_wifi".into()];
+        }
+        let nic = if cfg!(target_os = "macos") {
+            format!("vmnet-bridged,ifname={},model=esp32_wifi", escape(bridge.unwrap_or("en0")))
+        } else if cfg!(windows) {
+            // QEMU requires an explicit TAP adapter name on Windows. The host
+            // network bridge must already contain this adapter and the LAN NIC.
+            format!("tap,ifname={},model=esp32_wifi", escape(bridge.unwrap_or("eink-qemu")))
+        } else {
+            let bridge = bridge.unwrap_or("br0");
+            let mut nic = format!("bridge,br={},model=esp32_wifi", escape(bridge));
+            // Build trees keep the helper beside QEMU; installed QEMU locates libexec itself.
+            let helper = self.bin.join("qemu-bridge-helper");
+            if helper.is_file() {
+                let helper = helper.to_string_lossy();
+                // QEMU treats a helper containing spaces/tabs as a shell command.
+                let helper = if helper.contains([' ', '\t']) {
+                    format!("'{}'", helper.replace('\'', "'\\''"))
+                } else { helper.into_owned() };
+                nic.push_str(&format!(",helper={}", escape(&helper)));
+            }
+            nic
+        };
+        vec!["-nic".into(), nic]
     }
 }
 
@@ -737,12 +801,15 @@ impl Session {
             "-chardev".into(), format!("socket,id=qmp,{qmp}"),
             "-object".into(), "monitor-qmp,id=qmp-monitor,chardev=qmp".into(),
             "-display".into(), format!("eink,addr={}", escape(display)),
-            "-nic".into(),
-            if options.wifi { "user,model=esp32_wifi".into() } else { "hubport,hubid=0,model=esp32_wifi".into() },
         ]);
-        if !options.wifi {
+        if options.wifi {
+            args.extend(self.qemu.wifi_args(options.wifi_mode));
+        } else {
             // The radio stays, with no access points to find.
-            args.extend(["-global".into(), "esp32_wifi.access-points=off".into()]);
+            args.extend([
+                "-nic".into(), "hubport,hubid=0,model=esp32_wifi".into(),
+                "-global".into(), "esp32_wifi.access-points=off".into(),
+            ]);
         }
         args.extend(options.extra.iter().cloned());
         Ok(args)
@@ -1382,3 +1449,50 @@ mod path_tests {
 
 #[cfg(test)]
 mod card_tests;
+
+#[cfg(test)]
+mod wifi_tests {
+    use super::*;
+
+    fn old_options() -> StartOptions {
+        serde_json::from_value(json!({
+            "machine": "x3", "panel": "uc8279-68", "wifi": true,
+            "turbo": false, "ghosting": false,
+        })).unwrap()
+    }
+
+    #[test]
+    fn old_launch_requests_keep_nat_and_bridge_is_explicit() {
+        let paths = QemuPaths { bin: "missing-qemu".into(), share: None, plugins: ".".into() };
+        let options = old_options();
+        assert_eq!(options.wifi_mode, WifiMode::Nat);
+        assert_eq!(paths.wifi_nic(options.wifi_mode, Some("unused")), ["-nic", "user,model=esp32_wifi"]);
+        let default = if cfg!(target_os = "macos") { "vmnet-bridged,ifname=en0" }
+            else if cfg!(windows) { "tap,ifname=eink-qemu" } else { "bridge,br=br0" };
+        assert_eq!(paths.wifi_nic(WifiMode::Bridge, None), ["-nic", &format!("{default},model=esp32_wifi")]);
+        let backend = if cfg!(target_os = "macos") { "vmnet-bridged,ifname=" }
+            else if cfg!(windows) { "tap,ifname=" } else { "bridge,br=" };
+        assert_eq!(paths.wifi_nic(WifiMode::Bridge, Some("LAN,2")), ["-nic", &format!("{backend}LAN,,2,model=esp32_wifi")]);
+        let mut value = serde_json::to_value(options).unwrap();
+        value["wifiMode"] = json!("bridge");
+        assert_eq!(serde_json::from_value::<StartOptions>(value.clone()).unwrap().wifi_mode, WifiMode::Bridge);
+        value["wifiMode"] = json!("typo");
+        assert!(serde_json::from_value::<StartOptions>(value).is_err());
+    }
+
+    #[tokio::test]
+    async fn wifi_off_keeps_no_access_points_in_either_mode() {
+        struct Sink;
+        impl Events for Sink {}
+        let session = Session::new(Arc::new(Sink), QemuPaths { bin: ".".into(), share: None, plugins: ".".into() }, None);
+        let mut options = old_options();
+        options.wifi = false;
+        for mode in [WifiMode::Nat, WifiMode::Bridge] {
+            options.wifi_mode = mode;
+            let args = session.args(&options, Path::new("flash"), Path::new("sd"), "port=1", "localhost:2").unwrap();
+            assert_eq!(args.iter().filter(|v| *v == "-nic").count(), 1);
+            assert_eq!(args[args.iter().position(|v| v == "-nic").unwrap() + 1], "hubport,hubid=0,model=esp32_wifi");
+            assert!(args.iter().any(|v| v == "esp32_wifi.access-points=off"));
+        }
+    }
+}

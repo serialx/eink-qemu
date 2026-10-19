@@ -178,11 +178,21 @@ without `--enable-plugins`) the tab says why, and the window shows the heaps
 alone; its timeline then steps through the snapshots Rust keeps, and
 comparing two of them still shows what changed.
 
-Wi-Fi uses QEMU's user network, so the firmware reaches the internet; turning
-it off keeps the radio present without a host connection. Turbo uses the
-overrides from `turbo-args.sh`, like the other launchers, but keeps idle time
-in real time (`-icount sleep=on`): native QEMU would otherwise run a resting
-device through its 10-minute auto-sleep in under a minute at a full CPU core.
+Wi-Fi uses NAT by default on every native platform, without host setup.
+Open the firmware card to switch **Wi-Fi network mode** between **NAT** and
+**Bridged**. The app remembers the choice and applies it at Start when Wi-Fi
+is on. Bridge mode puts the reader directly on your LAN and requires
+[host network setup](../../EINK-QEMU.md#native-wi-fi): Linux bridge `br0`,
+macOS vmnet on `en0`, or Windows TAP adapter `eink-qemu`. The macOS instructions
+include a helper that lets the app run without root.
+`X4BR` selects another bridge interface; `X4NET` replaces the selected mode's
+network arguments. Set these variables in the environment that launches the
+app. Turning Wi-Fi off keeps the radio present without a host connection.
+
+Turbo uses the overrides from `turbo-args.sh`, like the other launchers, but
+keeps idle time in real time (`-icount sleep=on`): native QEMU would otherwise
+run a resting device through its 10-minute auto-sleep in under a minute at a
+full CPU core.
 
 The device keys follow the keyboard press and release: arrows, Enter,
 Esc/Backspace for Back on X3/X4, and P for Power. On the X4 Pro, Esc, H

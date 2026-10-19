@@ -567,6 +567,8 @@ jobs:
         run: node --test eink-qemu/wasm/web/*.test.mjs eink-qemu/tests/*.mjs
       - name: Test reproducible SD images
         run: python3 -m unittest eink-qemu.tests.test_mksd
+      - name: Test native launcher options
+        run: python3 -m unittest eink-qemu.tests.test_panel_launchers eink-qemu.tests.test_wifi_launchers
       - name: Test Wi-Fi asset preparation and packaging
         run: python3 -m unittest discover -s eink-qemu/wasm -p test_wifi_assets.py
       - name: Cache wasm dependencies

@@ -105,6 +105,17 @@
               </div>
               <p id="setup-elf-note" class="setup-note" hidden></p>
             </section>
+            <section id="setup-wifi" class="setup-section" data-only="tauri">
+              <h3 id="setup-wifi-label">Wi-Fi network mode</h3>
+              <div class="segmented" role="radiogroup" aria-labelledby="setup-wifi-label">
+                <button type="button" role="radio" data-wifi-mode="nat">NAT <span class="setup-note">default</span></button>
+                <button type="button" role="radio" data-wifi-mode="bridge">Bridged</button>
+              </div>
+              <p id="setup-wifi-nat" class="setup-note">Internet access without host setup. Applies at Start when Wi-Fi is on.</p>
+              <p id="setup-wifi-bridge" class="setup-note" hidden>Gives the reader an address on your LAN. Requires
+                <a href="https://github.com/serialx/eink-qemu/blob/main/EINK-QEMU.md#native-wi-fi" target="_blank" rel="noopener">host network setup</a>
+                before starting with Wi-Fi on.</p>
+            </section>
             <details id="setup-panel" class="setup-panel">
               <summary><svg class="icon chevron" aria-hidden="true"><use href="#i-chevron"/></svg><span id="setup-panel-label">Display panel</span><span id="setup-panel-value" class="setup-note"></span></summary>
               <div class="segmented" role="radiogroup" aria-labelledby="setup-panel-label">
@@ -124,9 +135,10 @@
             <button id="wifi" class="toggle" type="button" aria-pressed="true" aria-label="Wi-Fi" aria-describedby="wifi-help"><svg class="icon"><use href="#i-wifi"/></svg></button>
             <div id="wifi-help" class="tip" role="tooltip">
               <strong>Wi-Fi <span class="tip-state"></span></strong>
-              <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, <span data-only="tauri">on QEMU's user
-                network, so the firmware reaches the internet.</span><span data-only="browser">whose HTTP and HTTPS downloads
+              <p>Gives the emulated reader an open Wi-Fi network, <b>PICSimLabWifi</b>, <span data-only="tauri">with internet access through NAT by default.
+                Join it from the firmware's own Wi-Fi settings.</span><span data-only="browser">whose HTTP and HTTPS downloads
                 your browser fetches. Join it from the firmware's own Wi-Fi settings.</span></p>
+              <p data-only="tauri">Choose NAT or Bridged in the firmware card. Bridged mode requires host network setup.</p>
               <p data-only="browser">Sites must allow cross-origin downloads, and HTTPS needs firmware that
                 accepts the emulator's local certificate (firmware that checks certificates rejects it). Files this page bundles, such as CrossPoint Reader's
                 font catalog when it was packaged, are served from the page itself: nothing goes through a relay server.</p>

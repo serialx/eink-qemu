@@ -18,6 +18,7 @@ echo DBG
     --enable-plugins \
     --enable-png \
     --enable-slirp \
+    --enable-vmnet \
     --enable-stack-protector \
     --prefix=$PWD/install/qemu \
     --python=python3 \

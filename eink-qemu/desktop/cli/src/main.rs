@@ -252,9 +252,12 @@ pub struct RunArgs {
     /// Animate panel refreshes (X3, X4 Pro); off by default so frames are final images.
     #[arg(long)]
     pub animate: bool,
-    /// Connect the emulated Wi-Fi to the host network (NAT).
+    /// Enable Wi-Fi (NAT by default; no host setup needed).
     #[arg(long)]
     pub wifi: bool,
+    /// Wi-Fi network mode. Bridge requires host setup; X4BR selects its interface.
+    #[arg(long, default_value = "nat", value_name = "nat|bridge", requires = "wifi")]
+    pub wifi_mode: eink_core::session::WifiMode,
     /// Real-time clock start, as YYYY-MM-DDTHH:MM:SS, or `now`. Fixed by default so runs compare pixel for pixel.
     #[arg(long, default_value = "2026-01-01T09:00:00", value_name = "TIME", value_parser = rtc)]
     pub rtc: String,
@@ -378,4 +381,28 @@ fn main() -> ExitCode {
     // Sessions end with the runtime; do not wait for stray tasks.
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     ExitCode::from(code)
+}
+
+#[cfg(test)]
+mod wifi_tests {
+    use super::*;
+    use eink_core::session::WifiMode;
+
+    #[test]
+    fn mode_defaults_to_nat_and_explicit_modes_require_wifi() {
+        for (options, enabled, mode) in [
+            (vec![], false, WifiMode::Nat),
+            (vec!["--wifi"], true, WifiMode::Nat),
+            (vec!["--wifi", "--wifi-mode", "bridge"], true, WifiMode::Bridge),
+            (vec!["--wifi", "--wifi-mode", "nat"], true, WifiMode::Nat),
+        ] {
+            let cli = Cli::try_parse_from(["eink-qemu", "run", "firmware.bin"].into_iter().chain(options)).unwrap();
+            let Command::Run { run, .. } = cli.command else { panic!("run expected") };
+            assert_eq!(run.wifi, enabled);
+            assert_eq!(run.wifi_mode, mode);
+        }
+        for options in [["--wifi-mode", "bridge"], ["--wifi-mode", "nat"], ["--wifi-mode", "typo"]] {
+            assert!(Cli::try_parse_from(["eink-qemu", "run", "firmware.bin"].into_iter().chain(options)).is_err());
+        }
+    }
 }

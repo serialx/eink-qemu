@@ -205,10 +205,13 @@ real X3 and fitted; see [eink-qemu/sdcal](eink-qemu/sdcal/README.md).
 **The X4 and the Picco** are covered in their own sections of
 [EINK-QEMU.md](EINK-QEMU.md), with their peripherals and limits.
 
-**Wi-Fi.** Join `PICSimLabWifi` on the device. By default it sits behind QEMU's
-NAT: the device gets 10.0.2.15, and `curl localhost:8080` reaches its port 80.
-To put it on your LAN with an address from your router, run with `X4BR=br0` on
-a host bridge, set up as described in [EINK-QEMU.md](EINK-QEMU.md).
+**Wi-Fi.** Join `PICSimLabWifi` on the device. `run.sh`, the desktop app and
+the Rust CLI (with `--wifi`) use NAT by default, without host setup.
+`run.sh` also forwards `localhost:8080` to the device's port 80.
+For a device address directly on your LAN, select **Bridged** in the desktop
+firmware card, add `--wifi --wifi-mode bridge` to the CLI, or set
+`X4WIFI_MODE=bridge` for `run.sh`. Bridge mode supports Linux, macOS and
+Windows and requires [host network setup](EINK-QEMU.md#native-wi-fi).
 
 **Ghosting** is off by default in native and Node runs, so screenshots compare
 pixel for pixel. Turn it on with `-global uc8179.ghosting=on` on the X4 Pro or

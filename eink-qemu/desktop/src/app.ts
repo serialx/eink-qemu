@@ -159,7 +159,7 @@ async function start() {
     // The session events say how the start went; the result only adds
     // what an event may not have delivered yet.
     onSession(await api.start(flash, {
-      machine, panel: settings.panel, wifi: settings.wifi, turbo: settings.turbo,
+      machine, panel: settings.panel, wifi: settings.wifi, wifiMode: settings.wifiMode, turbo: settings.turbo,
       ghosting: hasGhosting(machine) && settings.ghosting,
     }));
     paintControls();
@@ -965,6 +965,7 @@ export async function boot(backend: Backend) {
     device: async (device) => { if (await save({ device }) && firmware) void start(); },
     panel: async (panel) => { if (await save({ panel }) && firmware) void start(); },
     option: (option, on) => void save({ [option]: on }),
+    wifiMode: (wifiMode) => void save({ wifiMode }),
     chooseElf: async () => {
       const info = await api.heapPickElf().catch((error) => { fail(errorMessage(error)); return null; });
       if (info) await refreshSetup();

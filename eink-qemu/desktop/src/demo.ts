@@ -214,7 +214,7 @@ function demoSetup() {
   };
   const elfOf = (env: string) => ({ path: `/Users/me/crosspoint/.pio/build/${env}/firmware.elf`, name: 'firmware.elf', size: 88_223_200 });
   let setup: Setup = {
-    settings: { device: 'x4pro', panel: 'uc8279-68', wifi: true, ghosting: true, turbo: true, firmware: builds.x4pro.path,
+    settings: { device: 'x4pro', panel: 'uc8279-68', wifi: true, wifiMode: 'nat', ghosting: true, turbo: true, firmware: builds.x4pro.path,
       card: null, elf: elfOf('x4pro').path, elfAuto: true },
     firmware: builds.x4pro, elf: elfOf('x4pro'), elfMatches: true, elfSkipped: null,
     recent: [
@@ -235,6 +235,7 @@ function demoSetup() {
     device: (device) => settings({ device }),
     panel: (panel) => settings({ panel }),
     option: (option, on) => settings({ [option]: on }),
+    wifiMode: (wifiMode) => settings({ wifiMode }),
     chooseElf: () => paint({ ...setup, elf: elfOf(setup.firmware!.parent), elfMatches: true, settings: { ...setup.settings, elfAuto: false } }),
     forgetElf: () => paint({ ...setup, elf: null, elfMatches: null, settings: { ...setup.settings, elf: null, elfAuto: false } }),
   });
