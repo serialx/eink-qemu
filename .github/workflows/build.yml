@@ -159,6 +159,24 @@ jobs:
           ninja -C build tests/unit/test-win32-sigjump.exe
           ./build/pyvenv/bin/meson test -C build --print-errorlogs test-win32-sigjump
 
+      - name: Verify native network backends and helper
+        run: |
+          if [ "${{ matrix.target }}" = xtensa-softmmu ]; then bin=qemu-system-xtensa; else bin=qemu-system-riscv32; fi
+          case "${{ matrix.platform }}" in
+            *-linux-gnu)
+              # --without-default-features disables tools, including this helper.
+              test -x install/qemu/libexec/qemu-bridge-helper
+              backend=bridge
+              ;;
+            *-apple-darwin) backend=vmnet-bridged ;;
+            *-w64-mingw32) bin="$bin.exe"; backend=tap ;;
+          esac
+          # ARM64 Linux is cross-compiled on an x64 runner.
+          if [ "${{ matrix.platform }}" != aarch64-linux-gnu ]; then
+            install/qemu/bin/$bin -machine none -netdev help > netdev-backends.txt
+            tr -d '\r' < netdev-backends.txt | grep -Fx "$backend"
+          fi
+
       - name: Install the heaptrace plugin (${{ matrix.target }} @ ${{ matrix.platform }})
         run: |
           # eink-qemu: the heap view's allocation tracer (contrib/plugins/heaptrace.c),
