@@ -16,6 +16,7 @@ export interface Settings {
   device: 'auto' | Machine;
   panel: 'uc8279-68' | 'uc8179';
   wifi: boolean;
+  wifiMode: 'nat' | 'bridge';
   ghosting: boolean;
   turbo: boolean;
   firmware: string | null;
@@ -104,7 +105,7 @@ export interface HeapSite { fn: string; loc: string }
     frame outside the allocator, `site` the one the block is attributed to. */
 export interface HeapFrame { addr: number; fn: string; loc: string; inl: { fn: string; loc: string }[]; alloc: boolean; lib: boolean }
 export interface HeapStack { frames: HeapFrame[]; caller: number; site: number }
-export interface StartOptions { machine: Machine; panel: string; wifi: boolean; turbo: boolean; ghosting: boolean }
+export interface StartOptions { machine: Machine; panel: string; wifi: boolean; wifiMode: Settings['wifiMode']; turbo: boolean; ghosting: boolean }
 
 /** Errors from Rust carry a code (fat.js codes, EBUSY, EQEMU, …) and a message. */
 export class AppError extends Error {

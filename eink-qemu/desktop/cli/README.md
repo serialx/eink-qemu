@@ -636,10 +636,21 @@ than calling it dead.
 | `--elf auto\|none\|PATH` | The ELF for heap sites and traces |
 | `--turbo` | Fast peripherals; quicker, not for timing comparisons |
 | `--ghosting`, `--animate` | E-ink ghosting and refresh animation (both off) |
+| `--wifi` | Enable Wi-Fi using NAT without host setup (Wi-Fi is off by default) |
+| `--wifi-mode nat\|bridge` | Network mode with `--wifi` (default `nat`); bridge mode requires host setup |
 | `--input-quiet MS` | The wait for a quiet log, idle panel and idle CPU before input (0 turns it off) |
 | `--echo-log` | Print the firmware log on stderr as it comes |
 | `--gdb PORT` | A GDB server on 127.0.0.1:PORT (`compare` takes it only with `--sequential`) |
 | `--qemu-arg ARG` | Any QEMU argument (repeatable) |
+
+`--wifi --wifi-mode bridge` puts the reader directly on the LAN on Linux,
+macOS and Windows. Complete the
+[host network setup](../../../EINK-QEMU.md#native-wi-fi) first. `X4BR` selects
+another bridge, interface or TAP adapter when bridge mode is selected.
+For NAT with port forwarding, set
+`X4NET='-nic user,model=esp32_wifi,hostfwd=tcp::8080-:80'` to reach the
+device's port 80 at `localhost:8080`. `X4NET` replaces the selected mode's
+network arguments when `--wifi` is enabled.
 
 Stdout carries only records; progress lines go to stderr when it is a
 terminal (or with `--progress`).

@@ -13,6 +13,7 @@ export interface SetupHandlers {
   device(device: Machine): void;
   panel(panel: Settings['panel']): void;
   option(option: RunOption, on: boolean): void;
+  wifiMode(mode: Settings['wifiMode']): void;
   chooseElf(): void;
   forgetElf(): void;
 }
@@ -109,6 +110,18 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
     }
   }
 
+  // Native Wi-Fi mode. The browser build removes this section.
+  const network = $('setup-wifi');
+  if (network) {
+    const mode = next?.settings.wifiMode ?? 'nat';
+    for (const b of network.querySelectorAll<HTMLButtonElement>('[data-wifi-mode]')) {
+      b.setAttribute('aria-checked', String(b.dataset.wifiMode === mode));
+      b.disabled = !idle;
+    }
+    $('setup-wifi-nat').hidden = mode !== 'nat';
+    $('setup-wifi-bridge').hidden = mode !== 'bridge';
+  }
+
   // Recent firmware, the chosen one marked.
   const recent = next?.recent ?? [];
   $('setup-recent-section').hidden = recent.length < 2;
@@ -164,6 +177,12 @@ $('setup-devices').addEventListener('click', (event) => {
 $('setup-panel').addEventListener('click', (event) => {
   const b = (event.target as Element).closest<HTMLButtonElement>('[data-panel]');
   if (b && b.getAttribute('aria-checked') !== 'true') { open(false); handlers?.panel(b.dataset.panel as Settings['panel']); }
+});
+$('setup-wifi')?.addEventListener('click', (event) => {
+  const b = (event.target as Element).closest<HTMLButtonElement>('[data-wifi-mode]');
+  if (idle && b && !b.disabled && b.getAttribute('aria-checked') !== 'true') {
+    handlers?.wifiMode(b.dataset.wifiMode as Settings['wifiMode']);
+  }
 });
 $('setup-recent').addEventListener('click', (event) => {
   const b = (event.target as Element).closest<HTMLButtonElement>('[data-path]');

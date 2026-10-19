@@ -4,9 +4,10 @@
 # The machine follows the image's chip (byte 12 of the bootloader header): ESP32-S3 -> x4pro,
 # ESP32-C3 -> x3. X4MACHINE=x3|x4|x4pro|picco overrides.
 # X4 Pro defaults to measured UC8279 revision 0x68; X4PANEL=uc8179 selects the legacy panel.
-# Wi-Fi: the fake AP "PICSimLabWifi" is bridged to a QEMU NIC.
-#   X4BR=br0: on your LAN (router DHCP); needs "allow br0" in /usr/local/etc/qemu/bridge.conf, run as root.
-#   default: QEMU NAT (10.0.2.15), host :8080 -> device :80. X4NET overrides both.
+# Wi-Fi: "PICSimLabWifi" uses NAT, forwarding host port 8080 to guest port 80.
+#   X4WIFI_MODE=bridge opts into LAN bridging; X4BR selects the interface.
+#   Bridge defaults: Linux br0, macOS en0, Windows TAP adapter eink-qemu.
+#   X4NET overrides networking; see EINK-QEMU.md for bridge host setup.
 # Monitor: unix socket /tmp/eink-qemu-mon.sock (HMP). GDB: add "-s -S".
 set -e
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -27,9 +28,49 @@ else
 fi
 # release archives have the binaries in bin/ instead of build/
 [ -x "$qemu" ] || qemu=$here/bin/${qemu##*/}
-[ -n "$X4BR" ] && : "${X4NET=-nic bridge,br=$X4BR,helper=$(dirname "$qemu")/qemu-bridge-helper,model=esp32_wifi}"
-[ -n "$X4BR" ] && echo "eink-qemu: Wi-Fi bridged to $X4BR (LAN DHCP)" >&2 || echo "eink-qemu: Wi-Fi on QEMU NAT (10.0.2.15); X4BR=br0 for your LAN" >&2
-net=${X4NET--nic user,model=esp32_wifi,hostfwd=tcp::8080-:80}
+if [ "${X4NET+x}" = x ]; then
+  set -- $X4NET "$@"
+  echo "eink-qemu: Wi-Fi configured by X4NET" >&2
+else
+  mode=${X4WIFI_MODE:-nat}
+  # Preserve the original X4BR opt-in; an explicit mode takes precedence.
+  if [ -z "${X4WIFI_MODE+x}" ] && [ -n "${X4BR:-}" ]; then mode=bridge; fi
+  case "$mode" in
+  nat)
+    nic='user,model=esp32_wifi,hostfwd=tcp::8080-:80'
+    echo 'eink-qemu: Wi-Fi NAT (guest port 80 at localhost:8080)' >&2
+    ;;
+  bridge)
+    # Commas inside QEMU option values are doubled; spaces stay in one argument.
+    case "$(uname -s)" in
+      Darwin)
+        bridge=${X4BR:-en0}
+        nic="vmnet-bridged,ifname=$(printf '%s' "$bridge" | sed 's/,/,,/g'),model=esp32_wifi"
+        ;;
+      MINGW*|MSYS*|CYGWIN*)
+        bridge=${X4BR:-eink-qemu}
+        nic="tap,ifname=$(printf '%s' "$bridge" | sed 's/,/,,/g'),model=esp32_wifi"
+        ;;
+      *)
+        bridge=${X4BR:-br0}
+        nic="bridge,br=$(printf '%s' "$bridge" | sed 's/,/,,/g'),model=esp32_wifi"
+        helper=$(dirname "$qemu")/qemu-bridge-helper
+        # Build trees keep the helper beside QEMU; installed QEMU locates libexec itself.
+        if [ -x "$helper" ]; then
+          # QEMU treats a helper path containing spaces/tabs as a shell command.
+          case "$helper" in
+            *' '*|*'	'*) helper="'$(printf '%s' "$helper" | sed "s/'/'\\\\''/g")'" ;;
+          esac
+          nic="$nic,helper=$(printf '%s' "$helper" | sed 's/,/,,/g')"
+        fi
+        ;;
+    esac
+    echo "eink-qemu: Wi-Fi bridged through $bridge (LAN DHCP)" >&2
+    ;;
+  *) echo 'X4WIFI_MODE must be nat or bridge' >&2; exit 2 ;;
+  esac
+  set -- -nic "$nic" "$@"
+fi
 # Calibrated X3/X4/X4 Pro costs use 1 ns ticks; Picco keeps 4 ns ticks.
 case "${X4TURBO:-0}" in
   0) set -- -icount shift=$icount_shift,sleep=on "$@" ;;
@@ -50,4 +91,4 @@ exec "$qemu" -machine "$machine_args" \
   -chardev stdio,id=cdc,mux=off -serial null \
   -global driver=misc.esp32s3.usb_serial_jtag,property=chardev,value=cdc \
   -monitor unix:/tmp/eink-qemu-mon.sock,server,nowait -display sdl,show-cursor=on \
-  $net "$@"
+  "$@"

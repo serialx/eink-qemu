@@ -65,7 +65,7 @@ function loadSettings(): Settings {
   return {
     device: device === 'auto' || MACHINES.includes(device as Machine) ? device as Settings['device'] : 'auto',
     panel: PANELS.includes(panel as Settings['panel']) ? panel as Settings['panel'] : 'uc8279-68',
-    wifi: on('wifi'), ghosting: on('ghosting'), turbo: on('turbo'),
+    wifi: on('wifi'), wifiMode: 'nat', ghosting: on('ghosting'), turbo: on('turbo'),
     firmware: null, card: null, elf: null, elfAuto: false,
   };
 }

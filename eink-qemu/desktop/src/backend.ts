@@ -75,7 +75,7 @@ export interface Backend {
   attach(handlers: AttachHandlers): Promise<Attached>;
   /** A line for the backend's own log, where it keeps one. */
   note(line: string): void;
-  settings(patch: Partial<Pick<Settings, 'device' | 'panel' | 'wifi' | 'ghosting' | 'turbo'>>): Promise<Settings>;
+  settings(patch: Partial<Pick<Settings, 'device' | 'panel' | 'wifi' | 'wifiMode' | 'ghosting' | 'turbo'>>): Promise<Settings>;
 
   pickFirmware(): Promise<Setup | null>;
   useFirmware(ref: string): Promise<Setup>;

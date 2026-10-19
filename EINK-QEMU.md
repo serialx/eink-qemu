@@ -110,6 +110,102 @@ if it doesn't exist. `eink-qemu/mksd.py sd.img 2050 books/` creates an image
 populated from a folder. This matches the measured stock X3 card's cluster size;
 see [SD image geometry](README.md#sd-image-geometry) before timing comparisons.
 
+### Native Wi-Fi
+
+Join `PICSimLabWifi` in the firmware. `run.sh`, the desktop app and the Rust
+CLI (with `--wifi`) use NAT by default on every native platform. NAT provides
+outbound network access without host setup. The guest normally gets
+`10.0.2.15`; `run.sh` also forwards `localhost:8080` to its port 80.
+
+Bridge mode gives the firmware an address from your router, reachable directly
+on your LAN. Complete the host setup below before selecting it:
+
+- **Desktop:** Open the firmware card and select **Bridged** under **Wi-Fi
+  network mode**. The choice is saved and applies at Start when Wi-Fi is on.
+- **CLI:** Add `--wifi --wifi-mode bridge`. `--wifi` alone uses NAT.
+- **Shell:** Run `X4WIFI_MODE=bridge eink-qemu/run.sh flash.bin sd.img`.
+  `X4WIFI_MODE=nat` selects NAT explicitly. Setting `X4BR` alone also enables
+  bridge mode in `run.sh`, for compatibility with earlier versions.
+
+`X4BR` selects the bridge interface; in the desktop app and CLI it only takes
+effect when bridge mode is selected. Launchers do not create host bridges,
+install drivers or fall back to NAT when bridging fails.
+
+| Host | Bridge mode default | `X4BR` selects |
+| --- | --- | --- |
+| Linux | `bridge,br=br0` | An existing Linux bridge |
+| macOS | `vmnet-bridged,ifname=en0` | A physical interface supported by vmnet |
+| Windows | `tap,ifname=eink-qemu` | A TAP adapter's name in Network Connections |
+
+**Linux:** Create a bridge containing your Ethernet interface, and allow its
+name in QEMU's `bridge.conf` (`allow br0` for the default). Source builds use
+`/usr/local/etc/qemu/bridge.conf` by default. Build the helper with
+`ninja -C build qemu-bridge-helper`. The launchers use a helper beside QEMU
+when present; installed QEMU otherwise locates its helper in `libexec`.
+The helper needs permission to create TAP interfaces, either through a
+privileged helper installation or by running QEMU as root. Use Ethernet for
+this host bridge; an ordinary Wi-Fi station interface cannot be enslaved to it.
+
+**macOS:** Build QEMU with `--enable-vmnet` (enabled in the release build).
+`qemu-system-riscv32 -netdev help` should list `vmnet-bridged`; the Xtensa
+binary has the same backend. The default interface is `en0`; use
+`networksetup -listallhardwareports` to find another interface and select it
+with `X4BR=en7`, for example. QEMU reports the supported interface names if
+the selection is invalid. Direct vmnet access needs root or Apple's approved
+[`com.apple.vm.networking` entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.vm.networking).
+The distributed app is ad-hoc signed and does not have that entitlement.
+
+For the desktop app without root, install
+[`socket_vmnet`](https://github.com/lima-vm/socket_vmnet#bridged-mode) and run
+its helper in **bridged** mode. For example, with its binary installed at
+`/opt/socket_vmnet/bin/socket_vmnet`, start the helper in one terminal:
+
+```sh
+sudo /opt/socket_vmnet/bin/socket_vmnet --vmnet-mode=bridged \
+  --vmnet-interface=en0 --socket-group=staff /var/run/eink-qemu-vmnet
+```
+
+Then launch the app from another terminal (quit any existing instance first):
+
+```sh
+X4NET='-nic stream,server=off,addr.type=unix,addr.path=/var/run/eink-qemu-vmnet,model=esp32_wifi' \
+  /Applications/eink-qemu.app/Contents/MacOS/eink-qemu-desktop
+```
+
+QEMU's stream backend uses the same packet framing as socket_vmnet. The same
+`X4NET` value works with the CLI and `run.sh`. The helper selects the LAN
+interface in this configuration; `X4BR` is ignored. The user running the app
+must belong to the helper socket's group. For a persistent helper, follow
+socket_vmnet's launchd instructions for bridged mode.
+
+**Windows:** Install a signed
+[TAP-Windows6 driver](https://github.com/OpenVPN/tap-windows6) for the host
+architecture and create a dedicated TAP adapter. In Network Connections
+(`ncpa.cpl`), rename it `eink-qemu`, select it together with the LAN Ethernet
+adapter, then choose **Bridge Connections**, as described in the
+[OpenVPN bridging guide](https://openvpn.net/community-docs/notes---ethernet-bridging-with-the-bridge-occurring-on-the-windows-side.html).
+Driver installation and bridge creation require administrator rights. QEMU
+opens the TAP adapter, so `X4BR` must name that adapter, not the resulting
+Network Bridge. An existing adapter can be selected in PowerShell with
+`$env:X4BR = 'My TAP Adapter'`. Keep it available exclusively to this emulator
+session. Wintun and OpenVPN DCO adapters do not provide the TAP interface
+QEMU uses. If opening the adapter is denied, run the launcher elevated.
+
+**Overrides:** For custom networking, `X4NET` replaces the selected mode's
+QEMU arguments. For example, set
+`X4NET='-nic user,model=esp32_wifi,hostfwd=tcp::8080-:80'` to add the shell
+launcher's port forwarding to the desktop app or CLI. In PowerShell, use
+`$env:X4NET = '-nic user,model=esp32_wifi,hostfwd=tcp::8080-:80'`.
+`X4NET` takes precedence over the mode and `X4BR`; an empty value supplies no network
+arguments, and `X4NET='-nic none'` disables the NIC explicitly. Its value is
+a whitespace-separated argument list; use `X4BR` for adapter names containing
+spaces. Set variables in the environment that launches the desktop app.
+Turning Wi-Fi off in the app or omitting the CLI's `--wifi` keeps the radio
+without any access points, regardless of these variables. The browser and
+Node WebAssembly runtime keep their browser network adapter. The older
+`drive.py` has no Wi-Fi connection by default and takes explicit network
+arguments in `QEMU_EXTRA`.
+
 ### CrossDink build gotchas (PlatformIO, pioarduino 6.1.19)
 
 - **`ModuleNotFoundError: No module named 'SCons.Tool.FortranCommon'`** at the
@@ -610,16 +706,9 @@ Done in `eink-qemu`:
 
 - Wi-Fi: the MAC is emulated with a fake AP bridged to a QEMU NIC (port of the
   lcgamboa ESP32-C3 model: `hw/misc/esp32s3_wifi.c`, `esp32_wifi_ap.c`,
-  `esp32_wlan_packet.c`; analog/FE in `esp32s3_ana.c`, `esp32_fe.c`). `run.sh`
-  joins it to a network:
-  - `X4BR=br0 eink-qemu/run.sh ...` bridges to your LAN: the firmware does its own
-    DHCP with your router and is reachable at that IP like a real device. Needs a
-    host bridge `br0` holding your Ethernet port, `allow br0` in
-    `/usr/local/etc/qemu/bridge.conf`, and root (the helper is `build/qemu-bridge-helper`).
-    Wi-Fi host NICs can't be bridged; use Ethernet.
-  - Default: QEMU NAT (`-nic user,model=esp32_wifi,hostfwd=tcp::8080-:80`), DHCP
-    10.0.2.15, host port 8080 reaches the device's port 80 (`curl localhost:8080`).
-  - `X4NET="-nic ..."` overrides both; `drive.py` takes the same `-nic` in `QEMU_EXTRA`.
+  `esp32_wlan_packet.c`; analog/FE in `esp32s3_ana.c`, `esp32_fe.c`). Native
+  launchers default to NAT on Linux, macOS and Windows; see
+  [Native Wi-Fi](#native-wi-fi) for optional bridge mode and its host setup.
   A scan finds `PICSimLabWifi` (open, ch 1, the one that connects), `Espressif` and
   `MasseyWifi`. With no `model=esp32_wifi` NIC the MAC is a stub and a scan finds 0;
   `-global esp32_wifi.access-points=off` keeps the radio with no access points (the
@@ -663,7 +752,7 @@ the gauge and the SD card readable and writable. Hardware (freeink-sdk
 | RTC | DS3231 at 0x68 | I2C0 | `hw/rtc/ds3231.c`, host clock (UTC) |
 | IMU | QMI8658 at 0x6B (WHO_AM_I 0x05) | I2C0 | `hw/misc/qmi8658.c`, lying flat, at rest |
 | Sleep | light and deep sleep; deep-sleep wake on GPIO0-5 or the RTC timer | RTC_CNTL | `esp32c3_rtc_cntl.c`: RTC timer, light sleep (timer/GPIO), deep sleep = reset with reason DEEPSLEEP and the wake cause; deep sleep with no wake source = off until a reset; an external reset is POWERON |
-| Wi-Fi | MAC + fake open AP bridged to `-nic user` | n/a | the S3 models at the same bases (`esp32s3_wifi.c`, `esp32s3_ana.c`, `esp32_fe.c`) |
+| Wi-Fi | MAC + fake open AP connected to a QEMU NIC | n/a | the S3 models at the same bases (`esp32s3_wifi.c`, `esp32s3_ana.c`, `esp32_fe.c`) |
 | Bluetooth | controller comes up, scans find nothing | n/a | `esp32s3_ble.c` at 0x60031000, 64 KiB exchange memory at 0x3fc00000, BT_LPCK clock in `esp32c3_clk.c`; no link layer (below) |
 
 Notes:
@@ -868,7 +957,7 @@ the Turbo settings. `?sleep=off` permits unpaced benchmarks.
 | Fuel gauge | **CW2017** at 0x63 | on I2C | done |
 | Frontlight | LEDC PWM 25 kHz 10-bit, cool GPIO8 (ch4), warm GPIO9 (ch5) | LEDC | open |
 | Charger | STAT GPIO21, active-HIGH = charging | GPIO | open |
-| Wi-Fi | MAC + fake open AP bridged to a QEMU NIC: NAT (`-nic user`, hostfwd) or LAN (`X4BR=br0`) | n/a | done |
+| Wi-Fi | MAC + fake open AP connected to a QEMU NIC: NAT by default, optional LAN bridge on native hosts | n/a | done |
 | Sleep | deep sleep + ext0/ext1 GPIO wake, RTC_NOINIT/RTC_DATA memory | RTC_CNTL | done: ext0/ext1 and timer wake, RTC memory kept (`esp32s3_rtc_cntl.c`) |
 
 ## GPSPI2 follow-up

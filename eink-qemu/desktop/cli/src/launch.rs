@@ -395,6 +395,7 @@ pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared
         machine: flash.machine.clone(),
         panel: args.panel.clone(),
         wifi: args.wifi,
+        wifi_mode: args.wifi_mode,
         turbo: args.turbo,
         ghosting: args.ghosting,
         animate: Some(args.animate),

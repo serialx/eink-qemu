@@ -1033,6 +1033,7 @@ pub fn run() {
                     settings.turbo = spec.options.turbo;
                     settings.ghosting = spec.options.ghosting;
                     settings.wifi = spec.options.wifi;
+                    settings.wifi_mode = spec.options.wifi_mode.as_str().into();
                     settings.panel = spec.options.panel.clone();
                     settings.card = Some(spec.card.clone());
                     Some(open_card(&locks, &spec.card).map_err(|e| e.message)?)
