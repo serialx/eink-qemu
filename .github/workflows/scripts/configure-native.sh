@@ -23,6 +23,7 @@ echo DBG
     --enable-plugins \
     --enable-png \
     --enable-slirp \
+    --enable-tools \
     --enable-stack-protector \
     --enable-werror \
     --prefix=${PWD}/install/qemu \
