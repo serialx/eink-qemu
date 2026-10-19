@@ -47,6 +47,8 @@ typedef struct ESP32C3ClockState {
     /* Registers for clocks configuration and frequency dividers */
     uint32_t cpuperconf;
     uint32_t sysclk;
+    uint32_t bt_lpck_div_int;
+    uint32_t bt_lpck_div_frac;
     CPUState *cpu;
     uint32_t cpu_hz;
 

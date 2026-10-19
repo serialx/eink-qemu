@@ -795,6 +795,18 @@ static void esp32c3_machine_init(MachineState *machine)
         memory_region_add_subregion_overlap(sys_mem, DR_REG_FE_BASE,
                                             sysbus_mmio_get_region(SYS_BUS_DEVICE(d), 0), 1);
 
+        /*
+         * Bluetooth link-layer registers and the exchange-memory window the
+         * controller maps its buffers through (same block as the S3's).
+         */
+        d = qdev_new("misc.esp32s3.ble");
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(d), &error_fatal);
+        memory_region_add_subregion_overlap(sys_mem, 0x60031000,
+                                            sysbus_mmio_get_region(SYS_BUS_DEVICE(d), 0), 1);
+        MemoryRegion *bt_em = g_new(MemoryRegion, 1);
+        memory_region_init_ram(bt_em, NULL, "esp32c3.bt-em", 64 * KiB, &error_fatal);
+        memory_region_add_subregion(sys_mem, 0x3fc00000, bt_em);
+
         NICInfo *nd = qemu_find_nic_info(TYPE_ESP32_WIFI, false, NULL);
         if (nd) {
             d = qdev_new(TYPE_ESP32_WIFI);
