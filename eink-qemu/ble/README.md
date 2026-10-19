@@ -30,8 +30,12 @@ The plugin takes `limit=N` to stop after N lines (the file then ends with a
 its `emwins.json` is only a record. `symtrace.py` labels register offsets
 (`ble+`), baseband (`bb+`, 0x60011000), interrupt matrix (`intm+`) and exchange
 memory (`em+`): it replays the mapping-table writes of the trace it reads, so a
-DRAM block counts as a window only while its table entry maps it. Both share
-`emtab.py`.
+DRAM block counts as a window only while its table entry maps it, with the
+extent the table gave it at the time. While the controller is still filling
+the table, a window's extent reaches to the next entry written so far, so heap
+writes to blocks not yet mapped can show as the tail of an earlier window;
+accesses after `r_lld_core_init` are attributed as the hardware would. Both
+scripts share `emtab.py`.
 
 ## Exchange memory
 
