@@ -61,7 +61,10 @@ class EmTable:
         for em, dram in entries.values():
             if dram is None or em >= EM_TOP:
                 continue
-            size = ems[bisect.bisect_right(ems, em)] - em if em < ems[-1] else EM_TOP - em
+            size = EM_TOP - em
+            k = bisect.bisect_right(ems, em)
+            if k < len(ems):
+                size = min(size, ems[k] - em)
             above = bisect.bisect_right(drams, dram)
             if above < len(drams):
                 size = min(size, drams[above] - dram)
