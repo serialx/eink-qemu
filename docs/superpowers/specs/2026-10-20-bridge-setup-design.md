@@ -1,6 +1,6 @@
 # App-managed bridge setup
 
-Status: proposed design for review. Implementation has not started.
+Status: approved on 2026-10-20. Implementation has not started.
 
 ## Outcome and scope
 
