@@ -1,6 +1,6 @@
 //! Bounded messages and OS-authenticated caller identities. Authorization for
 //! mutation is separate: possession of a local connection grants no privilege.
-use crate::{model::BridgeError, protocol::{self, HelperReply, HelperRequest, MAX_MESSAGE}};
+use crate::{model::{BridgeError, Readiness}, protocol::{self, HelperReply, HelperRequest, ReplyKind, RequestKind, MAX_MESSAGE}};
 use std::io::{Read, Write};
 
 #[cfg(unix)]
@@ -30,6 +30,44 @@ pub fn read_reply(reader: &mut impl Read) -> Result<HelperReply, BridgeError> {
 pub fn write_reply(writer: &mut impl Write, reply: &HelperReply) -> Result<(), BridgeError> {
     writer.write_all(&protocol::encode_reply_frame(reply)?).and_then(|_| writer.flush())
         .map_err(|e| BridgeError::new("EIPC", e.to_string()))
+}
+
+/// A request uses one authenticated connection. Consuming the client prevents
+/// reuse of a stream after a truncated or otherwise invalid response.
+pub struct HelperClient { stream: Box<dyn Channel + Send> }
+trait Channel: Read + Write {}
+impl<T: Read + Write> Channel for T {}
+impl HelperClient {
+    pub fn connect() -> Result<Self, BridgeError> {
+        #[cfg(unix)]
+        { Ok(Self { stream: Box::new(unix::connect()?) }) }
+        #[cfg(not(unix))]
+        { Err(BridgeError::new("ENEEDSSETUP", "The native bridge helper connection is not available.")) }
+    }
+    pub fn request(mut self, request: HelperRequest) -> Result<HelperReply, BridgeError> {
+        exchange(&mut self.stream, &request)
+    }
+}
+
+pub fn exchange(channel: &mut (impl Read + Write), request: &HelperRequest) -> Result<HelperReply, BridgeError> {
+    write_request(channel, request)?;
+    let reply = read_reply(channel)?;
+    if let ReplyKind::Error { error } = &reply.reply { return Err(error.clone()); }
+    let matches = match (&request.request, &reply.reply) {
+        (RequestKind::Inspect, ReplyKind::Inspection { .. }) => true,
+        (RequestKind::Plan { request }, ReplyKind::Plan { plan }) => plan.request == *request,
+        (RequestKind::Apply { plan_id: id }, ReplyKind::Operation { operation: Some(operation) })
+        | (RequestKind::Keep { operation_id: id }, ReplyKind::Operation { operation: Some(operation) })
+        | (RequestKind::Cancel { operation_id: id }, ReplyKind::Operation { operation: Some(operation) }) => operation.id == *id,
+        (RequestKind::Recover, ReplyKind::Operation { .. }) => true,
+        (RequestKind::Verify { selection: expected }, ReplyKind::Verification { selection, readiness }) => {
+            selection.as_ref().is_none_or(|selection| selection == expected)
+                && (*readiness != Readiness::Ready || selection.is_some())
+        },
+        _ => false,
+    };
+    if !matches { return Err(invalid()); }
+    Ok(reply)
 }
 pub fn write_request(writer: &mut impl Write, request: &HelperRequest) -> Result<(), BridgeError> {
     writer.write_all(&protocol::encode_frame(request)?).and_then(|_| writer.flush())

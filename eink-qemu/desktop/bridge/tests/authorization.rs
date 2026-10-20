@@ -48,3 +48,33 @@ fn unix_peer_identity_is_taken_from_the_kernel() {
     assert!(transport::unix::verify_peer(&client, unsafe { libc::geteuid() }).is_ok());
     assert_eq!(transport::unix::verify_peer(&client, unsafe { libc::geteuid() } + 1).unwrap_err().code, "EPERM");
 }
+
+#[test]
+fn client_accepts_only_the_reply_for_the_requested_operation() {
+    use eink_bridge::{model::*, protocol::{HelperReply, ReplyKind}};
+    struct Channel { input: Cursor<Vec<u8>>, output: Vec<u8> }
+    impl std::io::Read for Channel {
+        fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> { std::io::Read::read(&mut self.input, data) }
+    }
+    impl std::io::Write for Channel {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> { self.output.extend_from_slice(data); Ok(data.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let id = OperationId::new("a".repeat(32)).unwrap();
+    let request = HelperRequest { version: VERSION, request: RequestKind::Keep { operation_id: id.clone() } };
+    let operation = Operation { id, revision: 4, state: OperationState::Ready, stage: "Ready".into(),
+        confirmation_deadline: None, reboot_required: false, error: None };
+    let cases = [
+        (ReplyKind::Operation { operation: Some(operation.clone()) }, None),
+        (ReplyKind::Operation { operation: Some(Operation { id: OperationId::new("b".repeat(32)).unwrap(), ..operation }) }, Some("EPROTOCOL")),
+        (ReplyKind::Operation { operation: None }, Some("EPROTOCOL")),
+        (ReplyKind::Verification { readiness: Readiness::Ready, selection: None }, Some("EPROTOCOL")),
+        (ReplyKind::Error { error: BridgeError::new("EAUTHCANCELLED", "Cancelled") }, Some("EAUTHCANCELLED")),
+    ];
+    for (reply, expected_error) in cases {
+        let mut channel = Channel { input: Cursor::new(eink_bridge::protocol::encode_reply_frame(&HelperReply::new(reply)).unwrap()), output: Vec::new() };
+        let result = transport::exchange(&mut channel, &request);
+        assert_eq!(result.err().map(|e| e.code), expected_error.map(str::to_owned));
+        assert!(matches!(eink_bridge::protocol::decode_frame(&channel.output).unwrap().request, RequestKind::Keep { .. }));
+    }
+}

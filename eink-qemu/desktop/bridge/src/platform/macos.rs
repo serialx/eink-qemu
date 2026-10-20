@@ -1,5 +1,43 @@
 use crate::model::*;
 use std::{collections::BTreeMap, ffi::{c_char, c_void, CStr}};
+use core_foundation::{array::{CFArray, CFArrayRef}, base::TCFType, string::{CFString, CFStringRef}};
+
+#[link(name = "SystemConfiguration", kind = "framework")]
+extern "C" {
+    fn SCNetworkInterfaceCopyAll() -> CFArrayRef;
+    fn SCNetworkInterfaceGetBSDName(interface: *const c_void) -> CFStringRef;
+    fn SCNetworkInterfaceGetLocalizedDisplayName(interface: *const c_void) -> CFStringRef;
+    fn SCNetworkInterfaceGetInterfaceType(interface: *const c_void) -> CFStringRef;
+    static kSCNetworkInterfaceTypeEthernet: CFStringRef;
+    static kSCNetworkInterfaceTypeIEEE80211: CFStringRef;
+}
+
+fn interface_labels() -> BTreeMap<String, (String, AdapterKind)> {
+    let mut labels = BTreeMap::new();
+    // Get-rule strings are borrowed from interfaces retained by this array.
+    // CFString's wrapper retains them while converting to owned Rust strings.
+    unsafe {
+        let array = SCNetworkInterfaceCopyAll();
+        if array.is_null() { return labels; }
+        let interfaces: CFArray<*const c_void> = CFArray::wrap_under_create_rule(array);
+        for interface in interfaces.iter() {
+            let name = SCNetworkInterfaceGetBSDName(*interface);
+            if name.is_null() { continue; }
+            let name = CFString::wrap_under_get_rule(name).to_string();
+            let label = SCNetworkInterfaceGetLocalizedDisplayName(*interface);
+            let label = if label.is_null() { name.clone() } else { CFString::wrap_under_get_rule(label).to_string() };
+            let kind = SCNetworkInterfaceGetInterfaceType(*interface);
+            let kind = if kind.is_null() { AdapterKind::Other } else {
+                let kind = CFString::wrap_under_get_rule(kind);
+                if kind == CFString::wrap_under_get_rule(kSCNetworkInterfaceTypeIEEE80211) { AdapterKind::Wifi }
+                else if kind == CFString::wrap_under_get_rule(kSCNetworkInterfaceTypeEthernet) { AdapterKind::Ethernet }
+                else { AdapterKind::Other }
+            };
+            labels.insert(name, (label, kind));
+        }
+    }
+    labels
+}
 
 #[link(name = "vmnet", kind = "framework")]
 extern "C" { fn vmnet_copy_shared_interface_list() -> *mut c_void; }
@@ -47,9 +85,12 @@ pub fn adapters() -> Result<Vec<Adapter>, BridgeError> {
         ptr = addr.ifa_next;
     }
     let mut result = Vec::new();
+    let labels = interface_labels();
     for name in names {
         if let Some((hardware, link_up)) = links.get(&name) {
-            result.push(Adapter { id: AdapterId::new(&name)?, name: name.clone(), kind: AdapterKind::Other,
+            let (label, kind) = labels.get(&name).cloned().unwrap_or((name.clone(), AdapterKind::Other));
+            let display_name = if label.is_empty() || label == name { name.clone() } else { format!("{label} ({name})") };
+            result.push(Adapter { id: AdapterId::new(&name)?, name: display_name, kind,
                 link_up: *link_up, eligible: true, reason: None, fingerprint: format!("{name}:{hardware}") });
         }
     }
