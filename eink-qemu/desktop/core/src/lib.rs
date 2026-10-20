@@ -11,6 +11,7 @@ pub mod flash;
 pub mod heap;
 pub mod heapview;
 pub mod host;
+pub mod network;
 pub mod profiles;
 pub mod qmp;
 pub mod script;

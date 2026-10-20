@@ -180,12 +180,10 @@ impl QemuPaths {
         self.bin.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_string() })
     }
 
-    fn wifi_args(&self, mode: WifiMode) -> Vec<String> {
-        if let Ok(net) = std::env::var("X4NET") {
-            return net.split_whitespace().map(String::from).collect();
-        }
-        let bridge = std::env::var("X4BR").ok().filter(|name| !name.is_empty());
-        self.wifi_nic(mode, bridge.as_deref())
+    fn wifi_args(&self, mode: WifiMode, target: Option<&crate::network::NetworkTarget>) -> Result<Vec<String>, AppError> {
+        let overrides = crate::network::NetworkOverrides::from_env();
+        Ok(crate::network::args(mode, target, &overrides)?
+            .unwrap_or_else(|| self.wifi_nic(mode, overrides.bridge.as_deref())))
     }
 
     fn wifi_nic(&self, mode: WifiMode, bridge: Option<&str>) -> Vec<String> {
@@ -699,6 +697,12 @@ impl Session {
     }
 
     pub async fn start(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan) -> Result<SessionInfo, AppError> {
+        self.start_with_network(options, flash, trace, None).await
+    }
+
+    /// Only native Rust callers may supply a resolved managed target.
+    pub async fn start_with_network(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan,
+        network: Option<crate::network::NetworkTarget>) -> Result<SessionInfo, AppError> {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let id;
         {
@@ -722,7 +726,7 @@ impl Session {
         let _ops = self.ops.lock().await;
         *self.screen.lock().unwrap() = None;
         let result = match self.checked_card_path() {
-            Ok(card) => self.launch(id, &options, flash, &card, trace, cancel_rx).await,
+            Ok(card) => self.launch(id, &options, flash, &card, trace, cancel_rx, network.as_ref()).await,
             Err(error) => Err((Exit { kind: "failed", reason: Some(error.message.clone()) }, error)),
         };
         self.complete_start(result)
@@ -749,7 +753,7 @@ impl Session {
         }
     }
 
-    fn args(&self, options: &StartOptions, flash: &Path, card: &Path, qmp: &str, display: &str) -> Result<Vec<String>, AppError> {
+    fn args(&self, options: &StartOptions, flash: &Path, card: &Path, qmp: &str, display: &str, network: Option<&crate::network::NetworkTarget>) -> Result<Vec<String>, AppError> {
         let machine = options.machine.as_str();
         let mut args: Vec<String> = Vec::new();
         if let Some(share) = &self.qemu.share {
@@ -803,7 +807,7 @@ impl Session {
             "-display".into(), format!("eink,addr={}", escape(display)),
         ]);
         if options.wifi {
-            args.extend(self.qemu.wifi_args(options.wifi_mode));
+            args.extend(self.qemu.wifi_args(options.wifi_mode, network)?);
         } else {
             // The radio stays, with no access points to find.
             args.extend([
@@ -823,6 +827,7 @@ impl Session {
         card: &Path,
         trace: TracePlan,
         cancel: watch::Receiver<bool>,
+        network: Option<&crate::network::NetworkTarget>,
     ) -> Result<Arc<Run>, (Exit, AppError)> {
         let failed = |error: AppError| (Exit { kind: "failed", reason: Some(error.message.clone()) }, error);
         let binary = self.qemu.binary(&options.machine);
@@ -847,7 +852,7 @@ impl Session {
         let qmp_listener = Listener::bind(dir.path(), "qmp").await.map_err(|e| failed(e.into()))?;
         let display_listener = Listener::bind(dir.path(), "display").await.map_err(|e| failed(e.into()))?;
         let mut args = self
-            .args(options, &flash_path, card, &qmp_listener.chardev(), &display_listener.address())
+            .args(options, &flash_path, card, &qmp_listener.chardev(), &display_listener.address(), network)
             .map_err(failed)?;
         let trace = match trace {
             Ok((plugin, elf)) => {
@@ -1487,12 +1492,35 @@ mod wifi_tests {
         let session = Session::new(Arc::new(Sink), QemuPaths { bin: ".".into(), share: None, plugins: ".".into() }, None);
         let mut options = old_options();
         options.wifi = false;
-        for mode in [WifiMode::Nat, WifiMode::Bridge] {
-            options.wifi_mode = mode;
-            let args = session.args(&options, Path::new("flash"), Path::new("sd"), "port=1", "localhost:2").unwrap();
+        let target = crate::network::NetworkTarget::WindowsTap { name: "managed-bridge".into() };
+        for machine in ["x3", "x4", "x4pro"] {
+            options.machine = machine.into();
+            for mode in [WifiMode::Nat, WifiMode::Bridge] {
+                options.wifi_mode = mode;
+                for network in [None, Some(&target)] {
+                    let args = session.args(&options, Path::new("flash"), Path::new("sd"), "port=1", "localhost:2", network).unwrap();
+                    assert_eq!(args.iter().filter(|v| *v == "-nic").count(), 1);
+                    assert_eq!(args[args.iter().position(|v| v == "-nic").unwrap() + 1], "hubport,hubid=0,model=esp32_wifi");
+                    assert!(args.iter().any(|v| v == "esp32_wifi.access-points=off"));
+                    assert!(!args.iter().any(|v| v.contains("managed-bridge")));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_network_reaches_both_c3_and_s3_launch_arguments() {
+        struct Sink;
+        impl Events for Sink {}
+        let session = Session::new(Arc::new(Sink), QemuPaths { bin: ".".into(), share: None, plugins: ".".into() }, None);
+        let target = crate::network::NetworkTarget::WindowsTap { name: "managed-bridge".into() };
+        let mut options = old_options();
+        options.wifi_mode = WifiMode::Bridge;
+        for machine in ["x3", "x4", "x4pro"] {
+            options.machine = machine.into();
+            let args = session.args(&options, Path::new("flash"), Path::new("sd"), "port=1", "localhost:2", Some(&target)).unwrap();
             assert_eq!(args.iter().filter(|v| *v == "-nic").count(), 1);
-            assert_eq!(args[args.iter().position(|v| v == "-nic").unwrap() + 1], "hubport,hubid=0,model=esp32_wifi");
-            assert!(args.iter().any(|v| v == "esp32_wifi.access-points=off"));
+            assert_eq!(args[args.iter().position(|v| v == "-nic").unwrap() + 1], "tap,ifname=managed-bridge,model=esp32_wifi");
         }
     }
 }
