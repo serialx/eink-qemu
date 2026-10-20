@@ -306,9 +306,22 @@ fn walk_pool(mem: &[u8], base: u32, end: u32, pool: u32) -> Option<Vec<Block>> {
 fn find_pool(mem: &[u8], base: u32, end: u32, heap_data: u32) -> Option<(u32, Vec<Block>)> {
     let lo = heap_data.checked_add(8)? & !3;
     let hi = heap_data.saturating_add(16384).min(end.saturating_sub(8));
+    // Control-table bitmaps can masquerade as used block sizes and jump
+    // into the real chain. Repeated block_null pointers in their payload
+    // identify the free-list table. Only check used blocks: a real free
+    // block can have both next_free and prev_free pointing to block_null.
+    let in_control = |pool: u32, size: u32| {
+        (pool + 4..pool.saturating_add(4).saturating_add(size).min(end))
+            .step_by(4)
+            .filter(|&a| u32_at(mem, (a - base) as usize) == Some(heap_data))
+            .take(2)
+            .count() > 1
+    };
     (lo.max(base)..hi).step_by(4).find_map(|pool| {
         let size = u32_at(mem, (pool - base) as usize)?;
-        if size & 2 != 0 || (size & !3) < 12 || (size & !3) > end - pool {
+        if size & 2 != 0 || (size & !3) < 12 || (size & !3) > end - pool
+            || (size & 1 == 0 && in_control(pool, size & !3))
+        {
             return None;
         }
         walk_pool(mem, base, end, pool).filter(|blocks| !blocks.is_empty()).map(|blocks| (pool, blocks))
@@ -608,14 +621,18 @@ mod tests {
 
     /// blocks: (size, free, requested); the last free block takes the rest.
     fn build(blocks: &[(u32, bool, Option<u32>)], task_tracking: bool) -> Fake {
+        build_with_control(blocks, task_tracking, CONTROL)
+    }
+
+    fn build_with_control(blocks: &[(u32, bool, Option<u32>)], task_tracking: bool, control: u32) -> Fake {
         let used: u32 = blocks.iter().map(|b| b.0 + 4).sum();
-        let rest = (END - (START + 20 + CONTROL - 4) - 8 - used - 4) & !3;
+        let rest = (END - (START + 20 + control - 4) - 8 - used - 4) & !3;
         let blocks: Vec<_> = blocks.iter().copied().chain([(rest, true, None)]).collect();
         let mut region = vec![0u8; (END - START) as usize];
         let free: u32 = blocks.iter().filter(|b| b.1).map(|b| b.0).sum();
         // multi_heap_info: lock, free_bytes, minimum_free_bytes, pool_size, heap_data
         put(&mut region, START, &[0, free, free - 64, END - START - 20, START + 20]);
-        let (mut b, mut prev_free) = (START + 20 + CONTROL - 4, 0);
+        let (mut b, mut prev_free) = (START + 20 + control - 4, 0);
         for &(size, free, req) in &blocks {
             put(&mut region, b + 4, &[size | free as u32 | prev_free << 1]);
             if let Some(req) = req {
@@ -672,6 +689,68 @@ mod tests {
         assert_eq!(h.largest, h.blocks[17] - 4);
         assert_eq!((h.corrupt, snap.missing), (0, 0));
         assert_eq!(guest.log, ["stop", "cont"]);
+    }
+
+    #[test]
+    fn skips_a_control_table_that_walks_into_the_real_pool() {
+        let mut guest = build_with_control(&[(236, false, None), (64, false, Some(40))], false, 852);
+        let region = guest.mem.get_mut(&START).unwrap();
+        let heap_data = START + 20;
+        // Unused free-list entries point to block_null, at heap_data. A
+        // bitmap happens to look like a used block spanning into the pool.
+        for at in (heap_data + 8..START + 868).step_by(4) {
+            put(region, at, &[heap_data]);
+        }
+        put(region, START + 84, &[1024]);
+        let fake = walk_pool(region, START, END, START + 84).unwrap();
+        assert_eq!(fake[0], (START + 80, 1024, false));
+        assert_eq!(fake[1].0 + 4, START + 1112);
+
+        let mut pools = Pools::new();
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut pools)).unwrap();
+        let [h] = &snap.heaps[..] else { panic!("{snap:?}") };
+        assert_eq!(h.pool, 868);
+        assert_eq!(h.blocks[..8], [872, 240, 0, 0, 1112, 68, BLOCK_POISONED, 40]);
+        assert_eq!((h.count, h.used, snap.missing), (3, 300, 0));
+        assert_eq!(pools.starts[&(START, heap_data)], START + 872);
+
+        // The bitmap changes and the first real block splits. A cached
+        // control-table offset would now fail every snapshot attempt.
+        let region = guest.mem.get_mut(&START).unwrap();
+        put(region, START + 84, &[0]);
+        put(region, START + 872, &[64]);
+        put(region, START + 940, &[168]);
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut pools)).unwrap();
+        let [h] = &snap.heaps[..] else { panic!("{snap:?}") };
+        assert_eq!((h.pool, h.count, h.used, snap.missing), (868, 4, 296, 0));
+    }
+
+    #[test]
+    fn accepts_free_first_blocks_with_two_block_null_links() {
+        for blocks in [vec![], vec![(64, true, None), (32, false, None)]] {
+            let mut guest = build(&blocks, false);
+            let pool = START + 20 + CONTROL;
+            put(guest.mem.get_mut(&START).unwrap(), pool + 4, &[START + 20, START + 20]);
+            let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
+            let [h] = &snap.heaps[..] else { panic!("{snap:?}") };
+            assert_eq!(h.pool, 20 + CONTROL - 4);
+            assert_eq!(h.blocks[2], BLOCK_FREE);
+            assert_eq!(h.count, blocks.len() as u32 + 1);
+            assert_eq!(h.free, h.info_free);
+            assert_eq!(snap.missing, 0);
+        }
+    }
+
+    #[test]
+    fn accepts_a_used_first_block_with_one_block_null_pointer() {
+        let mut guest = build(&[(64, false, None)], false);
+        let pool = START + 20 + CONTROL;
+        let region = guest.mem.get_mut(&START).unwrap();
+        put(region, pool + 64, &[START + 20]); // last word of the used payload
+        put(region, pool + 72, &[START + 20, START + 20]); // next block's free-list links
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
+        let [h] = &snap.heaps[..] else { panic!("{snap:?}") };
+        assert_eq!((h.pool, h.count, h.used, snap.missing), (20 + CONTROL - 4, 2, 64, 0));
     }
 
     #[test]
