@@ -1,7 +1,7 @@
 # eink-qemu desktop workspace: the Tauri app, the emulator core it shares
 # with the command-line tool, and that tool.
 [workspace]
-members = ["src-tauri", "core", "cli"]
+members = ["src-tauri", "core", "cli", "bridge"]
 resolver = "2"
 
 [workspace.package]

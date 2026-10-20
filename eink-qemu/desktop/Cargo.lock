@@ -972,6 +972,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "eink-bridge"
+version = "0.8.1"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
+ "zbus",
+]
+
+[[package]]
 name = "eink-core"
 version = "0.8.1"
 dependencies = [
@@ -4077,6 +4090,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -5122,6 +5136,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",
