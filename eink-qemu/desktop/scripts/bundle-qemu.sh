@@ -6,7 +6,9 @@
 #   qemu/share/esp32c3-rom.bin, esp32s3_rev0_rom.bin   (the app passes -L qemu/share)
 #   qemu/COPYING                            QEMU's licence
 # Library install names are rewritten to @loader_path so the copy runs from any
-# directory without Homebrew, then everything is ad-hoc signed again.
+# directory without Homebrew, then everything is signed again. Set
+# APPLE_SIGNING_IDENTITY for an Apple-issued signature; development defaults
+# to ad-hoc signing. Signed QEMU processes receive only the JIT entitlement.
 # `tauri build --config src-tauri/tauri.bundle.conf.json` copies qemu/ into the
 # app's resource directory. macOS only for now; see README.md, Packaging.
 set -eu
@@ -46,10 +48,10 @@ fi
 cp "$root/pc-bios/esp32c3-rom.bin" "$root/pc-bios/esp32s3_rev0_rom.bin" "$out/share/"
 cp "$root/COPYING" "$out/COPYING"
 
-python3 - "$out" "$build" "$plugin" <<'PY'
+python3 - "$out" "$build" "$plugin" "$desktop/scripts/bridge/macos/qemu-entitlements.plist" <<'PY'
 import os, re, shutil, subprocess, sys
 
-out, build, plugin = sys.argv[1], sys.argv[2], sys.argv[3]
+out, build, plugin, entitlements = sys.argv[1:]
 bindir, libdir, plugindir = os.path.join(out, 'bin'), os.path.join(out, 'lib'), os.path.join(out, 'plugins')
 SYSTEM = ('/usr/lib/', '/System/')
 
@@ -166,8 +168,13 @@ for path, refs in changes.items():
         subprocess.run(args + [path], check=True, capture_output=True)
 
 # install_name_tool invalidates signatures; arm64 refuses unsigned code.
+identity = os.environ.get('APPLE_SIGNING_IDENTITY') or '-'
 for path in sorted(changes, key=lambda p: os.path.dirname(p) != libdir):
-    subprocess.run(['codesign', '--force', '-s', '-', path], check=True, capture_output=True)
+    args = ['codesign', '--force', '-s', identity]
+    if identity != '-' and os.path.dirname(path) == bindir:
+        args += ['--options', 'runtime', '--entitlements', entitlements]
+    subprocess.run(args + [path], check=True, capture_output=True)
+    subprocess.run(['codesign', '--verify', '--strict', path], check=True, capture_output=True)
 
 # Nothing may still point outside the bundle or the system.
 for path in changes:

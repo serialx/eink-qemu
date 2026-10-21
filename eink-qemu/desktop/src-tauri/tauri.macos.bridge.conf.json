@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/eink-qemu"],
+    "resources": {
+      "qemu/": "qemu/",
+      "macos/bridge/LICENSE.socket_vmnet": "bridge/LICENSE.socket_vmnet",
+      "macos/bridge/dependency.json": "bridge/dependency.json"
+    },
+    "macOS": {
+      "infoPlist": "macos/bridge/Info.plist",
+      "files": {
+        "Library/LaunchServices/net.serialx.eink-qemu.bridge-helper": "macos/bridge/net.serialx.eink-qemu.bridge-helper"
+      }
+    }
+  }
+}

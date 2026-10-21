@@ -265,9 +265,12 @@ administrator rights, or using the standalone release archives.
 
 Library references are rewritten to `@loader_path/../lib` (binaries) and
 `@loader_path` (libraries), absolute rpaths are removed, and every file is
-ad-hoc signed again, since `install_name_tool` invalidates signatures and
+signed again, since `install_name_tool` invalidates signatures and
 arm64 refuses unsigned code. The script fails if any reference still points
-outside the bundle or the system.
+outside the bundle or the system. Signing is ad-hoc by default; setting
+`APPLE_SIGNING_IDENTITY` signs QEMU and its libraries with that identity and
+adds QEMU's JIT entitlement. Managed bridge installation needs the separate
+[signed helper staging and verification](scripts/bridge/macos/README.md).
 
 Homebrew's `sdl2-compat` provides `libSDL2` and opens SDL3 from its load-time
 initializer, trying `@loader_path/libSDL3.dylib` first. QEMU links SDL2 even
@@ -295,35 +298,55 @@ the QEMU `.exe` files
 `llvm-objdump` or `x86_64-w64-mingw32-objdump`, fails if an imported DLL is
 neither bundled nor part of Windows.
 
-On Windows, `pnpm tauri build --config src-tauri/tauri.bundle.conf.json`
-builds the NSIS and MSI installers. From macOS or Linux the NSIS installer
-and CLI can be cross-built with `cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
+The managed bridge package uses NSIS and a fixed per-machine installation at
+`C:\Program Files\eink-qemu`. Before bundling, stage the exact TAP archive named
+in `scripts/bridge/dependencies.json`; the stager verifies its checksum, copies
+only the required driver files, and includes license notices. On Windows:
+
+```sh
+python3 scripts/bridge/stage_dependency.py x86_64-pc-windows-msvc /path/to/dist.win10.zip src-tauri/windows/bridge
+RUSTFLAGS='-C target-feature=+crt-static' cargo build --locked --release -p eink-bridge --bin eink-bridge-helper
+cp target/release/eink-bridge-helper.exe src-tauri/windows/bridge/
+pnpm tauri build --config src-tauri/tauri.windows.bundle.conf.json
+```
+
+From macOS or Linux the NSIS installer and CLI can be cross-built with
+`cargo-xwin`, LLVM (`llvm-rc`, `lld`) and NSIS
 (`brew install llvm lld nsis`, `cargo install --locked cargo-xwin`):
 
 ```sh
 scripts/bundle-qemu-windows.sh /path/to/windows/qemu
+python3 scripts/bridge/stage_dependency.py x86_64-pc-windows-msvc /path/to/dist.win10.zip src-tauri/windows/bridge
+RUSTFLAGS='-C target-feature=+crt-static -C link-arg=/ignore:4099' \
+  cargo xwin build --locked --release --target x86_64-pc-windows-msvc -p eink-bridge --bin eink-bridge-helper
+cp target/x86_64-pc-windows-msvc/release/eink-bridge-helper.exe src-tauri/windows/bridge/
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc \
-  --bundles nsis --config src-tauri/tauri.bundle.conf.json
+  --config src-tauri/tauri.windows.bundle.conf.json
 ```
 
 The app and CLI link the C runtime statically and need no Visual C++
 redistributable; the installer fetches WebView2 when Windows lacks it.
 Installers are unsigned, so SmartScreen warns on first run.
 
-Verified so far without Windows itself: the Windows QEMU (Fedora 43 MinGW
-cross build), run under Wine 10 from the installer's layout in
-`C:\Program Files`, connects to the app's loopback sockets, boots CrossPoint
-1.6.5 to Home on `x3` and `x4pro` (Turbo included), and takes keys, `stop`,
-`cont` and `quit`; the Rust unit and SD tests pass there except the symbolic
+The bridge package passed fresh installation, concurrent-package refusal,
+update, removal, reinstallation, and standard-user isolation in the disposable
+Windows x64 VM. Those installer tests used an empty bridge journal. Complete
+setup UI acceptance and removal of a retained bridge through the installer
+remain open; see the [native validation record](../../docs/superpowers/validation/bridge-platform-gates.md).
+
+Earlier runtime validation used Windows QEMU under Wine 10 from
+`C:\Program Files`. That run connected to the app's loopback sockets, booted
+CrossPoint 1.6.5 to Home on `x3` and `x4pro` (Turbo included), and accepted
+keys, `stop`, `cont` and `quit`; the Rust unit and SD tests passed except the symbolic
 link test (Wine). The app's window, dialogs and drops have not run on
 Windows yet.
 
 ### Distribution notes
 
 - **Signing:** ad-hoc signatures run locally but do not pass Gatekeeper on
-  other machines. For a Developer ID build, sign every file in `qemu/bin`,
-  `qemu/lib` and `qemu/plugins` with the same identity before `tauri build`,
-  and configure that identity for Tauri to sign the app and CLI. The hardened runtime
+  other machines. For a Developer ID build, set `APPLE_SIGNING_IDENTITY`
+  before staging QEMU and building the app so every library, executable,
+  app and CLI uses the same identity. The hardened runtime
   needs `com.apple.security.cs.allow-jit`, because TCG generates code into
   `MAP_JIT` memory. HVF is not used, so `com.apple.security.hypervisor` is not
   needed.

@@ -3,6 +3,17 @@
 These gates test the proposed mechanisms, not delivery of the complete UI.
 A successful compiler/unit-test run does not satisfy a native gate.
 
+Signed macOS packaging now verifies matching app/helper team requirements,
+embedded dependency staging, notices, architecture, and each binary's deployment
+floor. A package built against the development host's macOS 27 Homebrew libraries
+failed to start QEMU on the macOS 26.5.2 guest. The new verifier rejects that
+package. A separate development-signed QA package, explicitly labeled macOS
+15+, uses checksum-verified compatible Homebrew bottles; its CLI and both QEMU
+architectures run as the guest's ordinary user. Both x3 and x4pro also passed
+a bounded ROM/JIT smoke test and stopped afterward. This does not establish the
+advertised 12.3 release baseline, notarization, helper uninstallation, firmware
+LAN acceptance, or the complete setup UI.
+
 | Platform | Required evidence before backend delivery |
 | --- | --- |
 | macOS | App-owned socket_vmnet launchd service; ordinary user opens packet socket; cancellation and removal preserve other services. |
