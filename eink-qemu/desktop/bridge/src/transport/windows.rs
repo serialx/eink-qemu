@@ -63,6 +63,7 @@ impl Pipe {
         if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 { return Err(error(last())); }
         let token = owned(token).map_err(error)?;
         let sid = windows_security::token_sid(token.as_raw_handle())?;
+        let pipe_admin = windows_security::token_is_elevated_admin(token.as_raw_handle())?;
         drop(revert);
         let mut pid = 0;
         if unsafe { GetNamedPipeClientProcessId(self.file.as_raw_handle(), &mut pid) } == 0 { return Err(error(last())); }
@@ -78,7 +79,7 @@ impl Pipe {
         if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_TIMEOUT {
             return Err(BridgeError::new("EPERM", "The bridge caller has exited."));
         }
-        Ok(Peer { caller: Caller { principal: format!("sid:{sid}") }, process, pid,
+        Ok(Peer { caller: Caller { principal: format!("sid:{sid}") }, process, pid, pipe_admin,
             creation_time: (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime) })
     }
     pub fn send_lease(&mut self, peer: &Peer, lease: &File) -> Result<(), BridgeError> {
@@ -133,8 +134,22 @@ impl Channel for Pipe {
     fn response_timeout(&self, timeout: Duration) -> io::Result<()> { self.timeout(timeout); Ok(()) }
     fn acknowledge(&mut self) -> Result<(), BridgeError> { Pipe::acknowledge(self) }
 }
-pub struct Peer { caller: Caller, process: OwnedHandle, pub pid: u32, pub creation_time: u64 }
-impl Peer { pub fn caller(&self) -> &Caller { &self.caller } }
+pub struct Peer { caller: Caller, process: OwnedHandle, pub pid: u32, pub creation_time: u64, pipe_admin: bool }
+impl Peer {
+    pub fn caller(&self) -> &Caller { &self.caller }
+    /// Used only by the authorization-grant request. The original owner still
+    /// needs a one-use grant bound to the reviewed plan before applying it.
+    pub fn require_elevated_admin(&self) -> Result<(), BridgeError> {
+        let denied = || BridgeError::new("EAUTHDENIED", "Approve bridge setup through the Windows administrator prompt.");
+        if !self.pipe_admin || unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } != WAIT_TIMEOUT { return Err(denied()); }
+        let mut token = ptr::null_mut();
+        if unsafe { OpenProcessToken(self.process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 { return Err(denied()); }
+        let token = owned(token).map_err(error)?;
+        if format!("sid:{}", windows_security::token_sid(token.as_raw_handle())?) != self.caller.principal()
+            || !windows_security::token_is_elevated_admin(token.as_raw_handle())? { return Err(denied()); }
+        Ok(())
+    }
+}
 
 fn connect_path(path: &str) -> Result<Pipe, BridgeError> {
     let name = wide(path);
@@ -247,6 +262,48 @@ mod tests {
         drop(pipe); drop(client);
         let _client = connect_path(&name).unwrap();
         assert!(listener.accept(Duration::from_secs(1)).unwrap().is_some());
+    }
+    #[test]
+    #[ignore = "requires LocalSystem in the disposable Windows VM"]
+    fn authorization_checks_pipe_token_as_well_as_process_token() {
+        windows_security::require_system().unwrap();
+        for restricted in [false, true] {
+            let name = name();
+            let mut listener = Listener::bind_path(&name).unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut token = ptr::null_mut();
+                assert_ne!(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &mut token) }, 0);
+                let token = owned(token).unwrap();
+                assert!(windows_security::token_is_elevated_admin(token.as_raw_handle()).unwrap());
+                let mut sid = [0u64; 9];
+                let mut bytes = std::mem::size_of_val(&sid) as u32;
+                assert_ne!(unsafe { CreateWellKnownSid(WinBuiltinAdministratorsSid, ptr::null_mut(), sid.as_mut_ptr().cast(), &mut bytes) }, 0);
+                let disable = SID_AND_ATTRIBUTES { Sid: sid.as_mut_ptr().cast(), Attributes: 0 };
+                let mut limited = ptr::null_mut();
+                assert_ne!(unsafe { CreateRestrictedToken(token.as_raw_handle(), DISABLE_MAX_PRIVILEGE,
+                    1, &disable, 0, ptr::null(), 0, ptr::null(), &mut limited) }, 0);
+                let limited = owned(limited).unwrap();
+                assert_eq!(windows_security::token_sid(token.as_raw_handle()).unwrap(), windows_security::token_sid(limited.as_raw_handle()).unwrap());
+                assert!(!windows_security::token_is_elevated_admin(limited.as_raw_handle()).unwrap());
+                struct Revert;
+                impl Drop for Revert { fn drop(&mut self) { assert_ne!(unsafe { RevertToSelf() }, 0); } }
+                let revert = if restricted {
+                    assert_ne!(unsafe { ImpersonateLoggedOnUser(limited.as_raw_handle()) }, 0);
+                    Some(Revert)
+                } else { None };
+                let mut pipe = connect_path(&name).unwrap();
+                pipe.write_all(&[1]).unwrap();
+                drop(revert);
+                let mut reply = [0]; pipe.read_exact(&mut reply).unwrap();
+            });
+            let mut pipe = listener.accept(Duration::from_secs(10)).unwrap().unwrap();
+            let mut request = [0]; pipe.read_exact(&mut request).unwrap();
+            let peer = pipe.peer().unwrap();
+            assert_eq!(peer.pid, std::process::id());
+            assert_eq!(peer.require_elevated_admin().is_ok(), !restricted);
+            pipe.write_all(&[1]).unwrap();
+            worker.join().unwrap();
+        }
     }
     #[test]
     #[ignore = "requires LocalSystem in a disposable Windows VM; run with --include-ignored"]
@@ -380,6 +437,7 @@ mod tests {
         let peer = pipe.peer().unwrap();
         assert_eq!(peer.pid, process.dwProcessId);
         assert_eq!(peer.caller().principal(), format!("sid:{sid}"));
+        assert_eq!(peer.require_elevated_admin().unwrap_err().code, "EAUTHDENIED");
         pipe.send_lease(&peer, &lease).unwrap(); drop(lease);
         pipe.finish_response().unwrap();
         assert_eq!(journal.resource_lock(&id, false).unwrap_err().code, "EBUSY");

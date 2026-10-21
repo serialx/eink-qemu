@@ -4,7 +4,7 @@ use crate::model::BridgeError;
 use std::{fs::File, os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle}, ptr};
 use windows_sys::Win32::{Foundation::{HANDLE, LocalFree}, Security::{*, Authorization::*},
     Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
-    System::Threading::{GetCurrentProcess, OpenProcessToken}};
+    System::{Threading::{GetCurrentProcess, OpenProcessToken}, SystemServices::{SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY}}};
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 // Generic write/all, delete, write ACL/owner, file data/EA/attributes and
@@ -32,6 +32,29 @@ pub fn token_sid(token: HANDLE) -> Result<String, BridgeError> {
     let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
     if unsafe { GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), length, &mut length) } == 0 { return Err(denied()); }
     sid_string(unsafe { (*(buffer.as_ptr().cast::<TOKEN_USER>())).User.Sid })
+}
+/// Membership in Administrators alone is insufficient: UAC filtered tokens
+/// retain that SID as deny-only. Restricted tokens cannot authorize changes.
+pub fn token_is_elevated_admin(token: HANDLE) -> Result<bool, BridgeError> {
+    let mut elevation: TOKEN_ELEVATION = unsafe { std::mem::zeroed() };
+    let mut length = 0;
+    if unsafe { GetTokenInformation(token, TokenElevation, (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+        std::mem::size_of_val(&elevation) as u32, &mut length) } == 0 { return Err(denied()); }
+    if elevation.TokenIsElevated == 0 || unsafe { IsTokenRestricted(token) } != 0 { return Ok(false); }
+    unsafe { GetTokenInformation(token, TokenGroups, ptr::null_mut(), 0, &mut length); }
+    let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+    if (length as usize) < offset || length > 1024 * 1024 { return Err(denied()); }
+    let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
+    if unsafe { GetTokenInformation(token, TokenGroups, buffer.as_mut_ptr().cast(), length, &mut length) } == 0 { return Err(denied()); }
+    let groups = buffer.as_ptr().cast::<TOKEN_GROUPS>();
+    let count = unsafe { (*groups).GroupCount } as usize;
+    if offset + count.saturating_mul(std::mem::size_of::<SID_AND_ATTRIBUTES>()) > length as usize { return Err(denied()); }
+    let rows = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>().add(offset).cast::<SID_AND_ATTRIBUTES>(), count) };
+    for row in rows {
+        if row.Attributes & SE_GROUP_ENABLED as u32 != 0 && row.Attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 == 0
+            && sid_string(row.Sid)? == ADMINISTRATORS { return Ok(true); }
+    }
+    Ok(false)
 }
 pub fn current_sid() -> Result<String, BridgeError> {
     let mut token = ptr::null_mut();
