@@ -4587,6 +4587,12 @@ if have_tools
                install: true,
                install_dir: get_option('libexecdir'))
 
+    executable('eink-qemu-bridge-helper', files('qemu-bridge-helper.c'),
+               dependencies: [qemuutil, libcap_ng],
+               c_args: ['-DEINK_BRIDGE_ACL_FILE="/etc/eink-qemu/bridge/bridge.conf"'],
+               install: true,
+               install_dir: get_option('libexecdir'))
+
     executable('qemu-pr-helper', files('scsi/qemu-pr-helper.c', 'scsi/utils.c'),
                dependencies: [authz, crypto, io, qom, qemuutil,
                               libcap_ng, mpathpersist],

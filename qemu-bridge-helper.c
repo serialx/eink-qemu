@@ -49,6 +49,7 @@
 #endif
 
 #define DEFAULT_ACL_FILE CONFIG_QEMU_CONFDIR "/bridge.conf"
+#include "qemu-bridge-helper-path.h"
 
 enum {
     ACL_ALLOW = 0,
@@ -286,7 +287,7 @@ int main(int argc, char **argv)
 
     /* parse default acl file */
     QSIMPLEQ_INIT(&acl_list);
-    acl_file = get_relocated_path(DEFAULT_ACL_FILE);
+    acl_file = bridge_acl_path();
     if (parse_acl_file(acl_file, &acl_list) == -1) {
         fprintf(stderr, "failed to parse default acl file `%s'\n",
                 acl_file);

@@ -166,6 +166,7 @@ jobs:
             *-linux-gnu)
               # --without-default-features disables tools, including this helper.
               test -x install/qemu/libexec/qemu-bridge-helper
+              test -x install/qemu/libexec/eink-qemu-bridge-helper
               backend=bridge
               ;;
             *-apple-darwin) backend=vmnet-bridged ;;
