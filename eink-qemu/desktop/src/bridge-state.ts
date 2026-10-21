@@ -45,7 +45,7 @@ export function reduceBridge(state: BridgeUiState, action: BridgeAction): Bridge
       if (action.plan.request.kind === 'configure' && action.plan.request.adapterId !== state.adapterId) return state;
       return { ...state, plan: action.plan, operation: null, step: 'review', error: null };
     case 'applying':
-      if (state.step !== 'review' || !state.plan) return state;
+      if (!(state.step === 'review' && state.plan) && !(state.step === 'reboot' && state.operation?.rebootRequired)) return state;
       return { ...state, step: 'progress', error: null };
     case 'operation':
       if (action.operation.id !== (state.operation?.id ?? state.plan?.id)) return state;
@@ -98,4 +98,8 @@ export function canKeep(state: BridgeUiState, now: number): boolean {
   const op = state.operation;
   return !!op && state.step === 'progress' && op.state === 'verifying' && !op.rebootRequired
     && op.confirmationDeadline !== null && now < op.confirmationDeadline;
+}
+export function canResume(state: BridgeUiState, emulatorIdle: boolean): boolean {
+  return emulatorIdle && state.step === 'reboot' && state.operation?.state === 'applying'
+    && state.operation.rebootRequired && state.inspection?.support === 'ready' && !state.inspection.externalOverride;
 }

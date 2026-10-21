@@ -6,6 +6,7 @@ use std::path::Path;
 
 const RECORD_VERSION: u32 = 1;
 const CLEANUP_RECORD_VERSION: u32 = 2;
+const REBOOT_RECORD_VERSION: u32 = 3;
 
 pub trait PlatformOps {
     type Snapshot: Serialize + DeserializeOwned + Clone;
@@ -18,6 +19,15 @@ pub trait PlatformOps {
     /// this context before invoking the next external mutation. A step that
     /// allocates a handle must remain recoverable if it crashes before return.
     fn apply_recorded(&mut self, mutation: &Self::Mutation, _: &mut Self::Snapshot) -> Result<(), BridgeError> { self.apply(mutation) }
+    /// Pause only after a nondisruptive prerequisite, before changing host
+    /// membership. The platform records the current boot identity in Snapshot.
+    fn awaiting_reboot(&self, _: &Self::Snapshot) -> bool { false }
+    /// Explicit owner Apply, with fresh OS authorization, resumes the remaining
+    /// steps. Require a different boot and validate the installed prerequisite.
+    /// Startup and the watchdog must never continue a disruptive conversion.
+    fn resume_after_reboot(&mut self, _: &mut Self::Snapshot) -> Result<(), BridgeError> {
+        Err(BridgeError::new("EREBOOT", "Restart the computer before continuing bridge setup."))
+    }
     fn verify(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
     /// Restore volatile runtime state for an already committed resource at boot.
     /// Preserve changed persistent configuration; this is not automatic repair.
@@ -81,7 +91,8 @@ impl<P: PlatformOps> Coordinator<P> {
     }
     fn record(&self) -> Result<Option<Record<P::Snapshot, P::Mutation>>, BridgeError> {
         let record: Option<Record<P::Snapshot, P::Mutation>> = self.journal.read()?;
-        if record.as_ref().is_some_and(|r| r.version != if r.cleanup_pending { CLEANUP_RECORD_VERSION } else { RECORD_VERSION }) { return Err(BridgeError::new("EPROTOCOL", "Bridge recovery record needs a compatible helper.")); }
+        if record.as_ref().is_some_and(|r| r.version != if r.cleanup_pending { CLEANUP_RECORD_VERSION }
+            else if r.operation.reboot_required { REBOOT_RECORD_VERSION } else { RECORD_VERSION }) { return Err(BridgeError::new("EPROTOCOL", "Bridge recovery record needs a compatible helper.")); }
         Ok(record)
     }
     fn owned(&self, id: &OperationId) -> Result<Record<P::Snapshot, P::Mutation>, BridgeError> {
@@ -93,7 +104,8 @@ impl<P: PlatformOps> Coordinator<P> {
     fn save(&self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
         // Older helpers reject v2 rather than resuming a resource while its
         // irreversible cleanup is in progress. Completed records keep v1.
-        record.version = if record.cleanup_pending { CLEANUP_RECORD_VERSION } else { RECORD_VERSION };
+        record.version = if record.cleanup_pending { CLEANUP_RECORD_VERSION }
+            else if record.operation.reboot_required { REBOOT_RECORD_VERSION } else { RECORD_VERSION };
         record.operation.revision += 1; self.journal.write(record)?; Ok(record.operation.clone())
     }
     pub fn resources(&self) -> Result<Vec<Resource<P::Snapshot>>, BridgeError> {
@@ -107,6 +119,7 @@ impl<P: PlatformOps> Coordinator<P> {
     pub fn resume_resources(&mut self) -> Result<Vec<(ResourceId, BridgeError)>, BridgeError> {
         let _lock = self.journal.lock()?;
         let Some(record) = self.record()? else { return Ok(Vec::new()); };
+        if record.undo_required && record.operation.reboot_required { return Ok(Vec::new()); }
         if record.undo_required || record.cleanup_pending { return Err(BridgeError::new("ERECOVERY", "Finish the interrupted bridge operation first.")); }
         let mut failures = Vec::new();
         for resource in record.resources {
@@ -189,15 +202,22 @@ impl<P: PlatformOps> Coordinator<P> {
                 Some(self.journal.resource_lock(resource_id, false)?)
             },
         };
-        if record.operation.state != OperationState::AwaitingAuthorization { return Err(BridgeError::new("EBUSY", "Bridge operation has already started.")); }
-        if now >= record.prepared.plan.expires_at || self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
+        let resuming = record.operation.reboot_required && record.operation.state == OperationState::Applying
+            && record.undo_required && record.in_flight_mutation.is_none() && record.completed_mutations > 0;
+        if !resuming && record.operation.state != OperationState::AwaitingAuthorization { return Err(BridgeError::new("EBUSY", "Bridge operation has already started.")); }
+        if (!resuming && now >= record.prepared.plan.expires_at) || self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
             return Err(BridgeError::new("ESTALE", "The selected connection changed. Review setup again."));
+        }
+        if resuming {
+            self.platform.resume_after_reboot(&mut record.prepared.snapshot)?;
+            if self.platform.awaiting_reboot(&record.prepared.snapshot) { return Err(BridgeError::new("EREBOOT", "Restart the computer before continuing bridge setup.")); }
+            record.operation.reboot_required = false;
         }
         record.undo_required = true; record.operation.state = OperationState::Applying;
         record.operation.stage = "Configure bridge".into();
         // Persist restoration data before the first external side effect.
         self.save(&mut record)?;
-        for index in 0..record.prepared.mutations.len() {
+        for index in record.completed_mutations..record.prepared.mutations.len() {
             record.in_flight_mutation = Some(index);
             self.save(&mut record)?;
             if let Err(error) = self.platform.apply_recorded(&record.prepared.mutations[index], &mut record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
@@ -206,6 +226,11 @@ impl<P: PlatformOps> Coordinator<P> {
             // an external action that may already have succeeded.
             record.completed_mutations = index + 1;
             record.in_flight_mutation = None;
+            if self.platform.awaiting_reboot(&record.prepared.snapshot) {
+                record.operation.reboot_required = true;
+                record.operation.stage = "Restart the computer, then continue bridge setup".into();
+                return self.save(&mut record);
+            }
             self.save(&mut record)?;
         }
         record.operation.state = OperationState::Verifying; record.operation.stage = "Check connection".into();
@@ -311,6 +336,9 @@ impl<P: PlatformOps> Coordinator<P> {
             }
             return self.finish_cleanup(&mut record).map(Some);
         }
+        if record.undo_required && record.operation.reboot_required && record.operation.state == OperationState::Applying {
+            return Ok(Some(record.operation));
+        }
         // A recorded conflict needs an explicit owner retry. Restarting the
         // service must not repeat a restoration the OS already refused.
         if record.undo_required && record.operation.state == OperationState::Failed
@@ -326,7 +354,7 @@ impl<P: PlatformOps> Coordinator<P> {
         record.operation.state = OperationState::RollingBack; record.operation.stage = "Restore previous connection".into();
         record.operation.confirmation_deadline = None; self.save(record)?;
         match self.platform.rollback(&record.prepared.snapshot) {
-            Ok(()) => { record.undo_required = false; record.operation.state = if cause.is_some() { OperationState::Failed } else { OperationState::Cancelled }; record.operation.error = cause; },
+            Ok(()) => { record.undo_required = false; record.operation.reboot_required = false; record.operation.state = if cause.is_some() { OperationState::Failed } else { OperationState::Cancelled }; record.operation.error = cause; },
             Err(error) => { record.operation.state = OperationState::Failed;
                 record.operation.error = Some(BridgeError { code: "EROLLBACK".into(), message: "Could not restore the previous connection. Repair is required.".into(), detail: Some(error.to_string()) }); },
         }

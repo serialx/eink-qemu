@@ -1,5 +1,5 @@
 import type { BridgeBackend, BridgeError, BridgeOperation, BridgePlanRequest } from './bridge-types.ts';
-import { canApply, canKeep, initialBridgeState, reduceBridge, verifiedSelection } from './bridge-state.ts';
+import { canApply, canKeep, canResume, initialBridgeState, reduceBridge, verifiedSelection } from './bridge-state.ts';
 import type { BridgeAction, BridgeUiState } from './bridge-state.ts';
 import { dialogOpen, registerDialog } from './dialog.ts';
 
@@ -37,7 +37,7 @@ export function bridgeView(state: BridgeUiState) {
       break;
     case 'reboot':
       view.title = 'Restart required';
-      view.message = 'Restart the computer to finish setup, then reopen bridge setup to verify the connection.';
+      view.message = 'Restart the computer, then choose Continue setup to finish configuring the connection.';
       break;
     case 'failed':
       view.title = state.error?.code === 'EROLLBACK' ? 'Connection needs repair'
@@ -236,7 +236,15 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     } else if (state.step === 'ready') {
       button('Manage setup', () => { send({ type: 'back' }); void refresh(); });
     } else if (state.step === 'reboot') {
-      button('Check again', () => void refresh());
+      if (state.operation) {
+        const id = state.operation.id;
+        button('Cancel setup', () => void run(async () => receive(await backend.cancel(id))), emulatorIdle());
+        button('Continue setup', () => void run(async () => {
+          if (!canResume(state, emulatorIdle())) return;
+          send({ type: 'applying' });
+          receive(await backend.apply(id));
+        }), canResume(state, emulatorIdle()), true);
+      }
     }
     if (view.canClose) button(state.step === 'ready' ? 'Done' : 'Close', () => dialog.close());
     tick();
@@ -254,6 +262,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     countdown.hidden = !countdown.textContent;
     for (const b of actions.querySelectorAll<HTMLButtonElement>('button')) {
       if (b.textContent === 'Keep connection') b.disabled = busy || !canKeep(state, now());
+      if (b.textContent === 'Continue setup') b.disabled = busy || !canResume(state, emulatorIdle());
       if (state.step === 'review' && (b.textContent === 'Apply setup' || b.textContent === 'Remove setup')) b.disabled = busy || !canApply(state, now(), emulatorIdle());
     }
   }

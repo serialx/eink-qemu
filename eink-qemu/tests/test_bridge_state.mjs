@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { initialBridgeState, reduceBridge, canApply, canKeep, verifiedSelection } from '../desktop/src/bridge-state.ts';
+import { initialBridgeState, reduceBridge, canApply, canKeep, canResume, verifiedSelection } from '../desktop/src/bridge-state.ts';
 const id = '0123456789abcdef0123456789abcdef';
 const adapter = { id: 'en7', name: 'USB Ethernet', kind: 'ethernet', linkUp: true, eligible: true, reason: null, fingerprint: 'original' };
 const inspection = { support: 'ready', platform: 'macos', adapters: [adapter], capabilities: { create: true, existingBridge: false, reason: null }, selection: null, readiness: 'needsSetup', activeOperation: null, externalOverride: null };
@@ -116,4 +116,19 @@ test('reopening a completed removal clears the saved selection and returns to co
   assert.equal(verifiedSelection({...plan, request:{kind:'repair',resourceId:id}}, removed), false);
   assert.equal(verifiedSelection(null, {...removed, support:'missing'}), false);
   assert.equal(verifiedSelection(null, {...removed, selection:{resourceId:id}, readiness:'needsRepair'}), false);
+});
+
+test('reopened restart prerequisite waits for explicit resume and blocks a running emulator', () => {
+  const paused=operation(4,'applying',{rebootRequired:true});
+  const state=reduceBridge(initialBridgeState(),{type:'inspected',inspection:{...inspection,activeOperation:paused}});
+  assert.equal(state.step,'reboot');
+  assert.equal(canResume(state,true),true);
+  assert.equal(canResume(state,false),false);
+  assert.equal(canKeep(state,100),false);
+  assert.equal(canResume({...state,inspection:{...inspection,externalOverride:'X4NET'}},true),false);
+  const resumed=reduceBridge(state,{type:'applying'});
+  assert.equal(resumed.step,'progress');
+  assert.equal(canResume(resumed,true),false);
+  const verified=reduceBridge(resumed,{type:'operation',operation:operation(5,'verifying',{confirmationDeadline:300})});
+  assert.equal(canKeep(verified,200),true);
 });
