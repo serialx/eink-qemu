@@ -35,3 +35,9 @@ pub mod linux_helper;
 #[cfg(target_os = "linux")]
 #[path = "platform/linux/verify.rs"]
 pub mod linux_verify;
+#[cfg(target_os = "linux")]
+#[path = "platform/linux/transaction.rs"]
+pub mod linux_transaction;
+#[cfg(target_os = "linux")]
+#[path = "platform/linux/network.rs"]
+pub mod linux_network;

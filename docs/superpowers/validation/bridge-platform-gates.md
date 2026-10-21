@@ -250,3 +250,34 @@ Comparison accepts only matching aliases and equivalent empty/false defaults;
 tests retain conflicts for changed MAC, negotiation, blacklist, and s390 options.
 The final native conversion and restoration both passed. All 47 Linux bridge tests
 passed. Production lifecycle integration and packaged acceptance remain unfinished.
+
+### Durable lifecycle and removal checks
+
+The signed macOS test app completed authorized removal. The owned launchd service
+and `socket_vmnet` process were absent afterward, and ordinary-user helper
+inspection returned no configured resource and `NeedsSetup`. An unrelated
+authorization reference was still denied. An earlier approval arrived after the
+five-minute plan deadline and correctly returned `ESTALE` without mutation. The
+disposable-host test harness now refreshes the plan after the password prompt and
+requires every reviewed field to match; production expiration is unchanged.
+
+Linux native lifecycle checks passed for Cancel, Keep followed by removal, and
+recovery after process exit at each of the five mutation steps and immediately
+after native commit. Recovery preserved deliberate external profile edits, both
+before and after Keep, and disarmed the checkpoint timer instead of allowing it
+to overwrite those edits later. A stale MTU plan was rejected before mutation.
+Checkpoint identities include the boot, system bus, and NetworkManager owner so
+a recycled object path cannot affect another operation. The current native Linux
+bridge suite passes all 53 tests.
+
+Boot testing exposed a separate Netplan persistence problem: the generator
+recreated the original profile, discarding the temporary IPv6 test settings.
+Recovery refused the changed profile. After explicitly restoring the recorded QA
+fixture, recovery and final original-profile restoration passed. Automatic setup
+now rejects temporary, unsaved, and generated profiles, including Netplan profiles
+promoted to `/etc` that can still be regenerated at boot. Native rejection left
+the profile and live network unchanged. The check uses NetworkManager's
+[profile storage metadata](https://www.networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Settings.Connection.html).
+
+These checks exercise the native components. Linux service integration, Windows
+production implementation, and packaged application acceptance remain unfinished.
