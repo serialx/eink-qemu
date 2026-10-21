@@ -129,3 +129,16 @@ fn native_macos_runtime_parent_is_accepted_but_user_directories_are_not() {
     let user_directory = tempfile::tempdir().unwrap();
     assert_eq!(validate_system_directory(user_directory.path()).unwrap_err().code, "EPERM");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_authorization_uses_the_kernel_process_and_start_time() {
+    use std::os::unix::net::UnixStream;
+    let (socket, _) = UnixStream::pair().unwrap();
+    let caller = eink_bridge::transport::unix::caller(&socket).unwrap();
+    let process = caller.process();
+    assert_eq!(process.pid(), std::process::id());
+    assert_eq!(process.uid(), unsafe { libc::geteuid() });
+    assert!(process.start_time() > 0);
+    process.revalidate().unwrap();
+}

@@ -10,6 +10,11 @@ pub trait PlatformOps {
     fn prepare(&mut self, request: PlanRequest, id: OperationId, now: u64, existing: Option<&Resource<Self::Snapshot>>) -> Result<Prepared<Self::Snapshot, Self::Mutation>, BridgeError>;
     fn fingerprint(&mut self, request: &PlanRequest, snapshot: &Self::Snapshot) -> Result<String, BridgeError>;
     fn apply(&mut self, mutation: &Self::Mutation) -> Result<(), BridgeError>;
+    /// Record native handles allocated during a step (for example an NM
+    /// checkpoint). Preserve the original undo state. The coordinator persists
+    /// this context before invoking the next external mutation. A step that
+    /// allocates a handle must remain recoverable if it crashes before return.
+    fn apply_recorded(&mut self, mutation: &Self::Mutation, _: &mut Self::Snapshot) -> Result<(), BridgeError> { self.apply(mutation) }
     fn verify(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
     /// Restore volatile runtime state for an already committed resource at boot.
     /// Preserve changed persistent configuration; this is not automatic repair.
@@ -174,7 +179,7 @@ impl<P: PlatformOps> Coordinator<P> {
         for index in 0..record.prepared.mutations.len() {
             record.in_flight_mutation = Some(index);
             self.save(&mut record)?;
-            if let Err(error) = self.platform.apply(&record.prepared.mutations[index]) { return self.rollback(&mut record, Some(error)); }
+            if let Err(error) = self.platform.apply_recorded(&record.prepared.mutations[index], &mut record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
             // A crash before this durable completion leaves the step marked
             // uncertain. Recovery restores the snapshot rather than replaying
             // an external action that may already have succeeded.

@@ -87,7 +87,12 @@ fn peer_uid(stream: &UnixStream) -> Result<u32, BridgeError> {
     { let _ = stream; Err(permission()) }
 }
 pub fn caller(stream: &UnixStream) -> Result<Caller, BridgeError> {
-    Ok(Caller { principal: format!("uid:{}", peer_uid(stream)?) })
+    #[cfg(target_os = "linux")]
+    let process = ProcessIdentity::from_socket(stream)?;
+    Ok(Caller { principal: format!("uid:{}", peer_uid(stream)?),
+        #[cfg(target_os = "linux")]
+        process,
+    })
 }
 pub fn verify_peer(stream: &UnixStream, expected_uid: u32) -> Result<(), BridgeError> {
     if peer_uid(stream)? != expected_uid { return Err(permission()); }
@@ -193,5 +198,58 @@ mod tests {
         assert!(!trusted_directory(Path::new("/private/var/run"), 0, 1, 0o777));
         #[cfg(target_os = "macos")]
         assert!(trusted_directory(Path::new("/private/var/run"), 0, 1, 0o775));
+    }
+}
+
+/// Captured from SO_PEERCRED, never deserialized from an IPC request. Start
+/// time and UID bind polkit authorization to this process incarnation.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity { pid: u32, uid: u32, start_time: u64 }
+#[cfg(target_os = "linux")]
+impl ProcessIdentity {
+    fn from_socket(stream: &UnixStream) -> Result<Self, BridgeError> {
+        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        if unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(), &mut length) } != 0
+            || length as usize != std::mem::size_of::<libc::ucred>() || credentials.pid <= 0 { return Err(permission()); }
+        let pid = credentials.pid as u32;
+        let start_time = process_start_time(pid, credentials.uid)?;
+        Ok(Self { pid, uid: credentials.uid, start_time })
+    }
+    pub fn pid(&self) -> u32 { self.pid }
+    pub fn uid(&self) -> u32 { self.uid }
+    pub fn start_time(&self) -> u64 { self.start_time }
+    pub fn revalidate(&self) -> Result<(), BridgeError> {
+        if process_start_time(self.pid, self.uid)? != self.start_time { return Err(permission()); }
+        Ok(())
+    }
+}
+#[cfg(target_os = "linux")]
+fn process_start_time(pid: u32, uid: u32) -> Result<u64, BridgeError> {
+    use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt};
+    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(format!("/proc/{pid}/stat")).map_err(|_| permission())?;
+    if file.metadata().map_err(|_| permission())?.uid() != uid { return Err(permission()); }
+    let mut text = String::new();
+    (&mut file).take(8192).read_to_string(&mut text).map_err(|_| permission())?;
+    stat_start_time(&text)
+}
+#[cfg(target_os = "linux")]
+fn stat_start_time(text: &str) -> Result<u64, BridgeError> {
+    // comm can itself contain spaces and parentheses. Field 22 is the 20th
+    // whitespace-separated field after the final closing parenthesis.
+    text.rsplit_once(") ").and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0).ok_or_else(permission)
+}
+#[cfg(all(test, target_os = "linux"))]
+mod linux_process_tests {
+    use super::*;
+    #[test]
+    fn process_names_cannot_shift_the_start_time_field() {
+        let fields = format!("S {} 98765 0", vec!["0"; 18].join(" "));
+        assert_eq!(stat_start_time(&format!("234 (strange ) process (name)) {fields}")).unwrap(), 98765);
+        for invalid in ["", "1 (name) S", "1 (name) S zero"] { assert!(stat_start_time(invalid).is_err()); }
     }
 }

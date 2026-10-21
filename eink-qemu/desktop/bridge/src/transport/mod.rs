@@ -7,9 +7,15 @@ use std::io::{Read, Write};
 pub mod unix;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Caller { principal: String }
+pub struct Caller {
+    principal: String,
+    #[cfg(target_os = "linux")]
+    process: unix::ProcessIdentity,
+}
 impl Caller {
     pub fn principal(&self) -> &str { &self.principal }
+    #[cfg(target_os = "linux")]
+    pub fn process(&self) -> &unix::ProcessIdentity { &self.process }
     #[cfg(unix)]
     pub fn uid(&self) -> Result<u32, BridgeError> {
         self.principal.strip_prefix("uid:").and_then(|uid| uid.parse().ok())
@@ -47,8 +53,13 @@ pub struct TransportLease { pub target: LaunchTarget, _file: std::fs::File }
 impl TransportLease {
     pub fn into_parts(self) -> (LaunchTarget, std::fs::File) { (self.target, self._file) }
 }
-trait Channel: Read + Write {}
-impl<T: Read + Write> Channel for T {}
+trait Channel: Read + Write {
+    fn response_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()>;
+}
+#[cfg(unix)]
+impl Channel for std::os::unix::net::UnixStream {
+    fn response_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()> { self.set_read_timeout(Some(timeout)) }
+}
 impl HelperClient {
     pub fn acquire(selection: BridgeSelection) -> Result<TransportLease, BridgeError> {
         #[cfg(unix)] {
@@ -72,6 +83,15 @@ impl HelperClient {
         { Err(BridgeError::new("ENEEDSSETUP", "The native bridge helper connection is not available.")) }
     }
     pub fn request(mut self, request: HelperRequest) -> Result<HelperReply, BridgeError> {
+        // Linux authorization runs in the helper and can wait for its native
+        // desktop prompt. Keep inspection responsive while allowing a reviewed
+        // mutation to finish authentication and bounded native setup.
+        let seconds = match request.request {
+            RequestKind::Apply { .. } => 300,
+            RequestKind::Keep { .. } | RequestKind::Cancel { .. } => 180,
+            _ => 30,
+        };
+        self.stream.response_timeout(std::time::Duration::from_secs(seconds)).map_err(|error| BridgeError::new("EIPC", error.to_string()))?;
         exchange(&mut self.stream, &request)
     }
 }

@@ -351,3 +351,41 @@ fn confirmation_time_starts_after_slow_native_setup() {
     let operation = owner.apply(&plan.id, 101).unwrap();
     assert!(operation.confirmation_deadline.unwrap() >= 222, "native setup must not consume the confirmation window");
 }
+
+#[test]
+fn native_checkpoint_identity_is_durable_before_network_mutation() {
+    #[derive(Clone, Serialize, Deserialize)]
+    struct CheckpointSnapshot { checkpoint: Option<String> }
+    #[derive(Clone)]
+    struct CheckpointHost { journal: std::path::PathBuf, restored: Arc<Mutex<bool>> }
+    impl PlatformOps for CheckpointHost {
+        type Snapshot = CheckpointSnapshot;
+        type Mutation = u8;
+        fn prepare(&mut self, request: PlanRequest, id: OperationId, now: u64, _: Option<&eink_bridge::coordinator::Resource<Self::Snapshot>>) -> Result<Prepared<Self::Snapshot, u8>, BridgeError> {
+            Ok(Prepared { plan: BridgePlan { id, request, fingerprint: "nic".into(), changes: vec![], requires_authorization: true, may_disconnect: true, expires_at: now + 300 }, snapshot: CheckpointSnapshot { checkpoint: None }, mutations: vec![0, 1] })
+        }
+        fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok("nic".into()) }
+        fn apply(&mut self, _: &u8) -> Result<(), BridgeError> { panic!("native mutation must receive its durable context") }
+        fn apply_recorded(&mut self, step: &u8, snapshot: &mut Self::Snapshot) -> Result<(), BridgeError> {
+            if *step == 0 { snapshot.checkpoint = Some("/native/checkpoint/7".into()); return Ok(()); }
+            let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&self.journal).unwrap()).unwrap();
+            assert_eq!(record["prepared"]["snapshot"]["checkpoint"], "/native/checkpoint/7");
+            panic!("process crash at first network mutation");
+        }
+        fn verify(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
+        fn commit(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
+        fn rollback(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError> {
+            assert_eq!(snapshot.checkpoint.as_deref(), Some("/native/checkpoint/7"));
+            *self.restored.lock().unwrap() = true; Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let host = CheckpointHost { journal: dir.path().join("operation.json"), restored: Arc::new(Mutex::new(false)) };
+    let mut owner = Coordinator::open(dir.path(), "user", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.apply(&plan.id, 101))).is_err());
+    drop(owner);
+    let mut service = Coordinator::open(dir.path(), "service", host.clone()).unwrap();
+    assert_eq!(service.recover_startup().unwrap().unwrap().state, OperationState::Cancelled);
+    assert!(*host.restored.lock().unwrap());
+}
