@@ -21,6 +21,9 @@ pub mod windows_command;
 #[path = "platform/windows/topology.rs"]
 pub mod windows_topology;
 #[cfg(windows)]
+#[path = "platform/windows/profile.rs"]
+pub mod windows_profile;
+#[cfg(windows)]
 #[path = "platform/windows/driver.rs"]
 pub mod windows_driver;
 #[cfg(windows)]

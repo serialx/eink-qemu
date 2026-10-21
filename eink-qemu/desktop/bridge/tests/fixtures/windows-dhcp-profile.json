@@ -1,0 +1,197 @@
+{
+  "guid": "{00000000-0000-0000-0000-000000000001}",
+  "instanceId": "PCI\\TEST\\ADAPTER",
+  "mac": "02-00-00-00-00-01",
+  "interfaces": [
+    {
+      "AddressFamily": 23,
+      "Dhcp": 1,
+      "RouterDiscovery": 1,
+      "AutomaticMetric": 1,
+      "InterfaceMetric": 25,
+      "NlMtu": 1500,
+      "Forwarding": 0,
+      "WeakHostSend": 0,
+      "WeakHostReceive": 0,
+      "Advertising": 0,
+      "AdvertiseDefaultRoute": 0
+    },
+    {
+      "AddressFamily": 2,
+      "Dhcp": 1,
+      "RouterDiscovery": 2,
+      "AutomaticMetric": 1,
+      "InterfaceMetric": 25,
+      "NlMtu": 1500,
+      "Forwarding": 0,
+      "WeakHostSend": 0,
+      "WeakHostReceive": 0,
+      "Advertising": 0,
+      "AdvertiseDefaultRoute": 0
+    }
+  ],
+  "addresses": [],
+  "routes": [],
+  "activeAddresses": [
+    {
+      "IPAddress": "fe80::f7e3:61e6:1201:4266%4",
+      "PrefixLength": 64,
+      "AddressFamily": 23,
+      "PrefixOrigin": 2,
+      "SuffixOrigin": 4,
+      "SkipAsSource": false
+    },
+    {
+      "IPAddress": "2001:db8:abcd:1234:f5f4:6ea:a8f0:bddb",
+      "PrefixLength": 128,
+      "AddressFamily": 23,
+      "PrefixOrigin": 4,
+      "SuffixOrigin": 5,
+      "SkipAsSource": false
+    },
+    {
+      "IPAddress": "2001:db8:abcd:1234:2fba:a310:2ae6:50be",
+      "PrefixLength": 64,
+      "AddressFamily": 23,
+      "PrefixOrigin": 4,
+      "SuffixOrigin": 4,
+      "SkipAsSource": false
+    },
+    {
+      "IPAddress": "192.0.2.7",
+      "PrefixLength": 24,
+      "AddressFamily": 2,
+      "PrefixOrigin": 3,
+      "SuffixOrigin": 3,
+      "SkipAsSource": false
+    }
+  ],
+  "activeRoutes": [
+    {
+      "DestinationPrefix": "255.255.255.255/32",
+      "NextHop": "0.0.0.0",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "224.0.0.0/4",
+      "NextHop": "0.0.0.0",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "192.0.2.255/32",
+      "NextHop": "0.0.0.0",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "192.0.2.7/32",
+      "NextHop": "0.0.0.0",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "192.0.2.0/24",
+      "NextHop": "0.0.0.0",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "0.0.0.0/0",
+      "NextHop": "192.0.2.1",
+      "RouteMetric": 0,
+      "Protocol": 3,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "ff00::/8",
+      "NextHop": "::",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "fe80::f7e3:61e6:1201:4266/128",
+      "NextHop": "::",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "fe80::/64",
+      "NextHop": "::",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "2001:db8:abcd:1234:f5f4:6ea:a8f0:bddb/128",
+      "NextHop": "::",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "2001:db8:abcd:1234:2fba:a310:2ae6:50be/128",
+      "NextHop": "::",
+      "RouteMetric": 256,
+      "Protocol": 2,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "2001:db8:abcd:1234::/64",
+      "NextHop": "::",
+      "RouteMetric": 256,
+      "Protocol": 3,
+      "Publish": 0
+    },
+    {
+      "DestinationPrefix": "::/0",
+      "NextHop": "fe80::fcb2:14ff:fe5a:2965",
+      "RouteMetric": 256,
+      "Protocol": 3,
+      "Publish": 0
+    }
+  ],
+  "dns": [
+    {
+      "AddressFamily": 2,
+      "ServerAddresses": [
+        "192.0.2.1"
+      ]
+    },
+    {
+      "AddressFamily": 23,
+      "ServerAddresses": [
+        "fe80::fcb2:14ff:fe5a:2967",
+        "fe80::fcb2:14ff:fe5a:2965",
+        "fe80::fcb2:14ff:fe5a:2965"
+      ]
+    }
+  ],
+  "dnsClient": [
+    {
+      "ConnectionSpecificSuffix": "example.test",
+      "RegisterThisConnectionsAddress": true,
+      "UseSuffixWhenRegistering": false
+    }
+  ],
+  "manualDns": [
+    {
+      "protocol": "Tcpip",
+      "nameServer": "",
+      "domain": ""
+    },
+    {
+      "protocol": "Tcpip6",
+      "nameServer": "",
+      "domain": ""
+    }
+  ]
+}
