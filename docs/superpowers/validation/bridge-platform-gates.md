@@ -392,8 +392,8 @@ starting the emulator without elevating either process.
 QEMU now accepts an explicit `guid:{...}` TAP target for managed launches;
 legacy display-name selection remains available. A C test validates its exact,
 bounded syntax. This avoids resolving a changed display name to a different
-adapter after setup verification. The actual rebuilt Windows QEMU run remains
-pending while the disposable VM's build toolchain is prepared.
+adapter after setup verification. Both Windows QEMU architectures have now been
+built from the patched source and passed the native lease test described below.
 
 ### Dedicated Windows TAP installation
 
@@ -546,3 +546,24 @@ full-restart boundary still needs validation.
 The installed Windows service, complete network lifecycle, and packaged desktop
 acceptance are still pending. These component tests do not establish a working
 Windows setup wizard.
+
+### Real Windows QEMU lease validation
+
+Both `qemu-system-riscv32.exe` and `qemu-system-xtensa.exe` passed the same
+native test under a temporary standard account. Each opened the exact owned TAP
+GUID, emitted its QMP greeting, and retained the sole inherited read-only
+bridge lease after receiving EOF on stdin. The lease blocked mutation until
+QEMU exited, even while its launcher stayed alive. The same TAP then reopened
+successfully. Both test runs removed the temporary account and owned adapter.
+The child processes were contained in a job that terminates them if the test
+launcher fails.
+
+The first run exposed a TAP-specific error mapping: an occupied TAP returns
+Windows error 31 from `CreateFile`, corresponding to the driver's
+`STATUS_UNSUCCESSFUL` exclusive-open response. The access check now reports
+that opening failure as unavailable/busy; error 31 from an IOCTL remains a
+transport failure. The successful retry also verifies reopening after QEMU
+exits. See the [driver's exclusive-open implementation](https://github.com/OpenVPN/tap-windows6/blob/master/src/device.c).
+
+These tests used `-M none` with a TAP backend. They validate native access and
+lease ownership, not firmware DHCP or reachability from another LAN device.

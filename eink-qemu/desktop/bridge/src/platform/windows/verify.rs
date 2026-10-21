@@ -13,6 +13,16 @@ fn error(code: u32) -> BridgeError {
     };
     BridgeError { code: kind.into(), message: message.into(), detail: Some(format!("Windows status {code}")) }
 }
+fn open_error(code:u32)->BridgeError{
+    // TAP's IRP_MJ_CREATE returns STATUS_UNSUCCESSFUL when TapFileObject is
+    // already occupied; Windows maps it to ERROR_GEN_FAILURE, not a sharing
+    // violation. Apply this only to opening a verified TAP device, never to
+    // failed IOCTLs. https://github.com/OpenVPN/tap-windows6/blob/master/src/device.c
+    if code==ERROR_GEN_FAILURE {
+        BridgeError {code:"EBUSY".into(),message:"The TAP adapter is unavailable or already in use. Stop its emulator and try again.".into(),
+            detail:Some(format!("Windows status {code}"))}
+    }else{error(code)}
+}
 pub fn target(guid: &str) -> Result<LaunchTarget, BridgeError> {
     Ok(LaunchTarget::WindowsTap { name: format!("guid:{}", windows_device::guid(guid)?) })
 }
@@ -29,7 +39,7 @@ pub fn probe(guid: &str) -> Result<[u32; 3], BridgeError> {
     }
     let handle = unsafe { CreateFileW(wide(&format!(r"\\.\Global\{guid}.tap")).as_ptr(), GENERIC_READ | GENERIC_WRITE,
         0, ptr::null(), OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM | FILE_FLAG_OVERLAPPED, ptr::null_mut()) };
-    if handle == INVALID_HANDLE_VALUE { return Err(error(unsafe { GetLastError() })); }
+    if handle == INVALID_HANDLE_VALUE { return Err(open_error(unsafe { GetLastError() })); }
     let file = unsafe { OwnedHandle::from_raw_handle(handle) };
     let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
     if event.is_null() { return Err(error(unsafe { GetLastError() })); }
@@ -61,6 +71,12 @@ pub fn probe(guid: &str) -> Result<[u32; 3], BridgeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tap_exclusive_open_failure_does_not_reclassify_ioctl_failures(){
+        assert_eq!(open_error(ERROR_GEN_FAILURE).code,"EBUSY");
+        assert_eq!(error(ERROR_GEN_FAILURE).code,"ETRANSPORT");
+        assert_eq!(open_error(ERROR_ACCESS_DENIED).code,"EACCESS");
+    }
     #[test]
     fn managed_targets_cannot_select_friendly_names_or_device_paths() {
         let expected = "{12345678-1234-5678-9abc-1234567890ab}";

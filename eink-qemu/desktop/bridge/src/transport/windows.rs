@@ -232,6 +232,7 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::System::JobObjects::*;
     fn name() -> String { format!(r"\\.\pipe\eink-bridge-test-{}-{}", std::process::id(), getrandom::u64().unwrap()) }
     #[test]
     fn bounded_pipe_authenticates_kernel_identity_and_keeps_its_name() {
@@ -342,6 +343,49 @@ mod tests {
         assert!(journal.resource_lock(&id, false).is_ok());
     }
 
+    // Optional extension of the ordinary-user gate with a real native QEMU.
+    // The fixture must be an unbridged app-owned TAP in the disposable VM.
+    fn qemu_keeps_inherited_lease(pipe: &mut Pipe, lease: File, executable: &str) {
+        use std::{io::BufRead, process::{Child, Command, Stdio}, sync::mpsc};
+        let guid = crate::windows_device::guid(&std::env::var("EINK_PIPE_TEST_TAP_GUID").unwrap()).unwrap();
+        let stderr_path = format!(r"C:\Windows\Temp\eink-qemu-lease-{}.log", std::process::id());
+        let stderr = File::create(&stderr_path).unwrap();
+        struct Emulator(Child);
+        impl Drop for Emulator { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+        let mut emulator = Emulator(Command::new(executable)
+            .args(["-M", "none", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
+                "-netdev", &format!("tap,id=bridge,ifname=guid:{guid}")])
+            .env("PATH", r"C:\eink-build-tools\msys64\ucrt64\bin;C:\Windows\System32")
+            .stdin(Stdio::from(lease)).stdout(Stdio::piped()).stderr(Stdio::from(stderr)).spawn().unwrap());
+        // The command and its duplicate stdin have been dropped. The emulator
+        // now owns the only lease handle; EOF on its empty stdin must not close
+        // that borrowed Windows process handle or terminate the emulator.
+        let stdout = emulator.0.stdout.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let result = std::io::BufReader::new(stdout).read_line(&mut line).map(|_| line);
+            let _ = send.send(result);
+        });
+        let greeting = receive.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
+        assert!(greeting.contains("\"QMP\""), "{greeting}; {}", std::fs::read_to_string(&stderr_path).unwrap_or_default());
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(emulator.0.try_wait().unwrap().is_none(), "QEMU exited: {}", std::fs::read_to_string(&stderr_path).unwrap_or_default());
+            match crate::windows_verify::probe(&guid) {
+                Err(error) if error.code == "EBUSY" => break,
+                Ok(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(100)),
+                other => panic!("QEMU did not open the recorded TAP: {other:?}"),
+            }
+        }
+        pipe.write_all(&[2]).unwrap();
+        let mut release = [0]; pipe.read_exact(&mut release).unwrap(); assert_eq!(release, [2]);
+        drop(emulator); reader.join().unwrap();
+        assert_eq!(crate::windows_verify::probe(&guid).unwrap(),[9,27,0],"The same TAP must reopen after QEMU exits");
+        pipe.write_all(&[3]).unwrap();
+        let _ = std::fs::remove_file(stderr_path);
+    }
+
     #[test]
     #[ignore = "requires LocalSystem and EINK_BRIDGE_DISPOSABLE_WINDOWS_TESTS=1; creates/removes a temporary standard account"]
     fn ordinary_user_cannot_forge_server_and_receives_read_only_lease() {
@@ -375,8 +419,13 @@ mod tests {
             let mut lease = pipe.receive_lease().unwrap();
             assert!(lease.write_all(b"cannot change service lease").is_err());
             pipe.acknowledge().unwrap();
-            let mut release = [0]; pipe.read_exact(&mut release).unwrap();
-            drop(lease);
+            if let Ok(executable) = std::env::var("EINK_PIPE_TEST_QEMU_EXE") {
+                pipe.timeout(Duration::from_secs(120));
+                qemu_keeps_inherited_lease(&mut pipe, lease, &executable);
+            } else {
+                let mut release = [0]; pipe.read_exact(&mut release).unwrap();
+                drop(lease);
+            }
             // The test-only bind supports caller ownership; production clients
             // must still reject this otherwise accessible fake service.
             let fake_name = format!("{name}-fake");
@@ -387,6 +436,17 @@ mod tests {
         }
         windows_security::require_system().unwrap();
         assert_eq!(std::env::var("EINK_BRIDGE_DISPOSABLE_WINDOWS_TESTS").as_deref(), Ok("1"));
+        if std::env::var_os("EINK_BRIDGE_TEST_QEMU_EXE").is_some() {
+            assert_eq!(std::env::var("COMPUTERNAME").as_deref(), Ok("WIN-SUNSKHPNVMO"));
+            let file = File::open(r"C:\eink-driver-native-gate\network-device.json").unwrap();
+            windows_security::validate_handle(&file, None).unwrap();
+            let record: serde_json::Value = serde_json::from_reader(file).unwrap();
+            let resource: crate::model::ResourceId = serde_json::from_value(record["resource"].clone()).unwrap();
+            let device: crate::windows_device::DeviceIdentity = serde_json::from_value(record["device"].clone()).unwrap();
+            assert_eq!(device.instance_id, crate::windows_driver::instance_id(&resource));
+            assert_eq!(device.guid, crate::windows_device::guid(&std::env::var("EINK_BRIDGE_TEST_TAP_GUID").unwrap()).unwrap());
+            crate::windows_topology::Topology::read().unwrap().require_unbridged(&device).unwrap();
+        }
         use windows_sys::Win32::NetworkManagement::NetManagement::*;
         let mut username = wide(&format!("einkQA{:08x}", getrandom::u32().unwrap()));
         let mut password = wide(&format!("aA1!{:016x}{:016x}", getrandom::u64().unwrap(), getrandom::u64().unwrap()));
@@ -416,12 +476,19 @@ mod tests {
         let tap_fixture = std::env::var("EINK_BRIDGE_TEST_TAP_GUID").ok().map(|guid| {
             format!("EINK_PIPE_TEST_TAP_GUID={}\0", crate::windows_device::guid(&guid).unwrap())
         }).unwrap_or_default();
-        let environment = wide(&format!("{CHILD}={name}\0{tap_fixture}SystemRoot=C:\\Windows\0TEMP=C:\\Windows\\Temp\0"));
+        let qemu_fixture = std::env::var("EINK_BRIDGE_TEST_QEMU_EXE").ok();
+        let qemu_environment = qemu_fixture.as_ref().map(|path| format!("EINK_PIPE_TEST_QEMU_EXE={path}\0")).unwrap_or_default();
+        let environment = wide(&format!("{CHILD}={name}\0{tap_fixture}{qemu_environment}SystemRoot=C:\\Windows\0TEMP=C:\\Windows\\Temp\0"));
         let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
         startup.cb = std::mem::size_of_val(&startup) as u32;
+        let job = owned(unsafe { CreateJobObjectW(ptr::null(), ptr::null()) }).unwrap();
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        assert_ne!(unsafe { SetInformationJobObject(job.as_raw_handle(), JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of_val(&limits) as u32) }, 0);
         let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         assert_ne!(unsafe { CreateProcessAsUserW(token.as_raw_handle(), executable.as_ptr(), command.as_mut_ptr(),
-            ptr::null(), ptr::null(), 0, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+            ptr::null(), ptr::null(), 0, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
             environment.as_ptr().cast(), ptr::null(), &startup, &mut process) }, 0, "{}", last());
         let child = owned(process.hProcess).unwrap();
         let _thread = owned(process.hThread).unwrap();
@@ -434,6 +501,9 @@ mod tests {
             }
         }
         let child = StopChild(child);
+        // Contain QEMU too if an assertion kills its ordinary-user launcher.
+        assert_ne!(unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.0.as_raw_handle()) }, 0);
+        assert_eq!(unsafe { ResumeThread(_thread.as_raw_handle()) }, 1);
         let diagnostic = format!(r"C:\Windows\Temp\eink-pipe-client-{}.log", process.dwProcessId);
         let mut pipe = listener.accept(Duration::from_secs(30)).unwrap().unwrap_or_else(|| {
             let mut code = 0; unsafe { GetExitCodeProcess(child.0.as_raw_handle(), &mut code); }
@@ -448,14 +518,23 @@ mod tests {
         pipe.send_lease(&peer, &lease).unwrap(); drop(lease);
         pipe.finish_response().unwrap();
         assert_eq!(journal.resource_lock(&id, false).unwrap_err().code, "EBUSY");
-        pipe.write_all(&[1]).unwrap();
+        if qemu_fixture.is_some() {
+            pipe.timeout(Duration::from_secs(120));
+            let mut ready = [0]; pipe.read_exact(&mut ready).unwrap_or_else(|error|panic!("QEMU readiness failed: {error}; {}",std::fs::read_to_string(&diagnostic).unwrap_or_default()));
+            assert_eq!(ready, [2], "QEMU must open the exact TAP and own the only lease handle");
+            assert_eq!(journal.resource_lock(&id, false).unwrap_err().code, "EBUSY");
+            pipe.write_all(&[2]).unwrap();
+            pipe.read_exact(&mut ready).unwrap();
+            assert_eq!(ready, [3]);
+            assert!(journal.resource_lock(&id, false).is_ok(), "QEMU exit must release the inherited lease even while its launcher is alive");
+        } else { pipe.write_all(&[1]).unwrap(); }
         assert_eq!(unsafe { WaitForSingleObject(child.0.as_raw_handle(), 30000) }, WAIT_OBJECT_0);
         let mut exit = 1;
         assert_ne!(unsafe { GetExitCodeProcess(child.0.as_raw_handle(), &mut exit) }, 0);
         assert_eq!(exit, 0, "ordinary-user checks failed: {}", std::fs::read_to_string(&diagnostic).unwrap_or_default());
         let _ = std::fs::remove_file(diagnostic);
         assert!(journal.resource_lock(&id, false).is_ok());
-        drop(child); drop(token);
+        drop(child); drop(job); drop(token);
         assert_eq!(unsafe { NetUserDel(ptr::null(), account.0.as_ptr()) }, 0, "temporary test account must be removed");
     }
 }
