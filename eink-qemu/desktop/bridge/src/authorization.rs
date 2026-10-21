@@ -38,7 +38,7 @@ pub mod macos {
     use std::{ffi::{c_char, c_void}, ptr};
     use core_foundation::{base::TCFType, string::{CFString, CFStringRef}, error::{CFError, CFErrorRef}};
 
-    /// Installed with an authenticate-admin policy by the privileged installer.
+    /// Installed with a private administrator-authentication policy.
     /// Never accept a right name from the caller or silently broaden its policy.
     pub const RIGHT: &str = "net.serialx.eink-qemu.bridge.configure";
     const RIGHT_C: &[u8] = b"net.serialx.eink-qemu.bridge.configure\0";
@@ -71,7 +71,7 @@ pub mod macos {
         fn CFBundleGetValueForInfoDictionaryKey(bundle: *const c_void, key: CFStringRef) -> *const c_void;
     }
     /// Called only by the installed root helper. Preserve an administrator's
-    /// existing policy; register a new right with Apple's authenticate-admin rule.
+    /// existing policy; register a new right requiring administrator credentials.
     pub fn register_right() -> Result<(), BridgeError> {
         if unsafe { libc::geteuid() } != 0 { return Err(BridgeError::new("EPERM", "Only the installed helper can register bridge authorization.")); }
         match unsafe { AuthorizationRightGet(RIGHT_C.as_ptr().cast(), ptr::null_mut()) } {
@@ -80,10 +80,26 @@ pub mod macos {
             code => return status(code),
         }
         let authorization = Authorization::empty()?;
-        let rule = CFString::new("authenticate-admin");
+        let rule = right_definition();
         let description = CFString::new("Configure bridge networking for eink-qemu.");
         status(unsafe { AuthorizationRightSet(authorization.0, RIGHT_C.as_ptr().cast(), rule.as_CFTypeRef(),
             description.as_concrete_TypeRef(), ptr::null(), ptr::null()) })
+    }
+    fn right_definition() -> core_foundation::dictionary::CFDictionary<CFString, core_foundation::base::CFType> {
+        use core_foundation::{boolean::CFBoolean, dictionary::CFDictionary, number::CFNumber};
+        // authenticate-admin has timeout=0: the credential expires between
+        // the UI request and helper verification. A private credential allows
+        // this one externalized reference to cross the process boundary. New
+        // references cannot borrow it, and our guards destroy it after Apply.
+        CFDictionary::from_CFType_pairs(&[
+            (CFString::new("class"), CFString::new("user").as_CFType()),
+            (CFString::new("group"), CFString::new("admin").as_CFType()),
+            (CFString::new("authenticate-user"), CFBoolean::true_value().as_CFType()),
+            (CFString::new("shared"), CFBoolean::false_value().as_CFType()),
+            (CFString::new("allow-root"), CFBoolean::false_value().as_CFType()),
+            (CFString::new("timeout"), CFNumber::from(60i32).as_CFType()),
+            (CFString::new("version"), CFNumber::from(1i32).as_CFType()),
+        ])
     }
     /// SMJobBless supports the app's macOS 12.3 baseline. It verifies matching
     /// app/helper code requirements and installs the helper at Apple's protected
@@ -157,6 +173,18 @@ pub mod macos {
     }
     #[cfg(test)]
     mod tests {
+        #[test]
+        fn bridge_right_requires_private_admin_authentication_with_bounded_transfer_time() {
+            use core_foundation::{base::TCFType, boolean::CFBoolean, number::CFNumber, string::CFString};
+            let rule = super::right_definition();
+            let value = |key: &str| rule.find(&CFString::new(key)).unwrap().as_CFType();
+            assert_eq!(value("class").downcast::<CFString>().unwrap().to_string(), "user");
+            assert_eq!(value("group").downcast::<CFString>().unwrap().to_string(), "admin");
+            assert_eq!(value("timeout").downcast::<CFNumber>().unwrap().to_i64(), Some(60));
+            assert_eq!(value("shared").downcast::<CFBoolean>().unwrap(), CFBoolean::false_value());
+            assert_eq!(value("allow-root").downcast::<CFBoolean>().unwrap(), CFBoolean::false_value());
+            assert_eq!(value("authenticate-user").downcast::<CFBoolean>().unwrap(), CFBoolean::true_value());
+        }
         #[test]
         fn cancellation_is_distinct_from_denial() {
             assert_eq!(super::status(-60006).unwrap_err().code, "EAUTHCANCELLED");

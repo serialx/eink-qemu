@@ -152,17 +152,17 @@ Windows 11 standard English x64 ISO SHA-256:
 
 The wizard now calls the native Tauri commands for inspection, support installation,
 planning, applying, confirmation, restoration and saving. The current macOS workspace
-suite passes 219 Rust tests (3 ignored), and 14 bridge UI tests pass. TypeScript and
+suite passes 221 Rust tests (3 ignored), and 14 bridge UI tests pass. TypeScript and
 Vite builds pass. Native visual and packaged installer acceptance remain pending;
 these results do not establish delivery of the three-platform feature.
 
 An actual QEMU process, launched without a network device, retained the inherited
 bridge lease after its launcher closed its descriptor and released it on exit.
 Startup reconciliation skips resources with live leases and preserves changed
-persistent configuration. The new macOS reboot reconciliation still needs a native
-reboot acceptance run.
+persistent configuration. The installed macOS helper passed the reboot and restart
+checks described below.
 
-On Ubuntu 22.04 ARM64 with NetworkManager 1.36.6, 38 bridge crate tests pass under
+On Ubuntu 22.04 ARM64 with NetworkManager 1.36.6, 42 bridge crate tests pass under
 Rust 1.90.0 as an ordinary user. The native D-Bus reader round-trips the active
 profile, including its variant types, through the protected journal representation.
 A separate root exercise creates and removes inactive bridge and port profiles with
@@ -177,3 +177,51 @@ was replaced. Profile access and checkpoint calls follow the official
 and [connection settings API](https://www.networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Settings.Connection.html).
 The Linux lifecycle coordinator, authorization service and packaging are still
 in progress; the inactive-profile exercise is not a conversion acceptance run.
+
+### Installed macOS authorization and Linux isolation checks
+
+The signed test app installed its helper through SMJobBless in the disposable
+VirtualBuddy VM after the user approved the native prompt. Cancelling an earlier
+attempt returned `EAUTHCANCELLED` and left no installed helper. This validates the
+development-signed test bundle, not distribution signing or the packaged Tauri app.
+
+The first authorized configuration attempt exposed a policy error: Apple's
+`authenticate-admin` rule has a zero credential timeout. The guest's authd log
+recorded successful authentication, followed by expiration 0.023 seconds later
+when the helper checked the transferred reference. The custom rule now requires
+administrator authentication with a private, non-shared credential lasting at
+most 60 seconds. Native guards destroy its rights after Apply. The helper still
+checks the exact right without interaction or extension. Existing administrator
+policies are preserved. The test-only old rule was backed up and replaced in the
+disposable VM to exercise fresh registration. These settings follow Apple's
+[authorization policy documentation](https://developer.apple.com/library/archive/documentation/Security/Conceptual/authorization_concepts/02authconcepts/authconcepts.html).
+
+The corrected native configuration reached `Ready`. An unrelated authorization
+reference was denied immediately after approval, and the ordinary guest user
+verified the resulting transport. Full workspace regression: 221 passed, 3 ignored.
+
+An actual guest reboot changed the boot-session UUID and recreated the protected
+per-user runtime directory and socket. After the first local login unlocked SSH,
+the ordinary guest user verified `Ready`. A separate ordinary-client gate acquired
+a transferred lease, restarted the installed helper, and confirmed removal planning
+still returned `EBUSY`. After releasing the lease, removal planning succeeded;
+the gate cancelled that plan and reverified the existing bridge.
+
+The dedicated Linux packet helper now accepts exact `allow UID interface` grants.
+Its policy reader rejects writable paths, symlinks, malformed content, and broad
+legacy grants; the ordinary QEMU helper retains its original ACL behavior. Both
+helper variants built in Ubuntu. An ordinary UID 1000 process opened a TAP and
+wrote a frame through the authorized test bridge. A different UID grant, a different
+bridge, a writable policy, and a symlinked policy were denied. The gate removed
+its helper, policy, and empty bridge, and confirmed the uplink addresses were unchanged.
+
+A native checkpoint regression demonstrated that `DELETE_NEW_CONNECTIONS` removes
+unrelated profiles created after the checkpoint. Checkpoints now omit that flag.
+The same test passed with the unrelated inactive profile and original active
+connection preserved. Lifecycle recovery must delete only recorded app-owned UUIDs
+whose settings still match the journal. The Linux lifecycle backend remains unfinished.
+
+The wizard was visually checked at 1000×640 with a fixture backend in light and
+dark themes. Connection selection, review, confirmation, Ready, and management
+controls fit; Keep was disabled when the deadline elapsed. This is UI validation,
+not packaged native acceptance.

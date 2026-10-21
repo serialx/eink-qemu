@@ -30,6 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ReplyKind::Plan { plan } = request(RequestKind::Plan { request: intent })?.reply else { panic!("missing plan"); };
     println!("reviewedChanges={:?}", plan.changes);
     let authorization = Authorization::request()?;
+    // A second reference cannot borrow the just-approved credential. The
+    // transferred original must still pass the exact helper-side right check.
+    let empty = Authorization::empty()?;
+    assert!(Authorization::verify(&empty.proof()?).is_err());
+    println!("unrelatedReferenceDenied=passed");
     let result = request(RequestKind::Apply { plan_id: plan.id, authorization: Some(authorization.proof()?) })?;
     let ReplyKind::Operation { operation: Some(operation) } = result.reply else { panic!("missing operation"); };
     println!("operation={operation:?}");
