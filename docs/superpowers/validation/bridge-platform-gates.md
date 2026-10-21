@@ -594,9 +594,28 @@ with both host IP bindings disabled, rejecting a changed NetBIOS setting,
 restoring the bindings, and removing both test TAPs. This allows removal to
 check for outside changes after active IP and DNS-client objects disappear.
 
-The installed Windows service, complete network lifecycle, and packaged desktop
-acceptance are still pending. These component tests do not establish a working
-Windows setup wizard.
+The SCM lifecycle adapter passed native service start/stop twice, waiting for
+cleanup before reporting stopped, and reporting a deliberate startup failure
+with a service-specific error. The temporary LocalSystem service was deleted.
+This fixture did not configure networking. A subsequent native coordinator test
+passed configuration followed by cancellation and restored the original host
+network. The retained-resource lifecycle then passed configuration and Keep,
+lease protection, repair after disabling IPv6, cancelled removal, and confirmed
+removal. Repair and cancelled removal restored every recorded bridge binding.
+Final cleanup restored the physical adapter's configuration and runtime network,
+removed the owned TAP devices, and disarmed the test recovery task.
+
+The first removal run exposed a native dependency: disabling both IP bindings
+also disables the SMB client and server bindings. Cleanup now requires that
+exact expected map while continuing to reject changes to unrelated bindings.
+The corrected recovery completed, and the full fresh lifecycle passed. The
+installed helper subsequently started through SCM from its fixed Program Files
+location, verified its pinned driver, and served inspection to both LocalSystem
+and the logged-in ordinary user. The ordinary client was denied Apply without
+approval and cancelled its untouched plan. Real UAC approval, service recovery
+during native mutations, installer lifecycle, and packaged desktop acceptance
+remain separate gates; these results do not yet establish a working Windows
+setup wizard.
 
 ### Real Windows QEMU lease validation
 
@@ -618,3 +637,33 @@ exits. See the [driver's exclusive-open implementation](https://github.com/OpenV
 
 These tests used `-M none` with a TAP backend. They validate native access and
 lease ownership, not firmware DHCP or reachability from another LAN device.
+
+### Ubuntu 22.04 packaging baseline
+
+Both QEMU targets, the CLI, and the bridge service built natively on Ubuntu
+22.04 ARM64. Staging checks ELF architecture, required GLIBC versions, and
+library search paths before replacing an existing bundle. The staged executables
+require at most GLIBC 2.34; the heaptrace plugin requires 2.17. All executables
+started as the ordinary guest user, and both x3 and x4pro boards ran their ROM
+startup smoke tests. Six packaging tests cover rejected inputs and preservation
+of the previous bundle when publication fails.
+
+Linux QEMU and CLI CI jobs now use native Ubuntu 22.04 runners for both
+architectures; both QEMU jobs run the network-backend and board smoke checks.
+The ARM64 Debian package also passed archive verification of payload bytes,
+architecture, GLIBC requirements, file permissions, and maintainer scripts.
+Only the dedicated packet helper receives setuid permission during installation.
+The service, desktop, CLI, and QEMU remain ordinary executables.
+
+Native install/update/removal tests passed against the rebuilt package with
+SHA-256 `dda90fb8993a18332f4ce50f5b0bd161419551544f5548c89605aa488b1b6577`.
+The ordinary client was denied before the temporary test authorization was
+installed, then configured and verified a managed bridge. A transferred lease
+survived package update and prevented removal. After lease release, package
+removal restored the original IPv6 configuration and Netplan storage; reinstall
+started with no managed resources. Cleanup removed the temporary authorization
+and network fixtures. These tests used the real installed helper and package
+hooks, including exclusive service locking and conflict-aware cleanup across
+recorded owners. A separate package update test preserved a disabled, stopped
+service and replaced the helper process when the service was enabled. Desktop
+package acceptance and native x64 validation remain pending.

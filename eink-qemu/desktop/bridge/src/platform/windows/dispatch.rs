@@ -82,6 +82,9 @@ impl<P: WindowsPlatformOps> Dispatcher<P> {
     fn inspect(&mut self) -> Result<Inspection,BridgeError> {
         let mut inspection=crate::inspect()?;
         inspection.support=SupportState::Ready;
+        // This endpoint is served only after the native runtime has verified
+        // its pinned x64 driver package. Local discovery cannot grant setup.
+        inspection.capabilities=Capabilities {create:true,existing_bridge:false,reason:None};
         inspection.external_override=None;
         inspection.active_operation=self.coordinator.operation()?;
         if let Some(resource)=self.coordinator.resources()?.last() {

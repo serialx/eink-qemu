@@ -17,7 +17,9 @@ fn main() {
     let result = bootstrap().and_then(|_| eink_bridge::macos_server::serve());
     #[cfg(target_os = "linux")]
     let result = eink_bridge::linux_server::serve();
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    let result = eink_bridge::windows_runtime::serve();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let result: Result<(), eink_bridge::model::BridgeError> = Err(eink_bridge::model::BridgeError::new("EUNSUPPORTED", "The native bridge service is not available in this build."));
     if let Err(error) = result { eprintln!("{}: {}", error.code, error.message); std::process::exit(1); }
 }
