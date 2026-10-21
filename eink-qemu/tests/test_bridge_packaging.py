@@ -94,5 +94,26 @@ class LinuxBundleTests(unittest.TestCase):
         self.assertFalse(list(self.output.parent.glob(".existing bundle-previous-*")))
 
 
+
+class DebianArchiveTests(unittest.TestCase):
+    def test_inspection_refuses_links_traversal_privileges_and_duplicates(self):
+        import io, sys, tarfile
+        sys.path.insert(0, str(Path(__file__).parents[1] / "desktop/scripts/bridge"))
+        from verify_linux_deb import unpack
+        for kind in ['symlink', 'hardlink', 'traversal', 'absolute', 'setuid', 'writable', 'owner', 'duplicate']:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary); archive=root/'input.tar'
+                with tarfile.open(archive,'w') as output:
+                    entry=tarfile.TarInfo('../escape' if kind=='traversal' else '/escape' if kind=='absolute' else 'usr/lib/helper')
+                    entry.mode=0o4755 if kind=='setuid' else 0o777 if kind=='writable' else 0o755
+                    entry.uid=1000 if kind=='owner' else 0
+                    if kind in ['symlink','hardlink']:
+                        entry.type=tarfile.SYMTYPE if kind=='symlink' else tarfile.LNKTYPE; entry.linkname='/etc/passwd'
+                    output.addfile(entry,io.BytesIO())
+                    if kind=='duplicate': output.addfile(entry,io.BytesIO())
+                with self.assertRaises(ValueError): unpack(archive,root/'output')
+                self.assertFalse((root/'escape').exists())
+
+
 if __name__ == "__main__":
     unittest.main()

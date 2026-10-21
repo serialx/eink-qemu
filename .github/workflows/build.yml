@@ -307,7 +307,7 @@ jobs:
           if-no-files-found: error
 
   # eink-qemu: the Tauri desktop app, bundling the QEMU the Build job made for
-  # the same platform. Linux is not packaged yet.
+  # the same platform. Linux packages target the Ubuntu 22.04 baseline.
   desktop:
     needs: [ Vars, Build, cli, desktop-resources ]
     strategy:
@@ -323,6 +323,12 @@ jobs:
           - platform: x86_64-pc-windows-msvc
             runs_on: windows-2022
             qemu_platform: x86_64-w64-mingw32
+          - platform: x86_64-unknown-linux-gnu
+            runs_on: ubuntu-22.04
+            qemu_platform: x86_64-linux-gnu
+          - platform: aarch64-unknown-linux-gnu
+            runs_on: ubuntu-22.04-arm
+            qemu_platform: aarch64-linux-gnu
     runs-on: ${{ matrix.runs_on }}
     defaults:
       run:
@@ -371,6 +377,23 @@ jobs:
         if: runner.os == 'Windows'
         run: EINK_QEMU_CLI="$PWD/../../qemu-install/qemu/bin/eink-qemu.exe" sh scripts/bundle-qemu-windows.sh ../../qemu-install/qemu
 
+      - name: Install build libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libwebkit2gtk-4.1-dev \
+            libxdo-dev librsvg2-dev patchelf dosfstools libsdl2-2.0-0 libgcrypt20 \
+            libpixman-1-0 libpng16-16 libslirp0
+
+      - name: Stage QEMU and bridge support (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --release -p eink-bridge --bin eink-bridge-helper
+          EINK_QEMU_CLI="$PWD/../../qemu-install/qemu/bin/eink-qemu" \
+            EINK_BRIDGE_HELPER="$PWD/target/release/eink-bridge-helper" \
+            sh scripts/bundle-qemu-linux.sh ../../qemu-install/qemu '${{ matrix.platform }}'
+          python3 -m unittest discover -s ../tests -p test_bridge_packaging.py
+
       - uses: actions/setup-node@v6
         with:
           node-version: '26'
@@ -393,9 +416,14 @@ jobs:
       - name: Build
         run: |
           # Keep the app for CLI verification; a dmg-only build removes it.
-          case "$RUNNER_OS" in Windows) bundles=nsis ;; *) bundles=app,dmg ;; esac
+          config=src-tauri/tauri.bundle.conf.json
+          case "$RUNNER_OS" in
+            Windows) bundles=nsis ;;
+            Linux) bundles=deb; config=src-tauri/tauri.linux.bundle.conf.json ;;
+            *) bundles=app,dmg ;;
+          esac
           pnpm tauri build --bundles "$bundles" \
-            --config src-tauri/tauri.bundle.conf.json \
+            --config "$config" \
             --config '{"build":{"beforeBuildCommand":"pnpm build:web"}}'
 
       - name: Verify bundled CLI (macOS)
@@ -410,6 +438,11 @@ jobs:
           7z l target/release/bundle/nsis/*-setup.exe | tee installer-files.txt
           grep -E '[[:space:]]eink-qemu\.exe$' installer-files.txt
 
+      - name: Verify Debian package payloads (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/bridge/verify_linux_deb.py target/release/bundle/deb/*.deb '${{ matrix.platform }}'
+
       - name: Package
         env:
           VERSION: ${{ needs.Vars.outputs.VERSION }}
@@ -419,6 +452,9 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             source=$(ls target/release/bundle/nsis/*-setup.exe)
             name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}-setup.exe
+          elif [ "$RUNNER_OS" = Linux ]; then
+            source=$(ls target/release/bundle/deb/*.deb)
+            name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}.deb
           else
             source=$(ls target/release/bundle/dmg/*.dmg)
             name=${PROJECT_NAME}-desktop-${VERSION}-${PLATFORM}.dmg

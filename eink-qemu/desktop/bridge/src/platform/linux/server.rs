@@ -38,15 +38,41 @@ fn start_recovery() -> Result<RecoveryWorker, BridgeError> {
 fn health(worker: &Mutex<Result<RecoveryWorker, BridgeError>>) -> Result<(), BridgeError> {
     match &*worker.lock().unwrap() { Ok(worker) => worker.health(), Err(error) => Err(error.clone()) }
 }
-pub fn serve() -> Result<(), BridgeError> {
-    if unsafe { libc::geteuid() } != 0 { return Err(BridgeError::new("EPERM", "Start bridge support through its installed system service.")); }
-    for (path, mode) in [("/var/lib/eink-qemu", 0o755), (JOURNAL_ROOT, 0o700), (SOCKET_ROOT, 0o755),
-        ("/etc/eink-qemu", 0o755), ("/etc/eink-qemu/bridge", 0o755)] { directory(path, mode)?; }
+fn service_lock()->Result<fs::File,BridgeError>{
+    for prefix in Path::new(JOURNAL_ROOT).ancestors(){
+        if fs::symlink_metadata(prefix).map_err(io)?.file_type().is_symlink(){return Err(io("Service directories cannot be symlinks."));}
+        transport::unix::validate_system_directory(prefix)?;
+    }
     let lock = OpenOptions::new().read(true).write(true).create(true).mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(Path::new(JOURNAL_ROOT).join("service.lock")).map_err(io)?;
     let meta = lock.metadata().map_err(io)?;
     if !meta.is_file() || meta.uid() != 0 || meta.mode() & 0o077 != 0 || meta.nlink() != 1 { return Err(io("Unsafe bridge service lock.")); }
     lock.try_lock().map_err(|_| BridgeError::new("EBUSY", "The bridge service is already running."))?;
+    Ok(lock)
+}
+/// Fixed package-maintainer entry point. Stop the system service first. A
+/// conflict or surviving emulator prevents package removal; preserve the
+/// helper, policy and journal so the ordinary app can offer recovery.
+pub fn uninstall()->Result<(),BridgeError>{
+    if unsafe{libc::geteuid()}!=0{return Err(BridgeError::new("EPERM","Only the package manager can uninstall bridge support."));}
+    match fs::symlink_metadata(JOURNAL_ROOT){
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(()),
+        Err(error)=>return Err(io(error)),
+        Ok(_)=>(),
+    }
+    let _lock=service_lock()?;
+    let mut coordinator=Coordinator::open(Path::new(JOURNAL_ROOT),"service",LinuxPlatform::for_recovery()?)?;
+    coordinator.uninstall(|resource|{
+        let uid=resource.original.grant().uid();
+        if resource.owner!=format!("uid:{uid}"){return Err(BridgeError::new("EPERM","The recorded bridge owner does not match its access grant."));}
+        LinuxPlatform::for_user(uid)
+    },now)
+}
+pub fn serve() -> Result<(), BridgeError> {
+    if unsafe { libc::geteuid() } != 0 { return Err(BridgeError::new("EPERM", "Start bridge support through its installed system service.")); }
+    for (path, mode) in [("/var/lib/eink-qemu", 0o755), (JOURNAL_ROOT, 0o700), (SOCKET_ROOT, 0o755),
+        ("/etc/eink-qemu", 0o755), ("/etc/eink-qemu/bridge", 0o755)] { directory(path, mode)?; }
+    let _lock=service_lock()?;
     let recovery = Arc::new(Mutex::new(start_recovery()));
     let socket = Path::new(SOCKET_ROOT).join("bridge.sock");
     match fs::symlink_metadata(&socket) {
