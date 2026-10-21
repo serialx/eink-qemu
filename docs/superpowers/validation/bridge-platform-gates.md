@@ -417,6 +417,15 @@ installer process immediately after device registration, before driver
 installation or a returned network GUID. Recovery used the persisted resource
 ID to remove that incomplete device and restored the original device list.
 
+The shared coordinator now provides an opt-in phase for irreversible cleanup
+only after confirmation has been saved. Synthetic transaction tests passed on
+macOS and native Windows for cancellation before confirmation, a crash after
+deletion, blocked new leases, and cleanup conflicts that wait for an explicit
+owner retry. Pending cleanup uses a journal version that older helpers reject;
+completed records retain the prior format. The dialog hides cancellation during
+finalization and offers a distinct cleanup retry. This phase is infrastructure
+for the Windows backend and is not yet a packaged removal test.
+
 These tests cover dedicated-device provisioning, not Windows bridge membership,
 UAC, the production service, or packaged UI acceptance. A device deletion must
 run only with a durable cleanup record: recreating it does not preserve its

@@ -17,7 +17,7 @@ export interface BridgePlan {
 }
 export interface BridgeOperation {
   id: string; revision: number;
-  state: 'inspecting' | 'awaitingAuthorization' | 'applying' | 'verifying' | 'ready' | 'rollingBack' | 'cancelled' | 'failed';
+  state: 'inspecting' | 'awaitingAuthorization' | 'applying' | 'verifying' | 'finalizing' | 'ready' | 'rollingBack' | 'cancelled' | 'failed';
   stage: string; confirmationDeadline: number | null; rebootRequired: boolean; error: BridgeError | null;
 }
 export interface BridgeInspection {

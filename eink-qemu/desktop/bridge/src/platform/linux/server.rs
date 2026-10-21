@@ -90,7 +90,7 @@ pub fn serve() -> Result<(), BridgeError> {
                     }
                     let retry = matches!(request.request, RequestKind::Cancel { .. });
                     let (reply, lease) = dispatcher.request(request);
-                    if retry && matches!(&reply.reply, ReplyKind::Operation { operation: Some(operation) } if operation.state == OperationState::Cancelled)
+                    if retry && matches!(&reply.reply, ReplyKind::Operation { operation: Some(operation) } if matches!(operation.state, OperationState::Cancelled | OperationState::Ready))
                         && health(&worker).is_err() { *worker.lock().unwrap() = start_recovery(); }
                     transport::write_reply(&mut stream, &reply)?;
                     if let Some(lease) = lease { transport::unix::send_lease_file(&stream, lease.file())?; }

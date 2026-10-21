@@ -12,7 +12,7 @@ pub struct RecoveryWorker {
 fn restored(operation: Option<Operation>) -> Result<(), BridgeError> {
     if let Some(operation) = operation {
         if operation.state == OperationState::Failed {
-            if let Some(error) = operation.error.filter(|e| e.code == "EROLLBACK") { return Err(error); }
+            if let Some(error) = operation.error.filter(|e| matches!(e.code.as_str(), "EROLLBACK" | "ECLEANUP")) { return Err(error); }
         }
     }
     Ok(())

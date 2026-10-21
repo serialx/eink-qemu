@@ -5,7 +5,9 @@ import { dialogOpen, registerDialog } from './dialog.ts';
 
 export function bridgeView(state: BridgeUiState) {
   const view = { title: 'Choose a connection', message: 'Choose the host connection that should carry the emulated device’s network traffic.',
-    canClose: !['progress', 'saving'].includes(state.step), retrySave: false };
+    canClose: !['progress', 'saving'].includes(state.step), retrySave: false,
+    canCancel: state.step === 'progress' && !['rollingBack', 'finalizing'].includes(state.operation?.state ?? ''),
+    retryRecovery: null as string | null };
   switch (state.step) {
     case 'support':
       view.title = state.inspection?.support === 'needsUpdate' ? 'Update bridge support' : 'Install bridge support';
@@ -19,7 +21,8 @@ export function bridgeView(state: BridgeUiState) {
       view.message = 'Review the changes before continuing.';
       break;
     case 'progress':
-      view.title = state.operation?.state === 'rollingBack' ? 'Restoring your connection' : 'Setting up bridge';
+      view.title = state.operation?.state === 'rollingBack' ? 'Restoring your connection'
+        : state.operation?.state === 'finalizing' ? 'Finishing bridge changes' : 'Setting up bridge';
       view.message = state.operation?.stage ?? 'Approve the system authorization prompt to continue.';
       break;
     case 'saving':
@@ -38,8 +41,11 @@ export function bridgeView(state: BridgeUiState) {
       break;
     case 'failed':
       view.title = state.error?.code === 'EROLLBACK' ? 'Connection needs repair'
+        : state.error?.code === 'ECLEANUP' ? 'Removal needs attention'
         : state.error?.code === 'EAUTHCANCELLED' ? 'Authorization cancelled' : 'Setup could not finish';
       view.message = state.error?.message ?? 'Check the connection and try again.';
+      if (state.operation) view.retryRecovery = state.error?.code === 'EROLLBACK' ? 'Retry restoration'
+        : state.error?.code === 'ECLEANUP' ? 'Retry cleanup' : null;
       if (state.operation?.state === 'ready') {
         view.retrySave = true;
         view.message += ' Host setup exists, but the app could not save the selection. Retry saving before making more host changes.';
@@ -207,7 +213,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         receive(await backend.apply(id));
       }), canApply(state, now(), emulatorIdle()), true);
     } else if (state.step === 'progress') {
-      if (state.operation?.state !== 'rollingBack') {
+      if (view.canCancel) {
         const id = state.operation?.id ?? state.plan?.id;
         if (id) button(state.operation?.confirmationDeadline ? 'Restore previous connection' : 'Cancel setup',
           () => void run(async () => receive(await backend.cancel(id))));
@@ -218,15 +224,15 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         }), canKeep(state, now()), true);
       }
     } else if (state.step === 'failed') {
-      if (state.error?.code === 'EROLLBACK' && state.operation) {
+      if (view.retryRecovery && state.operation) {
         const id = state.operation.id;
-        button('Retry restoration', () => void run(async () => receive(await backend.cancel(id))), emulatorIdle(), true);
+        button(view.retryRecovery, () => void run(async () => receive(await backend.cancel(id))), emulatorIdle(), true);
       }
       if (view.retrySave) button('Retry saving', () => void run(async () => {
         send({ type: 'retrySave' });
         await finish();
       }), true, true);
-      else button('Inspect again', () => { send({ type: 'back' }); void refresh(); });
+      else if (!view.retryRecovery) button('Inspect again', () => { send({ type: 'back' }); void refresh(); });
     } else if (state.step === 'ready') {
       button('Manage setup', () => { send({ type: 'back' }); void refresh(); });
     } else if (state.step === 'reboot') {

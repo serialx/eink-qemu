@@ -83,3 +83,13 @@ test('wizard submits Apply once, waits for saved verification, and restores focu
   click('Done'); await finished;
   assert.equal(dialogOpen(),false);assert.equal(unwatchCount,1);assert.equal(document.activeElement,trigger);
 });
+
+test('confirmed cleanup cannot offer cancellation and cleanup failure offers a completion retry', () => {
+  const finalizing=bridgeView({...initialBridgeState(),step:'progress',operation:{...operation,state:'finalizing'}});
+  assert.equal(finalizing.title,'Finishing bridge changes');
+  assert.equal(finalizing.canCancel,false);
+  assert.equal(finalizing.canClose,false);
+  const failed=bridgeView({...initialBridgeState(),step:'failed',operation:{...operation,state:'failed'},error:{code:'ECLEANUP',message:'Cleanup needs attention'}});
+  assert.equal(failed.retryRecovery,'Retry cleanup');
+  assert.equal(failed.retrySave,false);
+});

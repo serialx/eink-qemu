@@ -4,6 +4,9 @@ use crate::{journal::Journal, model::*};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
 
+const RECORD_VERSION: u32 = 1;
+const CLEANUP_RECORD_VERSION: u32 = 2;
+
 pub trait PlatformOps {
     type Snapshot: Serialize + DeserializeOwned + Clone;
     type Mutation: Serialize + DeserializeOwned + Clone;
@@ -27,6 +30,14 @@ pub trait PlatformOps {
     /// before the final journal write still restores the prior undo snapshot,
     /// so backends must tolerate partial native commit during rollback.
     fn commit_recorded(&mut self, snapshot: &mut Self::Snapshot) -> Result<(), BridgeError> { self.commit(snapshot) }
+    /// Opt in when confirmed removal has irreversible work, such as deleting
+    /// a Windows device whose network GUID cannot be recreated. The coordinator
+    /// persists confirmation before cleanup and blocks leases until it finishes.
+    fn needs_committed_cleanup(&self, _: &Self::Snapshot) -> bool { false }
+    /// Idempotent, conflict-aware cleanup after durable confirmation. Never
+    /// restore the old snapshot after this starts. A known failure requires an
+    /// explicit owner retry; a process interruption resumes cleanup at startup.
+    fn cleanup_committed(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
     /// Must be idempotent and conflict-aware. Called even after partial apply.
     fn rollback(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
 }
@@ -54,6 +65,8 @@ struct Record<S, M> {
     version: u32, owner: String, prepared: Prepared<S, M>, operation: Operation,
     undo_required: bool,
     #[serde(default)]
+    cleanup_pending: bool,
+    #[serde(default)]
     completed_mutations: usize,
     #[serde(default)]
     in_flight_mutation: Option<usize>,
@@ -68,7 +81,7 @@ impl<P: PlatformOps> Coordinator<P> {
     }
     fn record(&self) -> Result<Option<Record<P::Snapshot, P::Mutation>>, BridgeError> {
         let record: Option<Record<P::Snapshot, P::Mutation>> = self.journal.read()?;
-        if record.as_ref().is_some_and(|r| r.version != VERSION) { return Err(BridgeError::new("EPROTOCOL", "Bridge recovery record needs a compatible helper.")); }
+        if record.as_ref().is_some_and(|r| r.version != if r.cleanup_pending { CLEANUP_RECORD_VERSION } else { RECORD_VERSION }) { return Err(BridgeError::new("EPROTOCOL", "Bridge recovery record needs a compatible helper.")); }
         Ok(record)
     }
     fn owned(&self, id: &OperationId) -> Result<Record<P::Snapshot, P::Mutation>, BridgeError> {
@@ -78,6 +91,9 @@ impl<P: PlatformOps> Coordinator<P> {
         Ok(record)
     }
     fn save(&self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
+        // Older helpers reject v2 rather than resuming a resource while its
+        // irreversible cleanup is in progress. Completed records keep v1.
+        record.version = if record.cleanup_pending { CLEANUP_RECORD_VERSION } else { RECORD_VERSION };
         record.operation.revision += 1; self.journal.write(record)?; Ok(record.operation.clone())
     }
     pub fn resources(&self) -> Result<Vec<Resource<P::Snapshot>>, BridgeError> {
@@ -91,7 +107,7 @@ impl<P: PlatformOps> Coordinator<P> {
     pub fn resume_resources(&mut self) -> Result<Vec<(ResourceId, BridgeError)>, BridgeError> {
         let _lock = self.journal.lock()?;
         let Some(record) = self.record()? else { return Ok(Vec::new()); };
-        if record.undo_required { return Err(BridgeError::new("ERECOVERY", "Restore the interrupted bridge operation first.")); }
+        if record.undo_required || record.cleanup_pending { return Err(BridgeError::new("ERECOVERY", "Finish the interrupted bridge operation first.")); }
         let mut failures = Vec::new();
         for resource in record.resources {
             let _lease = match self.journal.resource_lock(&resource.id, false) {
@@ -115,7 +131,7 @@ impl<P: PlatformOps> Coordinator<P> {
         let _lock = self.journal.lock()?;
         let record = self.record()?.ok_or_else(|| BridgeError::new("ENOENT", "Bridge setup no longer exists."))?;
         let resource = self.resource(&record.resources, id)?.clone();
-        if record.undo_required { return Err(BridgeError::new("EBUSY", "Finish bridge setup before starting an emulator.")); }
+        if record.undo_required || record.cleanup_pending { return Err(BridgeError::new("EBUSY", "Finish bridge setup before starting an emulator.")); }
         let lease = ResourceLease { _file: self.journal.resource_lock(id, true)? };
         self.platform.verify(&resource.original)?;
         Ok((resource, lease))
@@ -129,13 +145,14 @@ impl<P: PlatformOps> Coordinator<P> {
         let _lock = self.journal.lock()?;
         let record = self.record()?.ok_or_else(|| BridgeError::new("ENOENT", "Bridge setup no longer exists."))?;
         self.resource(&record.resources, id)?;
-        if record.undo_required { return Err(BridgeError::new("EBUSY", "Finish bridge setup before starting an emulator.")); }
+        if record.undo_required || record.cleanup_pending { return Err(BridgeError::new("EBUSY", "Finish bridge setup before starting an emulator.")); }
         Ok(ResourceLease { _file: self.journal.resource_lock(id, true)? })
     }
     pub fn plan(&mut self, request: PlanRequest, now: u64) -> Result<BridgePlan, BridgeError> {
         let _lock = self.journal.lock()?;
         let mut resources = Vec::new();
         if let Some(record) = self.record()? {
+            if record.cleanup_pending { return Err(BridgeError::new("ERECOVERY", "Finish the confirmed bridge cleanup before starting another operation.")); }
             if record.undo_required {
                 return Err(BridgeError::new(if record.operation.state == OperationState::Failed { "ERECOVERY" } else { "EBUSY" }, "Finish or restore the existing bridge operation first."));
             }
@@ -156,7 +173,7 @@ impl<P: PlatformOps> Coordinator<P> {
         let prepared = self.platform.prepare(request, id.clone(), now, existing)?;
         if prepared.plan.id != id { return Err(BridgeError::new("EPROTOCOL", "Invalid platform bridge plan.")); }
         let plan = prepared.plan.clone();
-        let record = Record { version: VERSION, owner: self.owner.clone(), prepared, undo_required: false, resources,
+        let record = Record { version: RECORD_VERSION, owner: self.owner.clone(), prepared, undo_required: false, cleanup_pending: false, resources,
             completed_mutations: 0, in_flight_mutation: None,
             operation: Operation { id, revision: 1, state: OperationState::AwaitingAuthorization,
                 stage: "Review bridge setup".into(), confirmation_deadline: None, reboot_required: false, error: None } };
@@ -214,8 +231,34 @@ impl<P: PlatformOps> Coordinator<P> {
         if let Err(error) = self.platform.commit_recorded(&mut record.prepared.snapshot) {
             return self.rollback(record, Some(error));
         }
+        if self.platform.needs_committed_cleanup(&record.prepared.snapshot) {
+            record.undo_required = false;
+            record.cleanup_pending = true;
+            record.operation.state = OperationState::Finalizing;
+            // Once this write succeeds, a restart completes removal. It must
+            // never recreate an already deleted device from an undo snapshot.
+            self.save(record)?;
+            return self.finish_cleanup(record);
+        }
         self.commit_resource(record)?;
         record.operation.stage = "Bridge ready".into();
+        self.save(record)
+    }
+    fn finish_cleanup(&mut self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
+        record.operation.state = OperationState::Finalizing;
+        record.operation.stage = "Finish confirmed bridge cleanup".into();
+        record.operation.error = None;
+        self.save(record)?;
+        if let Err(error) = self.platform.cleanup_committed(&record.prepared.snapshot) {
+            record.operation.state = OperationState::Failed;
+            record.operation.error = Some(BridgeError { code: "ECLEANUP".into(),
+                message: "The confirmed network changes are saved, but bridge cleanup needs attention. Retry recovery to finish removal.".into(),
+                detail: Some(error.to_string()) });
+            return self.save(record);
+        }
+        self.commit_resource(record)?;
+        record.cleanup_pending = false;
+        record.operation.stage = "Bridge cleanup complete".into();
         self.save(record)
     }
     fn commit_resource(&self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<(), BridgeError> {
@@ -238,6 +281,9 @@ impl<P: PlatformOps> Coordinator<P> {
     }
     pub fn cancel(&mut self, id: &OperationId) -> Result<Operation, BridgeError> {
         let _lock = self.journal.lock()?; let mut record = self.owned(id)?;
+        // The existing recovery action retries confirmed cleanup; it cannot
+        // cancel changes whose irreversible phase has already started.
+        if record.cleanup_pending { return self.finish_cleanup(&mut record); }
         if !record.undo_required {
             if record.operation.state == OperationState::Ready { return Err(BridgeError::new("ESTALE", "Use Remove setup for an installed bridge.")); }
             record.operation.state = OperationState::Cancelled; return self.save(&mut record);
@@ -258,6 +304,13 @@ impl<P: PlatformOps> Coordinator<P> {
     fn recover_inner(&mut self, now: Option<u64>) -> Result<Option<Operation>, BridgeError> {
         let _lock = self.journal.lock()?;
         let Some(mut record) = self.record()? else { return Ok(None); };
+        if record.cleanup_pending {
+            if record.operation.state == OperationState::Failed
+                && record.operation.error.as_ref().is_some_and(|error| error.code == "ECLEANUP") {
+                return Ok(Some(record.operation));
+            }
+            return self.finish_cleanup(&mut record).map(Some);
+        }
         // A recorded conflict needs an explicit owner retry. Restarting the
         // service must not repeat a restoration the OS already refused.
         if record.undo_required && record.operation.state == OperationState::Failed

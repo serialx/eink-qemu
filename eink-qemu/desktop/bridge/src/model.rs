@@ -108,7 +108,7 @@ pub struct BridgePlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OperationState {
-    Inspecting, AwaitingAuthorization, Applying, Verifying, Ready, RollingBack, Cancelled, Failed,
+    Inspecting, AwaitingAuthorization, Applying, Verifying, Finalizing, Ready, RollingBack, Cancelled, Failed,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
