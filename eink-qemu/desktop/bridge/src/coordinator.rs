@@ -14,6 +14,8 @@ pub trait PlatformOps {
     fn prepare(&mut self, request: PlanRequest, id: OperationId, now: u64, existing: Option<&Resource<Self::Snapshot>>) -> Result<Prepared<Self::Snapshot, Self::Mutation>, BridgeError>;
     fn fingerprint(&mut self, request: &PlanRequest, snapshot: &Self::Snapshot) -> Result<String, BridgeError>;
     fn apply(&mut self, mutation: &Self::Mutation) -> Result<(), BridgeError>;
+    /// User-facing progress, saved before entering a potentially slow native call.
+    fn mutation_stage(&self, _: &Self::Mutation) -> &'static str { "Configure bridge" }
     /// Record native handles allocated during a step (for example an NM
     /// checkpoint). Preserve the original undo state. The coordinator persists
     /// this context before invoking the next external mutation. A step that
@@ -109,8 +111,43 @@ impl<P: PlatformOps> Coordinator<P> {
         record.operation.revision += 1; self.journal.write(record)?; Ok(record.operation.clone())
     }
     pub fn resources(&self) -> Result<Vec<Resource<P::Snapshot>>, BridgeError> {
-        let _lock = self.journal.lock()?;
+        // Inspection must remain available while a native request owns the
+        // mutation lock. This is metadata from the last atomic journal write;
+        // planning and transport acquisition still lock and revalidate it.
         Ok(self.record()?.map(|r| r.resources.into_iter().filter(|r| r.owner == self.owner).collect()).unwrap_or_default())
+    }
+    /// Privileged package removal only, with the service stopped and its
+    /// installation lock held for this entire call. Never expose this through
+    /// IPC: removal acts on all recorded owners. The factory must validate each
+    /// protected owner against its native snapshot before constructing a backend.
+    /// Keep the journal and package installed if any recovery/removal fails.
+    pub fn uninstall<F,C>(&mut self,mut for_resource:F,clock:C)->Result<(),BridgeError>
+    where F:FnMut(&Resource<P::Snapshot>)->Result<P,BridgeError>,C:Fn()->u64 {
+        self.recover_startup()?;
+        let resources={
+            let _lock=self.journal.lock()?;
+            let resources=match self.record()? {
+                Some(record) if record.undo_required || record.cleanup_pending=>return Err(record.operation.error
+                    .unwrap_or_else(||BridgeError::new("ERECOVERY","Finish the interrupted bridge operation before uninstalling support."))),
+                Some(record)=>record.resources,
+                None=>Vec::new(),
+            };
+            // Check every live emulator before removing any resource. The
+            // caller's service lock prevents new IPC acquisitions afterward.
+            let _leases=resources.iter().map(|r|self.journal.resource_lock(&r.id,false)).collect::<Result<Vec<_>,_>>()?;
+            resources
+        };
+        for resource in resources {
+            self.platform=for_resource(&resource)?;
+            self.owner=resource.owner;
+            let plan=self.plan(PlanRequest::Remove{resource_id:resource.id},clock())?;
+            let mut operation=self.apply(&plan.id,clock())?;
+            if operation.state==OperationState::Verifying {operation=self.keep(&plan.id,clock())?;}
+            if operation.state!=OperationState::Ready || operation.error.is_some() {
+                return Err(operation.error.unwrap_or_else(||BridgeError::new("EREMOVE","Bridge removal did not finish. Keep support installed and review the connection.")));
+            }
+        }
+        Ok(())
     }
     /// Service startup only, after interrupted transactions have been restored.
     /// A surviving emulator owns its runtime state until its lease is released.
@@ -234,6 +271,7 @@ impl<P: PlatformOps> Coordinator<P> {
         self.save(&mut record)?;
         for index in record.completed_mutations..record.prepared.mutations.len() {
             record.in_flight_mutation = Some(index);
+            record.operation.stage = self.platform.mutation_stage(&record.prepared.mutations[index]).into();
             self.save(&mut record)?;
             if let Err(error) = self.platform.apply_recorded(&record.prepared.mutations[index], &mut record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
             // A crash before this durable completion leaves the step marked

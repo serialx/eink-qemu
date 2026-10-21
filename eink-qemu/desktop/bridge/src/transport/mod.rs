@@ -76,7 +76,9 @@ impl HelperClient {
         }
         #[cfg(windows)] {
             let mut stream = windows::connect()?;
-            stream.timeout(std::time::Duration::from_secs(30));
+            // Native resource verification reads topology and both active and
+            // saved IP settings before transferring the lease.
+            stream.timeout(std::time::Duration::from_secs(300));
             let reply = exchange(&mut stream, &HelperRequest { version: crate::model::VERSION, request: RequestKind::Acquire { selection } })?;
             let ReplyKind::Lease { target, .. } = reply.reply else { return Err(invalid()); };
             let file = stream.receive_lease()?;
@@ -101,9 +103,21 @@ impl HelperClient {
         // Linux authorization runs in the helper and can wait for its native
         // desktop prompt. Keep inspection responsive while allowing a reviewed
         // mutation to finish authentication and bounded native setup.
+        #[cfg(not(windows))]
         let seconds = match request.request {
             RequestKind::Apply { .. } => 300,
             RequestKind::Keep { .. } | RequestKind::Cancel { .. } => 180,
+            _ => 30,
+        };
+        // Windows PnP and configuration queries are individually bounded, but
+        // a full conversion runs several of them. Keep status polling short
+        // while allowing its separate mutation connection to finish. A client
+        // deadline never cancels the helper's durable recovery operation.
+        #[cfg(windows)]
+        let seconds = match request.request {
+            RequestKind::Apply { .. } => 1800,
+            RequestKind::Keep { .. } | RequestKind::Cancel { .. } => 900,
+            RequestKind::Plan { .. } | RequestKind::Inspect | RequestKind::Verify { .. } | RequestKind::Acquire { .. } => 300,
             _ => 30,
         };
         self.stream.response_timeout(std::time::Duration::from_secs(seconds)).map_err(|error| BridgeError::new("EIPC", error.to_string()))?;

@@ -90,6 +90,8 @@ fn progress_remains_readable_while_native_mutation_holds_the_lock() {
     entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     let progress = observer.operation();
     let hidden = stranger.operation();
+    let resources = observer.resources();
+    let hidden_resources = stranger.resources();
     let competing = observer.apply(&plan.id, 101);
     release.send(()).unwrap();
     let completed = worker.join().unwrap().unwrap();
@@ -97,6 +99,8 @@ fn progress_remains_readable_while_native_mutation_holds_the_lock() {
     assert_eq!(progress.state, OperationState::Applying);
     assert_eq!(progress.id, plan.id);
     assert_eq!(hidden.unwrap(), None);
+    assert!(resources.unwrap().is_empty());
+    assert!(hidden_resources.unwrap().is_empty());
     assert_eq!(competing.unwrap_err().code, "EBUSY");
     assert!(completed.revision > progress.revision);
     assert_eq!(completed.state, OperationState::Verifying);
@@ -466,4 +470,43 @@ fn committed_native_context_is_saved_with_the_owned_resource() {
     drop(owner);
     let owner = Coordinator::open(dir.path(), "user", CommitHost).unwrap();
     assert!(owner.resources().unwrap()[0].original.committed, "a committed bridge must not accept temporary staging profiles after restart");
+}
+
+#[test]
+fn package_uninstall_removes_each_protected_owner_and_is_repeatable() {
+    let root=tempfile::tempdir().unwrap();let a=Host::new();let b=Host::new();
+    for (owner,host) in [("a",a.clone()),("b",b.clone())] {
+        let mut c=Coordinator::open(root.path(),owner,host).unwrap();
+        let p=c.plan(PlanRequest::Configure{adapter_id:AdapterId::new(owner).unwrap()},100).unwrap();
+        c.apply(&p.id,101).unwrap();c.keep(&p.id,102).unwrap();
+    }
+    let mut service=Coordinator::open(root.path(),"service",a.clone()).unwrap();
+    let mut visited=Vec::new();
+    service.uninstall(|resource|{visited.push(resource.owner.clone());Ok(if resource.owner=="a"{a.clone()}else{b.clone()})},||200).unwrap();
+    assert_eq!(visited,["a","b"]);assert_eq!(*a.value.lock().unwrap(),10);assert_eq!(*b.value.lock().unwrap(),10);
+    service.uninstall(|_|panic!("No retained resources"),||201).unwrap();
+    for owner in ["a","b"] {assert!(Coordinator::open(root.path(),owner,a.clone()).unwrap().resources().unwrap().is_empty());}
+}
+
+#[test]
+fn package_uninstall_refuses_live_emulators_before_removing_any_resource() {
+    let root=tempfile::tempdir().unwrap();let host=Host::new();let mut c=Coordinator::open(root.path(),"owner",host.clone()).unwrap();
+    let p=c.plan(request(),100).unwrap();c.apply(&p.id,101).unwrap();c.keep(&p.id,102).unwrap();
+    let id=ResourceId::new(p.id.as_str()).unwrap();let (_,lease)=c.verify_resource(&id).unwrap();
+    let mut service=Coordinator::open(root.path(),"service",host.clone()).unwrap();
+    assert_eq!(service.uninstall(|_|panic!("A lease must stop removal first"),||200).unwrap_err().code,"EBUSY");
+    assert_eq!(*host.value.lock().unwrap(),20);assert_eq!(c.resources().unwrap().len(),1);
+    drop(lease);service.uninstall(|_|Ok(host.clone()),||200).unwrap();
+    assert_eq!(*host.value.lock().unwrap(),10);
+}
+
+#[test]
+fn package_uninstall_retains_failed_removal_for_recovery() {
+    let root=tempfile::tempdir().unwrap();let host=Host::new();let mut c=Coordinator::open(root.path(),"owner",host.clone()).unwrap();
+    let p=c.plan(request(),100).unwrap();c.apply(&p.id,101).unwrap();c.keep(&p.id,102).unwrap();
+    let mut failed=host.clone();failed.fail=true;
+    let mut service=Coordinator::open(root.path(),"service",host.clone()).unwrap();
+    assert_eq!(service.uninstall(|_|Ok(failed.clone()),||200).unwrap_err().code,"EAPPLY");
+    assert_eq!(c.resources().unwrap().len(),1);assert_eq!(*host.value.lock().unwrap(),20);
+    service.uninstall(|_|Ok(host.clone()),||201).unwrap();assert_eq!(*host.value.lock().unwrap(),10);
 }
