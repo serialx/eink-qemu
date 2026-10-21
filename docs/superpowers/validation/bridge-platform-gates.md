@@ -447,3 +447,45 @@ The native app displayed both successful setup and removal results. This was a
 source build with the production helper and embedded UI, not packaged installer
 or guest firmware networking acceptance. Authorization still used the approved
 temporary test policy rather than a desktop password prompt.
+
+### Windows native membership, address preservation, and approval
+
+Native Windows checks now identify member adapters through their `ms_implat`
+CIM bindings and the bridge through its separate `ms_bridge` binding. Both
+requested members must be present. In this VM, `netsh bridge create` sometimes
+returned success after attaching only its first adapter; an explicit add was
+needed for the second. Bridge enumeration also lagged behind command completion.
+The implementation must verify native identities and membership after each step.
+
+Creating with the dedicated TAP first provides an ownership marker for recovery,
+but initially changes the bridge MAC and the host's DHCP address. A native probe
+successfully set the bridge's existing `NetworkAddress` property through its
+exact CIM identity. The before/during/after comparison then passed for IP
+configuration, addresses, routes, DNS, interface metrics, MTU, and MAC, allowing
+IPv6 privacy-address rotation. Recovery restored the physical connection and
+removed the dedicated TAP. These results cover the VM's DHCP/SLAAC configuration;
+static-address migration and the production transaction remain unfinished.
+
+Recovery ownership tests reject a physical-only bridge, unrelated members,
+multiple bridges, changed device identities, and a TAP belonging to another
+resource. A new bridge GUID alone is insufficient evidence of ownership. Four
+native topology tests passed. The bounded native command runner also passed
+output-limit and timeout tests, including termination of a child process.
+
+Windows approval now has a bounded, one-use ticket store. Tickets bind the
+protected reviewed plan and revision to the original caller's SID, process ID,
+and process creation time. Approval requires administrator elevation on both
+the pipe token and the pinned process token. Native tests denied a standard
+account and a restricted token with the same SID as an administrator process.
+Replay, expiry, changed plans, another process, and helper restart all invalidated
+approval. The combined native regression batch passed 37 tests across approval,
+transport, protocol, transactions, and reboot handling.
+
+The reboot prerequisite state now waits for an explicit owner action after
+restart. Startup recovery and the watchdog do not continue host-network changes.
+Native coordinator tests passed, and the desktop guard permits that continuation
+while still rejecting repeated Apply requests during ordinary setup.
+
+The Windows service dispatcher, UAC launcher, complete network lifecycle, and
+packaged desktop acceptance are still pending. The successful component tests
+do not establish a working Windows setup wizard.
