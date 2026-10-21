@@ -540,8 +540,7 @@ from active defaults and separates manually configured WINS servers from
 runtime values. An initial native test exposed null persistent properties; the
 corrected schema passed eight profile tests, including a live dual-stack read.
 A native PowerShell parser test also passed with configuration strings containing
-quotes and command syntax treated as data. Static configuration setters and
-complete migration remain unfinished.
+quotes and command syntax treated as data. Complete migration remains unfinished.
 
 The native options setter passed stale-state rejection without mutation, changing
 and replaying active MTU/manual metrics and IPv4/IPv6 DNS settings, restoring the
@@ -551,6 +550,21 @@ PowerShell parsing/data literals, and rejecting persistent-option conflicts both
 at preflight and immediately before a setter. NetBIOS/WINS changes were skipped
 because the disconnected fixture did not expose those properties; DHCP changes
 and persistent interface setters still need native validation.
+
+The static-address setter passed native IPv4/IPv6 address and route creation,
+replay, refusal of a conflicting route, and usable-address verification on a
+connected dedicated TAP. The test stopped its media holder and removed the
+adapter. Typed comparisons confirmed that the physical adapter's configuration
+and runtime network remained unchanged in both the prototype and Rust lifecycle
+tests. A disconnected TAP silently ignored DHCP disable, so static setup now
+checks that DHCP actually stopped before creating addresses.
+
+Route discovery needs additional classification before full migration: Windows
+reports protocol 3 for manual, DHCP, and router-advertised routes. The native
+route table identifies IPv6 router advertisements, but reports the VM's IPv4
+DHCP default route with manual origin. The DHCP gateway registry metadata
+identifies that route; protocol or origin alone cannot authorize copying it as
+persistent configuration. Active-only manual route handling remains unfinished.
 
 A protected volatile registry key provides the Windows boot identity without
 depending on the wall clock. Native tests passed stable reopening and rejection

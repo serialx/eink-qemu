@@ -27,6 +27,9 @@ pub mod windows_profile;
 #[path = "platform/windows/options.rs"]
 pub mod windows_options;
 #[cfg(windows)]
+#[path = "platform/windows/static_config.rs"]
+pub mod windows_static;
+#[cfg(windows)]
 #[path = "platform/windows/network_bridge.rs"]
 pub mod windows_network_bridge;
 #[cfg(windows)]
