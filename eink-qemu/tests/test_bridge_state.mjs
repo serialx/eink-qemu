@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { initialBridgeState, reduceBridge, canApply, canKeep } from '../desktop/src/bridge-state.ts';
+import { initialBridgeState, reduceBridge, canApply, canKeep, verifiedSelection } from '../desktop/src/bridge-state.ts';
 const id = '0123456789abcdef0123456789abcdef';
 const adapter = { id: 'en7', name: 'USB Ethernet', kind: 'ethernet', linkUp: true, eligible: true, reason: null, fingerprint: 'original' };
 const inspection = { support: 'ready', platform: 'macos', adapters: [adapter], capabilities: { create: true, existingBridge: false, reason: null }, selection: null, readiness: 'needsSetup', activeOperation: null, externalOverride: null };
@@ -28,6 +28,17 @@ test('starting Apply prevents double submission and ignores old or unrelated ope
   const current = reduceBridge(applying, { type: 'operation', operation: operation(3, 'verifying') });
   assert.equal(reduceBridge(current, { type: 'operation', operation: operation(2, 'applying') }), current);
   assert.equal(reduceBridge(current, { type: 'operation', operation: { ...operation(4, 'ready'), id: 'f'.repeat(32) } }), current);
+});
+
+test('polling a planned operation keeps review visible until Apply is submitted', () => {
+  let state = reduceBridge(prepared(), {type:'operation',operation:operation(1,'awaitingAuthorization')});
+  assert.equal(state.step, 'review');
+  assert.equal(canApply(state, 100, true), true);
+  state = reduceBridge(state, {type:'applying'});
+  state = reduceBridge(state, {type:'operation',operation:operation(2,'awaitingAuthorization')});
+  assert.equal(state.step, 'progress', 'an outstanding authorization request must not enable double submission');
+  const reopened = reduceBridge(initialBridgeState(), {type:'inspected',inspection:{...inspection,activeOperation:operation(1,'awaitingAuthorization')}});
+  assert.equal(reopened.step, 'choose', 'an abandoned plan must be reviewed again');
 });
 
 test('authorization cancellation and failed restoration are distinct outcomes', () => {
@@ -84,11 +95,25 @@ test('missing support is reviewed before selecting or applying a network change'
 });
 
 test('Manage setup stays available after reopening a completed operation', () => {
-  const completed = {...inspection, activeOperation:operation(5, 'ready')};
+  const completed = {...inspection, selection:{resourceId:id}, readiness:'ready', activeOperation:operation(5, 'ready')};
   let state = reduceBridge(initialBridgeState(), {type:'inspected', inspection:completed});
   state = reduceBridge(state, {type:'saved'});
   assert.equal(state.step, 'ready');
   state = reduceBridge(state, {type:'back'});
   state = reduceBridge(state, {type:'inspected', inspection:completed});
   assert.equal(state.step, 'choose', 'the last completed operation must not reopen the save/ready screen');
+});
+
+test('reopening a completed removal clears the saved selection and returns to connection choices', () => {
+  const removed = {...inspection, activeOperation:operation(5, 'ready')};
+  let state = reduceBridge(initialBridgeState(), {type:'inspected', inspection:removed});
+  assert.equal(state.step, 'saving');
+  assert.equal(verifiedSelection(state.plan, removed), true);
+  state = reduceBridge(state, {type:'saved'});
+  assert.equal(state.step, 'choose');
+  assert.equal(reduceBridge(state, {type:'inspected', inspection:removed}).step, 'choose');
+  assert.equal(verifiedSelection(plan, removed), false, 'configuration still requires a verified selection');
+  assert.equal(verifiedSelection({...plan, request:{kind:'repair',resourceId:id}}, removed), false);
+  assert.equal(verifiedSelection(null, {...removed, support:'missing'}), false);
+  assert.equal(verifiedSelection(null, {...removed, selection:{resourceId:id}, readiness:'needsRepair'}), false);
 });

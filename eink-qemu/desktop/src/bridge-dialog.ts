@@ -1,5 +1,5 @@
 import type { BridgeBackend, BridgeError, BridgeOperation, BridgePlanRequest } from './bridge-types.ts';
-import { canApply, canKeep, initialBridgeState, reduceBridge } from './bridge-state.ts';
+import { canApply, canKeep, initialBridgeState, reduceBridge, verifiedSelection } from './bridge-state.ts';
 import type { BridgeAction, BridgeUiState } from './bridge-state.ts';
 import { dialogOpen, registerDialog } from './dialog.ts';
 
@@ -100,7 +100,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     try {
       const inspection = await backend.verify();
       if (disposed) return;
-      if (state.plan?.request.kind !== 'remove' && inspection.readiness !== 'ready') {
+      if (!verifiedSelection(state.plan, inspection)) {
         throw { code: 'EVERIFY', message: 'The saved connection is not ready. Inspect it again before starting the emulator.' };
       }
       send({ type: 'inspected', inspection });

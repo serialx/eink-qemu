@@ -50,7 +50,10 @@ test('wizard submits Apply once, waits for saved verification, and restores focu
   const document={createElement:tag=>new Element(tag),body:new Element('body'),activeElement:null};
   globalThis.document=document;
   globalThis.window={setInterval,clearInterval};
-  t.after(()=>{globalThis.document=oldDocument;globalThis.window=oldWindow;});
+  t.after(()=>{
+    for (const dialog of document.body.querySelectorAll('dialog')) if (dialog.open) dialog.close();
+    globalThis.document=oldDocument;globalThis.window=oldWindow;
+  });
   const trigger=new Element('button'); document.body.append(trigger); trigger.focus();
   let handler, applyCount=0, unwatchCount=0, resolveApply;
   const inspection={support:'ready',platform:'linux',adapters:[{id:'eth0',name:'Ethernet',eligible:true,linkUp:true,fingerprint:'one',kind:'ethernet',reason:null}],capabilities:{create:true,existingBridge:true,reason:null},selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null};
@@ -59,7 +62,7 @@ test('wizard submits Apply once, waits for saved verification, and restores focu
     inspect:async()=>inspection,
     plan:async request=>({id:operation.id,request,fingerprint:'one',changes:['Create bridge'],mayDisconnect:false,requiresAuthorization:true,expiresAt:Math.floor(Date.now()/1000)+300}),
     apply:async()=>{applyCount++; return await new Promise(resolve=>resolveApply=resolve);},
-    verify:async()=>({...inspection,readiness:'ready'}),
+    verify:async()=>({...inspection,selection:{resourceId:operation.id,adapterId:'eth0'},readiness:'ready'}),
   };
   const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
   const {dialogOpen}=await import('../desktop/src/dialog.ts');
@@ -67,7 +70,6 @@ test('wizard submits Apply once, waits for saved verification, and restores focu
   const flush=()=>new Promise(resolve=>setImmediate(resolve));
   await flush();
   const dialog=document.body.querySelectorAll('dialog')[0];
-  t.after(()=>{if(dialog.open)dialog.close();});
   const click=label=>{const b=dialog.querySelectorAll('button').find(e=>e.textContent===label);assert.ok(b,label);assert.equal(b.disabled,false,label);b.dispatchEvent(new Event('click'));return b;};
   assert.equal(dialogOpen(),true);
   const radio=dialog.querySelectorAll('input')[0]; radio.dispatchEvent(new Event('change'));

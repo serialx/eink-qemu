@@ -356,3 +356,20 @@ parent closes its copy, permits another reader, and releases after the last
 holder exits. The native child-process test passed, along with the shared
 transaction and recovery suites. This is lease infrastructure; authenticated
 Windows service transport and QEMU inheritance are not yet integrated.
+
+### Native Linux desktop flow
+
+The current Tauri app built and ran under Xfce in the disposable Ubuntu VM.
+Keyboard-driven UI testing completed connection selection, review, Apply,
+the restoration countdown, Keep, saved readiness, and confirmed removal.
+The helper then reported no configured resource, and the fixture restored the
+original Netplan and IPv6 state. The temporary action-specific authorization
+policy and all network fixture records were absent after cleanup.
+
+This run found and fixed two UI state bugs: polling a pending plan skipped its
+review, and reopening a completed removal tried to save a nonexistent bridge.
+Regression tests cover both paths; the bridge UI suite now passes 16 tests.
+The native app displayed both successful setup and removal results. This was a
+source build with the production helper and embedded UI, not packaged installer
+or guest firmware networking acceptance. Authorization still used the approved
+temporary test policy rather than a desktop password prompt.

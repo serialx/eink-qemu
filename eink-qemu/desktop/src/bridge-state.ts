@@ -52,7 +52,8 @@ export function reduceBridge(state: BridgeUiState, action: BridgeAction): Bridge
       if (state.operation && action.operation.revision <= state.operation.revision) return state;
       return operationState(state, action.operation);
     case 'saved':
-      return state.step === 'saving' ? { ...state, step: 'ready' } : state;
+      return state.step === 'saving' ? { ...state,
+        step: !state.plan && !state.inspection?.selection ? 'choose' : 'ready' } : state;
     case 'retrySave':
       return state.step === 'failed' && state.operation?.state === 'ready'
         ? { ...state, step: 'saving', error: null } : state;
@@ -63,8 +64,21 @@ export function reduceBridge(state: BridgeUiState, action: BridgeAction): Bridge
         adapterId: state.adapterId, operation: state.operation };
   }
 }
+/** A reopened completed removal has no plan or selection. Native verification
+ * still clears stale settings; it must not require a bridge that was removed. */
+export function verifiedSelection(plan: BridgePlan | null, inspection: BridgeInspection): boolean {
+  if (inspection.support !== 'ready') return false;
+  if (inspection.selection) return inspection.readiness === 'ready';
+  return inspection.readiness === 'needsSetup' && (!plan || plan.request.kind === 'remove');
+}
 function operationState(state: BridgeUiState, operation: BridgeOperation): BridgeUiState {
   const next = { ...state, operation, error: operation.error };
+  if (operation.state === 'awaitingAuthorization') {
+    // Planning creates a journal entry before the user presses Apply. Polling
+    // that entry must neither skip review nor re-enable an in-flight Apply.
+    return { ...next, step: state.step === 'progress' ? 'progress'
+      : state.plan?.id === operation.id ? 'review' : 'choose' };
+  }
   if (operation.state === 'failed') return { ...next, step: 'failed' };
   if (operation.state === 'cancelled') return { ...next, plan: null, step: 'choose' };
   if (operation.rebootRequired) return { ...next, step: 'reboot' };
