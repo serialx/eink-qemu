@@ -3,6 +3,32 @@
 These gates test the proposed mechanisms, not delivery of the complete UI.
 A successful compiler/unit-test run does not satisfy a native gate.
 
+### Packaged wizard checks, 2026-10-22
+
+The ordinary-user macOS QA app completed Ethernet selection, review, system
+authorization, verification, and saving through the actual wizard. It displayed
+“Bridge ready”; the app-owned socket_vmnet process and private socket were
+present. This uses the development-signed macOS 15+ QA package described below.
+
+The installed Ubuntu 22.04 ARM64 package completed configuration and removal
+through the wizard, including each two-minute confirmation step. Its protected
+journal recorded one retained resource after setup and none after removal.
+The test used a reversible persistent NetworkManager profile and a temporary,
+user-authorized polkit rule for the single bridge action. Cleanup removed that
+rule and restored the original Netplan profile and IPv6 configuration.
+
+The default Netplan-generated connection was correctly rejected before mutation.
+That path exposed a UI regression: a historical completed operation made a new
+planning error offer “Retry saving”. Save failures now track the failed saving
+step explicitly. A regression test failed before the fix; all 73 JavaScript
+tests, TypeScript checking, and the frontend build passed afterward. The rebuilt
+Ubuntu package visibly offers “Inspect again” for the unsupported connection.
+
+The ordinary-user Windows package displayed the real UAC prompt. Declining it
+showed “Authorization cancelled” and left no resources or completed mutations.
+The approved setup transaction is still under validation. These checks do not
+establish firmware LAN connectivity or complete platform acceptance.
+
 Signed macOS packaging now verifies matching app/helper team requirements,
 embedded dependency staging, notices, architecture, and each binary's deployment
 floor. A package built against the development host's macOS 27 Homebrew libraries

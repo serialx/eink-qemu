@@ -46,7 +46,7 @@ export function bridgeView(state: BridgeUiState) {
       view.message = state.error?.message ?? 'Check the connection and try again.';
       if (state.operation) view.retryRecovery = state.error?.code === 'EROLLBACK' ? 'Retry restoration'
         : state.error?.code === 'ECLEANUP' ? 'Retry cleanup' : null;
-      if (state.operation?.state === 'ready') {
+      if (state.saveFailed) {
         view.retrySave = true;
         view.message += ' Host setup exists, but the app could not save the selection. Retry saving before making more host changes.';
       }

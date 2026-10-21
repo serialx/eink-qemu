@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bridgeView } from '../desktop/src/bridge-dialog.ts';
-import { initialBridgeState } from '../desktop/src/bridge-state.ts';
+import { initialBridgeState, reduceBridge } from '../desktop/src/bridge-state.ts';
 
 const operation = { id:'a'.repeat(32), revision:3, state:'ready', stage:'Bridge ready', confirmationDeadline:null, rebootRequired:false, error:null };
 test('Ready explains host readiness and the guest network to join', () => {
@@ -13,9 +13,21 @@ test('Ready explains host readiness and the guest network to join', () => {
 test('restoration failure and settings failure offer distinct recovery', () => {
   const restored = bridgeView({ ...initialBridgeState(), step:'failed', error:{code:'EROLLBACK',message:'Restore failed'} });
   assert.equal(restored.title,'Connection needs repair');
-  const save = bridgeView({ ...initialBridgeState(), step:'failed', operation, error:{code:'EIO',message:'Save failed'} });
+  const save = bridgeView(reduceBridge({ ...initialBridgeState(), step:'saving', operation },
+    {type:'failed',error:{code:'EIO',message:'Save failed'}}));
   assert.match(save.message, /setup exists/);
   assert.equal(save.retrySave,true);
+});
+test('a rejected new plan after completed removal cannot retry saving the old operation', () => {
+  const inspection={support:'ready',selection:null,readiness:'needsSetup',activeOperation:operation};
+  let state=reduceBridge(initialBridgeState(),{type:'inspected',inspection});
+  state=reduceBridge(state,{type:'saved'});
+  assert.equal(state.step,'choose');
+  state=reduceBridge(state,{type:'select',adapterId:'enp0s1'});
+  state=reduceBridge(state,{type:'failed',error:{code:'EUNSUPPORTED',message:'Select a persistent connection.'}});
+  assert.equal(bridgeView(state).retrySave,false);
+  assert.doesNotMatch(bridgeView(state).message,/Host setup exists|Retry saving/);
+  assert.equal(reduceBridge(state,{type:'retrySave'}),state);
 });
 test('Escape cannot hide an active mutation or restoration', () => {
   for (const state of ['applying','rollingBack','verifying']) {

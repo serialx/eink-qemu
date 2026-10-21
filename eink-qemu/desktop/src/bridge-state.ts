@@ -7,6 +7,7 @@ export interface BridgeUiState {
   plan: BridgePlan | null;
   operation: BridgeOperation | null;
   error: BridgeError | null;
+  saveFailed: boolean;
 }
 export type BridgeAction =
   | { type: 'inspected'; inspection: BridgeInspection }
@@ -19,7 +20,7 @@ export type BridgeAction =
   | { type: 'back' }
   | { type: 'failed'; error: BridgeError };
 export function initialBridgeState(): BridgeUiState {
-  return { step: 'choose', inspection: null, adapterId: null, plan: null, operation: null, error: null };
+  return { step: 'choose', inspection: null, adapterId: null, plan: null, operation: null, error: null, saveFailed: false };
 }
 const active = (state: BridgeUiState) => ['progress', 'saving', 'reboot'].includes(state.step);
 
@@ -55,10 +56,11 @@ export function reduceBridge(state: BridgeUiState, action: BridgeAction): Bridge
       return state.step === 'saving' ? { ...state,
         step: !state.plan && !state.inspection?.selection ? 'choose' : 'ready' } : state;
     case 'retrySave':
-      return state.step === 'failed' && state.operation?.state === 'ready'
-        ? { ...state, step: 'saving', error: null } : state;
+      return state.step === 'failed' && state.saveFailed
+        ? { ...state, step: 'saving', error: null, saveFailed: false } : state;
     case 'failed':
-      return { ...state, step: 'failed', error: action.error };
+      return { ...state, step: 'failed', error: action.error,
+        saveFailed: state.step === 'saving' || (state.step === 'failed' && state.saveFailed) };
     case 'back':
       return active(state) ? state : { ...initialBridgeState(), inspection: state.inspection,
         adapterId: state.adapterId, operation: state.operation };
@@ -72,7 +74,7 @@ export function verifiedSelection(plan: BridgePlan | null, inspection: BridgeIns
   return inspection.readiness === 'needsSetup' && (!plan || plan.request.kind === 'remove');
 }
 function operationState(state: BridgeUiState, operation: BridgeOperation): BridgeUiState {
-  const next = { ...state, operation, error: operation.error };
+  const next = { ...state, operation, error: operation.error, saveFailed: false };
   if (operation.state === 'awaitingAuthorization') {
     // Planning creates a journal entry before the user presses Apply. Polling
     // that entry must neither skip review nor re-enable an in-flight Apply.
