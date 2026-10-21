@@ -8,11 +8,7 @@ use std::{fs::{File, OpenOptions}, io::Read, os::windows::{ffi::OsStrExt, fs::Op
 use windows_sys::Win32::{Devices::DeviceAndDriverInstallation::*, Foundation::*, Security::WinTrust::*,
     Storage::FileSystem::*, System::Registry::REG_MULTI_SZ};
 
-const FILES: [(&str, u64, &str); 3] = [
-    ("OemVista.inf", 7630, "1327ab3a8c50691f04bea8e2ca356c5b604092a719e219464f8cc4b42e192de9"),
-    ("tap0901.cat", 11882, "ee062e5ef2743ceab10c64830e4cefe52e35cc1ece85947ac4e61ddd1c0b05f7"),
-    ("tap0901.sys", 41000, "581dcaace05d5c1ac9512457ff50565aca5d904d2c209bd3fc369ca4d4a0d2b1"),
-];
+include!(concat!(env!("OUT_DIR"), "/tap-pins.rs"));
 fn error(stage: &str) -> BridgeError { BridgeError::new("EDRIVER", format!("{stage}: {}", std::io::Error::last_os_error())) }
 fn invalid(message: &str) -> BridgeError { BridgeError::new("EDRIVER", message) }
 fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain(Some(0)).collect() }
@@ -50,7 +46,7 @@ impl VerifiedPackage {
             if ancestor == root { windows_security::validate_handle(&file, None)?; }
             locks.push(file);
         }
-        for (name, length, expected) in FILES {
+        for &(name, length, expected) in FILES {
             let mut file = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(root.join(name))
                 .map_err(|_| invalid("The installed TAP driver package is incomplete."))?;

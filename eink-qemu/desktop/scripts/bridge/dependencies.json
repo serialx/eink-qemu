@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "targets": {
+    "aarch64-apple-darwin": {
+      "name": "socket_vmnet",
+      "version": "1.2.2",
+      "license": "Apache-2.0",
+      "source": "https://github.com/lima-vm/socket_vmnet/tree/v1.2.2",
+      "archive": {
+        "url": "https://github.com/lima-vm/socket_vmnet/releases/download/v1.2.2/socket_vmnet-1.2.2-arm64.tar.gz",
+        "sha256": "c7bf62308fbcfdc29bdfb8373c9b1951f7ac2396446e4390919796a94972e6dc",
+        "format": "tar.gz"
+      },
+      "files": [
+        {
+          "member": "./opt/socket_vmnet/bin/socket_vmnet",
+          "path": "socket_vmnet",
+          "size": 39024,
+          "sha256": "b8a72a62237312f2f756027dea504a844edeb40014702d4a320292c026d282b0",
+          "mode": "0755"
+        },
+        {
+          "member": "./opt/socket_vmnet/share/doc/socket_vmnet/LICENSE",
+          "path": "LICENSE.socket_vmnet",
+          "size": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "mode": "0644"
+        }
+      ]
+    },
+    "x86_64-apple-darwin": {
+      "name": "socket_vmnet",
+      "version": "1.2.2",
+      "license": "Apache-2.0",
+      "source": "https://github.com/lima-vm/socket_vmnet/tree/v1.2.2",
+      "archive": {
+        "url": "https://github.com/lima-vm/socket_vmnet/releases/download/v1.2.2/socket_vmnet-1.2.2-x86_64.tar.gz",
+        "sha256": "2968a82c97e692c2d36f87230152e8018e00589c1b598e8257775adfe83800a1",
+        "format": "tar.gz"
+      },
+      "files": [
+        {
+          "member": "./opt/socket_vmnet/bin/socket_vmnet",
+          "path": "socket_vmnet",
+          "size": 30384,
+          "sha256": "526086c810df74a2465da6fd841a6e7a9a6a74679029dc76eee9dee2291b4929",
+          "mode": "0755"
+        },
+        {
+          "member": "./opt/socket_vmnet/share/doc/socket_vmnet/LICENSE",
+          "path": "LICENSE.socket_vmnet",
+          "size": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "mode": "0644"
+        }
+      ]
+    },
+    "x86_64-pc-windows-msvc": {
+      "name": "TAP-Windows6",
+      "version": "9.27.0",
+      "license": "GPL-2.0-only WITH upstream WDK exception",
+      "source": "https://github.com/OpenVPN/tap-windows6/tree/9.27.0",
+      "archive": {
+        "url": "https://github.com/OpenVPN/tap-windows6/releases/download/9.27.0/dist.win10.zip",
+        "sha256": "36e2609b7ceefedcb978ce5c48caf9e0e5af83423717c4e2e3c1d7ebca8f62a5",
+        "format": "zip"
+      },
+      "files": [
+        {
+          "member": "dist.win10/amd64/OemVista.inf",
+          "path": "driver/OemVista.inf",
+          "size": 7630,
+          "sha256": "1327ab3a8c50691f04bea8e2ca356c5b604092a719e219464f8cc4b42e192de9",
+          "mode": "0644"
+        },
+        {
+          "member": "dist.win10/amd64/tap0901.cat",
+          "path": "driver/tap0901.cat",
+          "size": 11882,
+          "sha256": "ee062e5ef2743ceab10c64830e4cefe52e35cc1ece85947ac4e61ddd1c0b05f7",
+          "mode": "0644"
+        },
+        {
+          "member": "dist.win10/amd64/tap0901.sys",
+          "path": "driver/tap0901.sys",
+          "size": 41000,
+          "sha256": "581dcaace05d5c1ac9512457ff50565aca5d904d2c209bd3fc369ca4d4a0d2b1",
+          "mode": "0644"
+        }
+      ],
+      "notices": [
+        {
+          "source": "licenses/tap-windows6-COPYING",
+          "path": "tap-windows6-COPYING",
+          "sha256": "17a7a2c9c08a2b709f3cd1a1ae46e198169db3a953f9d011a9ecd085d676de46"
+        },
+        {
+          "source": "licenses/tap-windows6-COPYRIGHT.GPL",
+          "path": "tap-windows6-COPYRIGHT.GPL",
+          "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+        }
+      ]
+    }
+  }
+}
