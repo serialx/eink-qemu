@@ -3,6 +3,19 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}, mpsc};
 use std::time::Duration;
 
+// The live watchdog uses the same nonblocking transaction lock. A fixture
+// request may legitimately lose a tick's race, especially on an emulated host.
+fn when_unlocked<T>(mut request: impl FnMut() -> Result<T, BridgeError>) -> T {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        match request() {
+            Ok(value) => return value,
+            Err(error) if error.code == "EBUSY" && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+            Err(error) => panic!("fixture request failed: {error}"),
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Snapshot;
 #[derive(Clone)]
@@ -32,8 +45,8 @@ fn service_watchdog_restores_after_the_request_handler_disappears() {
         Duration::from_millis(10), move || worker_clock.load(Ordering::SeqCst),
     ).unwrap();
     let mut request_handler = Coordinator::open(dir.path(), "user", host.clone()).unwrap();
-    let plan = request_handler.plan(PlanRequest::Configure { adapter_id: AdapterId::new("nic").unwrap() }, 100).unwrap();
-    request_handler.apply(&plan.id, 101).unwrap();
+    let plan = when_unlocked(|| request_handler.plan(PlanRequest::Configure { adapter_id: AdapterId::new("nic").unwrap() }, 100));
+    when_unlocked(|| request_handler.apply(&plan.id, 101));
     drop(request_handler);
     clock.store(222, Ordering::SeqCst);
     restored.recv_timeout(Duration::from_secs(3)).expect("recovery must not need another client request");
@@ -49,8 +62,8 @@ fn service_startup_reconciles_before_returning_a_worker() {
     let (tx, restored) = mpsc::channel();
     let host = Host { restored: tx, mutations: Arc::new(AtomicUsize::new(0)), fail_restore: Arc::new(AtomicBool::new(false)) };
     let mut request_handler = Coordinator::open(dir.path(), "user", host.clone()).unwrap();
-    let plan = request_handler.plan(PlanRequest::Configure { adapter_id: AdapterId::new("nic").unwrap() }, 100).unwrap();
-    request_handler.apply(&plan.id, 101).unwrap();
+    let plan = when_unlocked(|| request_handler.plan(PlanRequest::Configure { adapter_id: AdapterId::new("nic").unwrap() }, 100));
+    when_unlocked(|| request_handler.apply(&plan.id, 101));
     drop(request_handler);
     let worker = RecoveryWorker::start(Coordinator::open(dir.path(), "service", host).unwrap(), Duration::from_secs(1), || 102).unwrap();
     restored.try_recv().expect("startup recovery must finish before clients are accepted");
@@ -66,8 +79,8 @@ fn failed_restoration_stops_the_watchdog_without_repeating_mutations() {
     let worker_clock = clock.clone();
     let worker = RecoveryWorker::start(Coordinator::open(dir.path(), "service", host.clone()).unwrap(), Duration::from_millis(10), move || worker_clock.load(Ordering::SeqCst)).unwrap();
     let mut request_handler = Coordinator::open(dir.path(), "user", host.clone()).unwrap();
-    let plan = request_handler.plan(PlanRequest::Configure { adapter_id: AdapterId::new("nic").unwrap() }, 100).unwrap();
-    request_handler.apply(&plan.id, 101).unwrap();
+    let plan = when_unlocked(|| request_handler.plan(PlanRequest::Configure { adapter_id: AdapterId::new("nic").unwrap() }, 100));
+    when_unlocked(|| request_handler.apply(&plan.id, 101));
     drop(request_handler);
     clock.store(222, Ordering::SeqCst);
     restored.recv_timeout(Duration::from_secs(3)).unwrap();

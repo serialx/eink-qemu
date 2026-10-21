@@ -347,3 +347,12 @@ tests also passed natively on the Windows x64 VM. Test executables linked with
 the static C runtime; the first dynamic-runtime attempt could not start because
 the VM lacked its runtime DLL. These shared tests do not establish Windows
 provisioning or UAC acceptance.
+
+Windows journal files now validate ownership and ACLs on open handles and reject
+reparse points, hard links, and untrusted read/write grants. Native x64 tests
+passed for those checks. Resource leases use Windows file-sharing restrictions:
+a transferred handle retained by a child process blocks removal after the
+parent closes its copy, permits another reader, and releases after the last
+holder exits. The native child-process test passed, along with the shared
+transaction and recovery suites. This is lease infrastructure; authenticated
+Windows service transport and QEMU inheritance are not yet integrated.
