@@ -18,6 +18,9 @@ pub mod windows_device;
 #[path = "platform/windows/command.rs"]
 pub mod windows_command;
 #[cfg(windows)]
+#[path = "platform/windows/topology.rs"]
+pub mod windows_topology;
+#[cfg(windows)]
 #[path = "platform/windows/driver.rs"]
 pub mod windows_driver;
 #[cfg(windows)]
