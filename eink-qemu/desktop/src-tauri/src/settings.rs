@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use eink_core::session::WifiMode;
+use eink_bridge::model::{BridgeSelection, VERSION as BRIDGE_VERSION};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,8 @@ pub struct Settings {
     pub panel: String,
     pub wifi: bool,
     pub wifi_mode: String,
+    /// Set only after native verification, never through SettingsPatch.
+    pub bridge: Option<BridgeSelection>,
     pub ghosting: bool,
     pub turbo: bool,
     pub firmware: Option<PathBuf>,
@@ -44,6 +47,7 @@ impl Default for Settings {
             panel: "uc8279-68".into(),
             wifi: true,
             wifi_mode: WifiMode::default().as_str().into(),
+            bridge: None,
             ghosting: true,
             turbo: true,
             firmware: None,
@@ -58,7 +62,7 @@ impl Default for Settings {
 
 /// The options the WebView may change directly.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsPatch {
     pub device: Option<String>,
     pub panel: Option<String>,
@@ -72,13 +76,25 @@ pub const DEVICES: [&str; 5] = ["auto", "x3", "x4", "x4pro", "picco"];
 pub const PANELS: [&str; 2] = ["uc8279-68", "uc8179"];
 
 impl Settings {
+    fn decode(bytes: &[u8], problems: &mut Vec<String>) -> Result<Self, serde_json::Error> {
+        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+        if let Some(bridge) = value.get("bridge").filter(|bridge| !bridge.is_null()) {
+            let valid = serde_json::from_value::<BridgeSelection>(bridge.clone())
+                .is_ok_and(|selection| selection.version == BRIDGE_VERSION);
+            if !valid {
+                value.as_object_mut().unwrap().remove("bridge");
+                problems.push("The saved bridge selection needs setup again. Your network mode and other preferences were kept.".into());
+            }
+        }
+        serde_json::from_value(value)
+    }
     /// Read the settings. A file that cannot be parsed is renamed to
     /// `settings.json.bad` and replaced by defaults; unknown values fall back
     /// to defaults. Both are reported in `problems`.
     pub fn load(path: &Path, problems: &mut Vec<String>) -> Settings {
         let mut settings = match std::fs::read(path) {
             Err(_) => Settings::default(),
-            Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
+            Ok(bytes) => match Settings::decode(&bytes, problems) {
                 Ok(settings) => settings,
                 Err(error) => {
                     let bad = path.with_extension("json.bad");
@@ -167,6 +183,49 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_selection_migrates_and_is_not_a_webview_setting() {
+        let old: Settings = serde_json::from_str(r#"{"wifiMode":"bridge","firmware":"reader.bin"}"#).unwrap();
+        assert!(old.bridge.is_none());
+        assert_eq!(old.wifi_mode, "bridge");
+        let value = serde_json::json!({"wifiMode":"bridge", "bridge": {
+            "version":1,"platform":"macos","adapterId":"en0","fingerprint":"en0:original",
+            "resourceId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","displayName":"Ethernet"
+        }});
+        let settings: Settings = serde_json::from_value(value.clone()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        settings.save(&path).unwrap();
+        let mut problems = Vec::new();
+        let loaded = Settings::load(&path, &mut problems);
+        assert_eq!(serde_json::to_value(loaded).unwrap()["bridge"], value["bridge"]);
+        assert!(problems.is_empty());
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"bridge":null}"#).is_err());
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"bridge":{"adapterId":"forged"}}"#).is_err());
+    }
+
+    #[test]
+    fn invalid_bridge_selection_preserves_mode_and_other_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for bridge in [serde_json::json!({"version":99}), serde_json::json!({
+            "version":99,"platform":"macos","adapterId":"en0","fingerprint":"original",
+            "resourceId":null,"displayName":"Ethernet"
+        })] {
+            std::fs::write(&path, serde_json::to_vec(&serde_json::json!({
+                "wifiMode":"bridge","wifi":false,"firmware":"reader.bin","bridge":bridge
+            })).unwrap()).unwrap();
+            let mut problems = Vec::new();
+            let loaded = Settings::load(&path, &mut problems);
+            assert!(loaded.bridge.is_none());
+            assert_eq!(loaded.wifi_mode, "bridge");
+            assert!(!loaded.wifi);
+            assert_eq!(loaded.firmware, Some(PathBuf::from("reader.bin")));
+            assert_eq!(problems.len(), 1);
+            assert!(!path.with_extension("json.bad").exists());
+        }
+    }
 
     #[test]
     fn wifi_mode_migrates_persists_and_recovers_independently() {
