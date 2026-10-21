@@ -98,7 +98,7 @@ pub fn check_helper() -> Result<(), BridgeError> {
 }
 pub fn prepare(grant: &Grant, enable: bool) -> Result<AccessChange, BridgeError> {
     Grant::new(grant.uid, &grant.bridge)?;
-    check_helper()?;
+    if enable { check_helper()?; }
     protected(Path::new(POLICY))?;
     let before = read_policy(Path::new(POLICY), 0)?;
     let mut policy = Policy::parse(before.as_deref().unwrap_or_default())?;
@@ -116,6 +116,16 @@ pub fn restore(change: &AccessChange) -> Result<(), BridgeError> {
     if unsafe { libc::geteuid() } != 0 { return Err(invalid()); }
     protected(Path::new(POLICY))?;
     replace_policy(Path::new(POLICY), &change.after, &change.before, 0)
+}
+pub fn check_pending(change: &AccessChange) -> Result<(), BridgeError> {
+    protected(Path::new(POLICY))?;
+    if read_policy(Path::new(POLICY), 0)? != change.before { return Err(conflict()); }
+    Ok(())
+}
+pub fn verify_applied(change: &AccessChange) -> Result<(), BridgeError> {
+    protected(Path::new(POLICY))?;
+    if read_policy(Path::new(POLICY), 0)? != change.after { return Err(conflict()); }
+    Ok(())
 }
 pub fn verify_grant(grant: &Grant) -> Result<(), BridgeError> {
     Grant::new(grant.uid, &grant.bridge)?;

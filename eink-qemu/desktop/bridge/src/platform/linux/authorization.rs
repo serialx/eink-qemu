@@ -42,7 +42,9 @@ pub fn authorize(caller: &Caller) -> Result<(), BridgeError> {
     let (authorized, challenge, details) = match result {
         Ok(result) => result,
         Err(error) => {
-            let _: Result<(), _> = proxy.call("CancelCheckAuthorization", &(&cancellation,));
+            // Do not spend a second 180-second method timeout waiting for a
+            // cancellation reply after the original request timed out.
+            let _ = proxy.call_noreply("CancelCheckAuthorization", &(&cancellation,));
             return Err(native_error(error));
         },
     };

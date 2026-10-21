@@ -2,7 +2,7 @@
 //! death at each step. --recover uses only the durable record from a prior run.
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use eink_bridge::{linux_network::{NetworkIdentity, NetworkSetup, NetworkRemoval}, linux_network_manager::NetworkManager, linux_transaction::Checkpoint};
+    use eink_bridge::{linux_network::{NetworkIdentity, NetworkSetup, NetworkRemoval, NetworkRepair}, linux_network_manager::NetworkManager, linux_transaction::Checkpoint};
     use serde::{Deserialize, Serialize};
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
     #[derive(Serialize, Deserialize)]
@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         setup: NetworkSetup, checkpoint: Option<Checkpoint>,
         #[serde(default)] fixture_change: Option<eink_bridge::linux_transaction::ProfileChange>,
         #[serde(default)] removal: Option<NetworkRemoval>,
+        #[serde(default)] repair: Option<NetworkRepair>,
     }
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() < 3 || args[2] != "eink-bridge-test" || unsafe { libc::geteuid() } != 0
@@ -36,12 +37,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             record.setup.verify(&nm)?;
             println!("interruptedRemovalRestoredCommittedBridge=passed");
         }
-        record.setup.restore(&nm, if record.removal.is_some() { None } else { record.checkpoint.as_ref() })?;
+        if let Some(repair) = &record.repair {
+            repair.rollback(&nm, record.checkpoint.as_ref())?;
+            println!("interruptedRepairRestoredPriorState=passed");
+        }
+        record.setup.restore(&nm, if record.removal.is_some() || record.repair.is_some() { None } else { record.checkpoint.as_ref() })?;
         std::fs::remove_file(path)?;
         println!("nativeNetworkJournalRecovery=passed");
         return Ok(());
     }
-    if !matches!(args[1].as_str(), "--commit" | "--cancel" | "--interrupt" | "--interrupt-commit" | "--stale-mtu" | "--external-edit" | "--committed-edit" | "--reject-generated" | "--remove-cancel" | "--remove-keep" | "--remove-interrupt" | "--remove-external-edit" | "--remove-interrupt-commit") { return Err("unknown lifecycle test mode".into()); }
+    if !matches!(args[1].as_str(), "--commit" | "--cancel" | "--interrupt" | "--interrupt-commit" | "--stale-mtu" | "--external-edit" | "--committed-edit" | "--reject-generated" | "--remove-cancel" | "--remove-keep" | "--remove-interrupt" | "--remove-external-edit" | "--remove-interrupt-commit" | "--repair-cancel" | "--repair-keep" | "--repair-interrupt" | "--repair-interrupt-commit" | "--repair-inactive-cancel" | "--resume" | "--resume-external-edit" | "--remove-missing-cancel" | "--remove-missing-keep" | "--remove-inactive-cancel") { return Err("unknown lifecycle test mode".into()); }
     let interrupt = if args[1] == "--interrupt" { Some(args.get(3).ok_or("missing step")?.parse::<usize>()?) } else { None };
     if interrupt.is_some_and(|step| step > 5) { return Err("step must be 0 through 5".into()); }
     let identity = NetworkIdentity::new("enp0s1", "einklife0", "b015a698-6c07-4795-a98d-1ff70044e932", "ca04bcbb-2b90-4349-a0eb-9b73ab5158fc")?;
@@ -74,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("staleMtuPlanRejected=passed");
         return Ok(());
     }
-    let mut record = Record { setup, checkpoint: None, fixture_change: None, removal: None };
+    let mut record = Record { setup, checkpoint: None, fixture_change: None, removal: None, repair: None };
     let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
     serde_json::to_writer(&mut file, &record)?;
     file.sync_all()?;
@@ -89,11 +94,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         record.setup.verify(&nm)?;
         let checkpoint = record.checkpoint.as_ref().unwrap();
         checkpoint.confirm_window(&nm)?;
-        if matches!(args[1].as_str(), "--remove-cancel" | "--remove-keep" | "--remove-interrupt" | "--remove-external-edit" | "--remove-interrupt-commit") {
+        if matches!(args[1].as_str(), "--resume" | "--resume-external-edit") {
+            record.setup.commit(&nm, checkpoint)?;
+            persist(&record)?;
+            nm.deactivate_selected("enp0s1", record.setup.identity().port_uuid())?;
+            nm.deactivate_selected("einklife0", record.setup.identity().bridge_uuid())?;
+            if args[1] == "--resume-external-edit" {
+                let before = record.setup.migration().bridge.clone();
+                let mut edited = before.clone();
+                edited.get_mut("connection").unwrap().insert("autoconnect-priority".into(), 77i32.into());
+                record.fixture_change = Some(eink_bridge::linux_transaction::ProfileChange::new(Some(before), Some(edited.clone()))?);
+                persist(&record)?;
+                record.fixture_change.as_ref().unwrap().apply(&nm)?;
+                let error = record.setup.resume(&nm).expect_err("resume must preserve edits");
+                assert_eq!(error.code, "ECONFLICT");
+                assert!(nm.selected_uuid("enp0s1")?.is_none());
+                let current = nm.find_profile(record.setup.identity().bridge_uuid())?.ok_or("edited bridge vanished")?.1;
+                assert!(eink_bridge::linux_profiles::same_configuration(&edited, &current));
+                undo_fixture(&record)?;
+                record.fixture_change = None;
+                persist(&record)?;
+                println!("startupPreservedExternalEdit=passed");
+            }
+            record.setup.resume(&nm)?;
+            record.setup.verify(&nm)?;
+            record.setup.restore(&nm, None)?;
+            println!("startupResumedUnchangedInactiveBridge=passed");
+            return Ok(());
+        }
+        if matches!(args[1].as_str(), "--repair-cancel" | "--repair-keep" | "--repair-interrupt" | "--repair-interrupt-commit" | "--repair-inactive-cancel") {
+            let stop = if args[1] == "--repair-interrupt" { Some(args.get(3).ok_or("missing repair step")?.parse::<usize>()?) } else { None };
+            if stop.is_some_and(|step| step > 5) { return Err("repair step must be 0 through 5".into()); }
+            record.setup.commit(&nm, checkpoint)?;
+            persist(&record)?;
+            // Deliberately remove the native profiles while retaining the
+            // durable installation record, simulating missing app resources.
+            if args[1] == "--repair-inactive-cancel" {
+                nm.deactivate_selected("enp0s1", record.setup.identity().port_uuid())?;
+                nm.deactivate_selected("einklife0", record.setup.identity().bridge_uuid())?;
+                assert!(nm.selected_uuid("enp0s1")?.is_none());
+                let started = std::time::Instant::now();
+                assert!(record.setup.verify(&nm).is_err());
+                assert!(started.elapsed() < std::time::Duration::from_secs(10), "inactive inspection must remain responsive");
+                println!("inactiveBridgeInspectionReturnsPromptly=passed");
+            } else {
+                record.setup.restore(&nm, None)?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while std::path::Path::new("/sys/class/net/einklife0").exists() {
+                    if std::time::Instant::now() >= deadline { return Err("old bridge device did not disappear".into()); }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            record.repair = Some(NetworkRepair::prepare(&nm, &record.setup)?);
+            record.checkpoint = None;
+            persist(&record)?;
+            record.checkpoint = Some(record.repair.as_ref().unwrap().begin(&nm)?);
+            persist(&record)?;
+            if stop == Some(0) { std::process::exit(71); }
+            let repair = record.repair.as_ref().unwrap();
+            for (index, step) in NetworkRepair::steps().into_iter().enumerate() {
+                repair.apply(&nm, step)?;
+                if stop == Some(index + 1) { std::process::exit(71); }
+            }
+            repair.verify(&nm)?;
+            if matches!(args[1].as_str(), "--repair-keep" | "--repair-interrupt-commit") {
+                repair.commit(&nm, record.checkpoint.as_ref().unwrap())?;
+                if args[1] == "--repair-interrupt-commit" { std::process::exit(71); }
+                println!("nativeRepairRestoredMissingProfiles=passed");
+            } else {
+                repair.rollback(&nm, record.checkpoint.as_ref())?;
+                println!("cancelledRepairRestoredPriorState=passed");
+            }
+            record.setup.restore(&nm, None)?;
+            return Ok(());
+        }
+        if matches!(args[1].as_str(), "--remove-cancel" | "--remove-keep" | "--remove-interrupt" | "--remove-external-edit" | "--remove-interrupt-commit" | "--remove-missing-cancel" | "--remove-missing-keep" | "--remove-inactive-cancel") {
             let stop = if args[1] == "--remove-interrupt" { Some(args.get(3).ok_or("missing removal step")?.parse::<usize>()?) } else { None };
             if stop.is_some_and(|step| step > 4) { return Err("removal step must be 0 through 4".into()); }
             record.setup.commit(&nm, checkpoint)?;
             persist(&record)?;
+            if args[1].starts_with("--remove-missing-") {
+                record.setup.restore(&nm, None)?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while std::path::Path::new("/sys/class/net/einklife0").exists() {
+                    if std::time::Instant::now() >= deadline { return Err("removed bridge device remains".into()); }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            } else if args[1] == "--remove-inactive-cancel" {
+                nm.deactivate_selected("enp0s1", record.setup.identity().port_uuid())?;
+                nm.deactivate_selected("einklife0", record.setup.identity().bridge_uuid())?;
+                assert!(nm.selected_uuid("enp0s1")?.is_none());
+            }
             record.removal = Some(NetworkRemoval::prepare(&nm, &record.setup)?);
             record.checkpoint = None;
             persist(&record)?;
@@ -107,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             removal.verify(&nm)?;
             let checkpoint = record.checkpoint.as_ref().unwrap();
-            if matches!(args[1].as_str(), "--remove-keep" | "--remove-interrupt-commit") {
+            if matches!(args[1].as_str(), "--remove-keep" | "--remove-interrupt-commit" | "--remove-missing-keep") {
                 removal.commit(&nm, checkpoint)?;
                 if args[1] == "--remove-interrupt-commit" { std::process::exit(71); }
                 println!("nativeRemovalKept=passed");
@@ -128,8 +219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("removalExternalEditPreservedAndTimerDisarmed=passed");
                 }
                 removal.rollback(&nm, Some(checkpoint))?;
-                record.setup.verify(&nm)?;
-                println!("cancelledRemovalRestoredCommittedBridge=passed");
+                if !matches!(args[1].as_str(), "--remove-missing-cancel" | "--remove-inactive-cancel") { record.setup.verify(&nm)?; }
+                println!("cancelledRemovalRestoredPriorState=passed mode={}", args[1]);
                 record.setup.restore(&nm, None)?;
             }
             return Ok(());
@@ -175,7 +266,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if result.is_err() {
         undo_fixture(&record)?;
         if let Some(removal) = &record.removal { removal.rollback(&nm, record.checkpoint.as_ref())?; }
-        record.setup.restore(&nm, if record.removal.is_some() { None } else { record.checkpoint.as_ref() })?;
+        if let Some(repair) = &record.repair { repair.rollback(&nm, record.checkpoint.as_ref())?; }
+        record.setup.restore(&nm, if record.removal.is_some() || record.repair.is_some() { None } else { record.checkpoint.as_ref() })?;
     }
     std::fs::remove_file(path)?;
     result

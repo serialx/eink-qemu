@@ -36,6 +36,27 @@ fn live_host_validation_detects_address_route_and_dns_loss() {
 }
 
 #[test]
+fn committed_dynamic_addresses_can_renew_but_setup_and_static_checks_stay_exact() {
+    use eink_bridge::{linux_profiles::Profile, linux_verify::HostSnapshot};
+    let before = HostSnapshot { ipv4: Some(FamilySnapshot::from_properties(properties()).unwrap()), ipv6: None };
+    let mut renewed = properties();
+    renewed.insert("AddressData".into(), Value::from(vec![HashMap::from([("address", text("192.0.2.99")), ("prefix", 24u32.into())])]).try_into().unwrap());
+    let current = HostSnapshot { ipv4: Some(FamilySnapshot::from_properties(renewed).unwrap()), ipv6: None };
+    let mut profile = Profile(BTreeMap::from([
+        ("ipv4".into(), BTreeMap::from([("method".into(), text("auto"))])),
+        ("ipv6".into(), BTreeMap::from([("method".into(), text("disabled"))])),
+    ]));
+    assert!(before.verify_preserved(&current).is_err());
+    assert!(before.verify_committed(&current, &profile).is_ok());
+    assert!(before.verify_committed(&HostSnapshot { ipv4: None, ipv6: None }, &profile).is_err());
+    let mut empty = properties();
+    empty.insert("AddressData".into(), Value::from(Vec::<HashMap<String, OwnedValue>>::new()).try_into().unwrap());
+    assert!(before.verify_committed(&HostSnapshot { ipv4: Some(FamilySnapshot::from_properties(empty).unwrap()), ipv6: None }, &profile).is_err());
+    profile.get_mut("ipv4").unwrap().insert("method".into(), text("manual"));
+    assert!(before.verify_committed(&current, &profile).is_err());
+}
+
+#[test]
 fn conversion_pins_live_mac_mtu_route_and_dns_defaults() {
     use eink_bridge::{linux_profiles::{migrate, Profile}, linux_verify::HostSnapshot};
     let original = Profile(BTreeMap::from([

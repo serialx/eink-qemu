@@ -76,13 +76,26 @@ impl NetworkManager {
         Proxy::new(&self.connection, owner.to_owned(), ROOT, SERVICE).map_err(error)
     }
     pub fn active_uuid(&self, interface: &str) -> Result<Option<String>, BridgeError> {
+        Ok(self.selected_connection(interface)?.filter(|(_, _, state)| *state == 2).map(|(_, uuid, _)| uuid))
+    }
+    pub fn selected_uuid(&self, interface: &str) -> Result<Option<String>, BridgeError> {
+        Ok(self.selected_connection(interface)?.map(|(_, uuid, _)| uuid))
+    }
+    fn selected_connection(&self, interface: &str) -> Result<Option<(OwnedObjectPath, String, u32)>, BridgeError> {
         let device: OwnedObjectPath = self.manager()?.call("GetDeviceByIpIface", &(interface,)).map_err(error)?;
         let device = self.proxy(device.as_str(), "org.freedesktop.NetworkManager.Device")?;
         let active: OwnedObjectPath = device.get_property("ActiveConnection").map_err(error)?;
         if active.as_str() == "/" { return Ok(None); }
-        let active = self.proxy(active.as_str(), "org.freedesktop.NetworkManager.Connection.Active")?;
-        if active.get_property::<u32>("State").map_err(error)? != 2 { return Ok(None); }
-        active.get_property("Uuid").map(Some).map_err(error)
+        let proxy = self.proxy(active.as_str(), "org.freedesktop.NetworkManager.Connection.Active")?;
+        let state = proxy.get_property::<u32>("State").map_err(error)?;
+        if state == 4 { return Ok(None); }
+        Ok(Some((active, proxy.get_property("Uuid").map_err(error)?, state)))
+    }
+    pub fn deactivate_selected(&self, interface: &str, expected_uuid: &str) -> Result<(), BridgeError> {
+        root()?;
+        let Some((active, uuid, _)) = self.selected_connection(interface)? else { return Ok(()); };
+        if uuid != expected_uuid { return Err(conflict()); }
+        self.manager()?.call("DeactivateConnection", &(&active,)).map_err(error)
     }
     pub fn link_identity(&self, interface: &str) -> Result<([u8; 6], u32), BridgeError> {
         let device: OwnedObjectPath = self.manager()?.call("GetDeviceByIpIface", &(interface,)).map_err(error)?;

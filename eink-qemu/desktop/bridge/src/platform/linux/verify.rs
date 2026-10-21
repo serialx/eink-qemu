@@ -89,6 +89,21 @@ impl FamilySnapshot {
     }
 }
 impl HostSnapshot {
+    /// A committed DHCP/SLAAC connection may legitimately renew its addresses,
+    /// routes and DNS. Its persistent profile is checked separately. Keep exact
+    /// runtime checks for static families and for every in-flight conversion.
+    pub fn verify_committed(&self, current: &Self, profile: &Profile) -> Result<(), BridgeError> {
+        for (name, before, after) in [("ipv4", &self.ipv4, &current.ipv4), ("ipv6", &self.ipv6, &current.ipv6)] {
+            let method = profile.get(name).and_then(|fields| fields.get("method")).and_then(|v| <&str>::try_from(v).ok());
+            let valid = if matches!(method, Some("auto" | "dhcp")) {
+                after.as_ref().is_some_and(|family| !family.addresses.is_empty())
+            } else {
+                match (before, after) { (None, None) => true, (Some(a), Some(b)) => a.preserved_by(b), _ => false }
+            };
+            if !valid { return Err(BridgeError::new("EHOSTNETWORK", "The managed bridge's IP configuration is not ready.")); }
+        }
+        Ok(())
+    }
     pub fn verify_preserved(&self, current: &Self) -> Result<(), BridgeError> {
         let same = |left: &Option<FamilySnapshot>, right: &Option<FamilySnapshot>| match (left, right) {
             (None, None) => true,

@@ -295,3 +295,55 @@ profile and removed its temporary storage and lifecycle records.
 
 These checks exercise the native components. Linux service integration, Windows
 production implementation, and packaged application acceptance remain unfinished.
+
+### Linux service, repair, and startup checks
+
+The installed Linux helper now serves kernel-authenticated requests, authorizes
+Apply through the fixed polkit action, and runs recovery independently of the
+client. Its systemd service announces readiness only after startup reconciliation
+and socket creation. An ordinary account completed Configure, Keep, Verify,
+transport lease acquisition, and Remove through that service. Without an agent
+or an authorizing policy, Apply returned `EAUTHDENIED` and made no network change.
+Positive authorization tests used an explicitly approved temporary policy for
+one test account and one bridge action; the harness removed it after every use.
+This tests policy enforcement, not the desktop password prompt.
+
+The service restored an unconfirmed conversion after client exit and after a
+helper restart. An ordinary client's transferred lease continued to prevent
+removal across a helper restart. Removal succeeded after the client released it.
+After simulated power loss, the installed service restored an interrupted
+conversion before announcing readiness. A separate confirmed bridge survived a
+cold boot with a different boot ID and passed ordinary-user verification and
+lease acquisition. The VM still requires a cold start because its warm reboot
+stalls before Linux; these results do not establish successful warm reboot.
+
+Native repair recreated missing owned profiles. Cancel and forced exit after
+each mutation restored the prior state. Startup activation preserved externally
+edited profiles and resumed unchanged inactive profiles. Cancelling repair of
+an inactive bridge restored its inactive state. Removal also works when owned
+profiles are missing or inactive; cancellation restores that prior state rather
+than inventing a working bridge. All removal interruption points and preservation
+of external profile edits passed again after this extension.
+
+Committed DHCP/SLAAC verification permits lease renewal while still requiring
+active owned profiles and configured IP families. In-flight conversion and
+rollback retain exact host address, route, and DNS checks. Static runtime checks
+remain exact. An inactive committed bridge returns promptly for repair instead
+of exhausting the client's inspection timeout. The native Linux bridge suite
+passes 54 tests.
+
+Windows production provisioning, package lifecycle integration, and all three
+packaged desktop acceptance runs are still required before delivery.
+
+The final coordinator run caught an activation timing issue after cancelling
+removal: the port was active before its bridge finished activating. Rollback now
+waits for both native activation results. The full coordinator lifecycle then
+passed, and the QA harness restored the original Netplan and IPv6 state. All
+network fixture records and the temporary authorization policy were absent.
+The installed test helper remains available for package acceptance.
+
+Shared protocol, authorization contracts, journal transactions, and watchdog
+tests also passed natively on the Windows x64 VM. Test executables linked with
+the static C runtime; the first dynamic-runtime attempt could not start because
+the VM lacked its runtime DLL. These shared tests do not establish Windows
+provisioning or UAC acceptance.

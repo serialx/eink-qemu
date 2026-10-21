@@ -1,0 +1,21 @@
+[Unit]
+Description=eink-qemu bridge setup and recovery
+After=dbus.service NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/lib/eink-qemu/bridge/eink-bridge-helper --serve
+Restart=on-failure
+RestartSec=2
+UMask=0077
+RuntimeDirectory=eink-qemu
+RuntimeDirectoryMode=0755
+StateDirectory=eink-qemu/bridge
+StateDirectoryMode=0700
+TimeoutStopSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
