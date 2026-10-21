@@ -279,5 +279,19 @@ promoted to `/etc` that can still be regenerated at boot. Native rejection left
 the profile and live network unchanged. The check uses NetworkManager's
 [profile storage metadata](https://www.networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Settings.Connection.html).
 
+With a separate persistent NetworkManager fixture, recovery from the durable
+journal passed after a cold boot with a different boot ID and no surviving native
+checkpoint. UTM warm reboot stalled at the EFI handoff before Linux started; a
+cold start was required. This establishes recovery across boot, but does not count
+as successful unattended warm reboot or installed-service startup recovery.
+
+Removal now captures a separate undo state for the working bridge. Native Cancel
+restored that bridge, and forced process exits after checkpoint creation and each
+of four removal steps recovered it from the journal. Recovery also passed after
+native removal commit, when the checkpoint was already gone. An external edit
+caused recovery to refuse mutation and disarm its timer. After these checks, the
+QA harness restored the original Netplan configuration and unmanaged IPv6
+profile and removed its temporary storage and lifecycle records.
+
 These checks exercise the native components. Linux service integration, Windows
 production implementation, and packaged application acceptance remain unfinished.

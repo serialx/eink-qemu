@@ -32,6 +32,81 @@ impl NetworkIdentity {
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NetworkStep { CreateBridge, CreatePort, DisableOriginal, ActivateBridge, ActivatePort }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum RemovalStep { RestoreOriginal, ActivateOriginal, DeletePort, DeleteBridge }
+/// Removal has its own undo state: cancelling it must restore the previously
+/// committed bridge, not the Ethernet state from before installation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkRemoval { setup: NetworkSetup }
+impl NetworkRemoval {
+    pub fn prepare(nm: &NetworkManager, setup: &NetworkSetup) -> Result<Self, BridgeError> {
+        if !setup.committed { return Err(conflict()); }
+        let mut setup = setup.clone();
+        // DHCP may legitimately have renewed since installation. Capture the
+        // currently working bridge's runtime for this operation's undo state.
+        setup.before = nm.runtime(&setup.identity.bridge)?;
+        setup.verify(nm)?;
+        setup.check_members()?;
+        Ok(Self { setup })
+    }
+    pub fn begin(&self, nm: &NetworkManager) -> Result<Checkpoint, BridgeError> {
+        self.setup.verify(nm)?;
+        self.setup.check_members()?;
+        Checkpoint::create(nm, &nm.device_path(&self.setup.identity.adapter)?)
+    }
+    pub fn steps() -> [RemovalStep; 4] { [RemovalStep::RestoreOriginal, RemovalStep::ActivateOriginal, RemovalStep::DeletePort, RemovalStep::DeleteBridge] }
+    fn check_transition(&self, nm: &NetworkManager) -> Result<(), BridgeError> {
+        self.setup.check_adapter()?;
+        self.setup.check_members()?;
+        for profile in [&self.setup.migration.bridge, &self.setup.migration.port] { self.setup.known_owned(nm, profile)?; }
+        ProfileChange::new(Some(self.setup.migration.original_disabled.clone()), Some(self.setup.original.clone()))?.check(nm)?;
+        let active = nm.active_uuid(&self.setup.identity.adapter)?;
+        if active.as_deref().is_some_and(|id| id != uuid(&self.setup.original).unwrap_or("") && id != self.setup.identity.port_uuid) { return Err(conflict()); }
+        Ok(())
+    }
+    pub fn apply(&self, nm: &NetworkManager, step: RemovalStep) -> Result<(), BridgeError> {
+        self.check_transition(nm)?;
+        match step {
+            RemovalStep::RestoreOriginal => ProfileChange::new(Some(self.setup.migration.original_disabled.clone()), Some(self.setup.original.clone()))?.apply(nm),
+            RemovalStep::ActivateOriginal => {
+                let (path, profile) = nm.find_profile(uuid(&self.setup.original)?)?.ok_or_else(conflict)?;
+                if !same_configuration(&profile, &self.setup.original) { return Err(conflict()); }
+                let active = nm.activate(&path, &nm.device_path(&self.setup.identity.adapter)?)?;
+                nm.wait_active(&active)
+            },
+            RemovalStep::DeletePort => ProfileChange::new(Some(self.setup.migration.port.clone()), None)?.apply(nm),
+            RemovalStep::DeleteBridge => ProfileChange::new(Some(self.setup.migration.bridge.clone()), None)?.apply(nm),
+        }
+    }
+    pub fn verify(&self, nm: &NetworkManager) -> Result<(), BridgeError> {
+        self.check_transition(nm)?;
+        if nm.find_profile(&self.setup.identity.bridge_uuid)?.is_some() || nm.find_profile(&self.setup.identity.port_uuid)?.is_some()
+            || nm.active_uuid(&self.setup.identity.adapter)?.as_deref() != Some(uuid(&self.setup.original)?) { return Err(conflict()); }
+        nm.wait_preserved(&self.setup.identity.adapter, &self.setup.before)
+    }
+    pub fn commit(&self, nm: &NetworkManager, checkpoint: &Checkpoint) -> Result<(), BridgeError> {
+        self.verify(nm)?;
+        checkpoint.disarm(nm)
+    }
+    pub fn rollback(&self, nm: &NetworkManager, checkpoint: Option<&Checkpoint>) -> Result<(), BridgeError> {
+        if let Err(error) = self.check_transition(nm) {
+            if let Some(checkpoint) = checkpoint { checkpoint.disarm(nm)?; }
+            return Err(error);
+        }
+        if let Some(checkpoint) = checkpoint { checkpoint.rollback(nm)?; }
+        ProfileChange::new(Some(self.setup.original.clone()), Some(self.setup.migration.original_disabled.clone()))?.apply(nm)?;
+        for profile in [&self.setup.migration.bridge, &self.setup.migration.port] {
+            ProfileChange::new(None, Some(profile.clone()))?.apply(nm)?;
+        }
+        let (bridge, _) = nm.find_profile(&self.setup.identity.bridge_uuid)?.ok_or_else(conflict)?;
+        nm.activate(&bridge, &OwnedObjectPath::try_from("/").unwrap())?;
+        let (port, _) = nm.find_profile(&self.setup.identity.port_uuid)?.ok_or_else(conflict)?;
+        let active = nm.activate(&port, &nm.device_path(&self.setup.identity.adapter)?)?;
+        nm.wait_active(&active)?;
+        self.setup.verify(nm)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSetup {
