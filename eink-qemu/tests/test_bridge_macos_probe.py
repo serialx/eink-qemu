@@ -55,6 +55,10 @@ class MacProbe(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['openAsUser'], 'passed')
 
+    def test_identity_drop_cannot_be_requested_by_an_ordinary_process(self):
+        result = subprocess.run([self.binary, 'deny-as', 'nobody', 'staff', '/absent'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 77)
+
     def test_missing_socket_is_failure_not_ready(self):
         result = subprocess.run([self.binary, 'open', str(Path(self.temp.name) / 'absent')], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)

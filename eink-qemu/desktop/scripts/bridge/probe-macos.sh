@@ -97,13 +97,11 @@ for attempt in {1..20}; do [[ -S $socket ]] && break; sleep 1; done
 [[ -S $socket ]] || { cat "$work/service.stderr" >&2; exit 1; }
 sleep 1
 sudo -u "$user" "$probe" open "$socket" > "$work/open-user.json"
-# Check the other account can run the probe, so a missing executable cannot
-# be mistaken for packet-access denial.
-sudo -u nobody -g "$group" "$probe" eligible "$adapter"
 # A different account must not gain packet access through shared staff group.
-if sudo -u nobody -g "$group" "$probe" open "$socket" > "$work/open-other.json" 2> "$work/open-other.error"; then
-    echo 'Unexpected access by another account' >&2; exit 1
-fi
+# Drop the root probe's real/effective UID and groups directly; sudoers may
+# refuse a non-default runas group before the socket is tested. This succeeds
+# only on EACCES from connect, never a missing socket or executable failure.
+"$probe" deny-as nobody "$group" "$socket" > "$work/open-other.json"
 launchctl kickstart -k "system/$label"
 sleep 3
 sudo -u "$user" "$probe" open "$socket" > "$work/open-after-restart.json"

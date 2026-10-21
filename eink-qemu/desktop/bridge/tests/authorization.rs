@@ -78,3 +78,12 @@ fn client_accepts_only_the_reply_for_the_requested_operation() {
         assert!(matches!(eink_bridge::protocol::decode_frame(&channel.output).unwrap().request, RequestKind::Keep { .. }));
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_macos_runtime_parent_is_accepted_but_user_directories_are_not() {
+    use eink_bridge::transport::unix::validate_system_directory;
+    validate_system_directory(std::path::Path::new("/var/run")).unwrap();
+    let user_directory = tempfile::tempdir().unwrap();
+    assert_eq!(validate_system_directory(user_directory.path()).unwrap_err().code, "EPERM");
+}

@@ -7,3 +7,6 @@ mod journal;
 pub mod coordinator;
 pub mod recovery;
 pub mod transport;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/service.rs"]
+pub mod macos_service;

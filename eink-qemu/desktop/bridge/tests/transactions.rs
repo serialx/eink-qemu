@@ -269,3 +269,12 @@ fn crash_after_native_commit_does_not_discard_the_recovery_snapshot() {
     assert_eq!(*host.value.lock().unwrap(), 10);
     assert!(restarted.resources().unwrap().is_empty());
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn extended_acl_cannot_make_the_recovery_journal_writable() {
+    let dir = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new("/bin/chmod").args(["+a", "group:staff allow add_file"]).arg(dir.path()).status().unwrap();
+    assert!(status.success());
+    assert!(Coordinator::open(dir.path(), "user-a", Host::new()).is_err());
+}

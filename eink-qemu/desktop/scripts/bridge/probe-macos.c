@@ -5,6 +5,8 @@
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <grp.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,7 +87,28 @@ static int open_as_user(const char *path) {
     printf("{\"openAsUser\":\"passed\",\"uid\":%u,\"euid\":%u,\"frameBytes\":60}\n", getuid(), geteuid());
     return 0;
 }
+/* Test-only identity drop. No arbitrary command is accepted and no identity
+ * can be changed unless the developer already launched this probe as root. */
+static int deny_as(const char *user, const char *group, const char *path) {
+    if (geteuid() != 0) return 77;
+    struct passwd *pw = getpwnam(user);
+    if (!pw || pw->pw_uid == 0) return 2;
+    uid_t uid = pw->pw_uid;
+    struct group *gr = getgrnam(group);
+    if (!gr) return 2;
+    gid_t gid = gr->gr_gid;
+    if (setgroups(1, &gid) || setgid(gid) || setuid(uid) ||
+        getuid() != uid || geteuid() != uid || getgid() != gid || getegid() != gid) {
+        perror("drop identity"); return 1;
+    }
+    int fd = connect_socket(path);
+    if (fd >= 0) { close(fd); fputs("Other user unexpectedly opened socket\n", stderr); return 1; }
+    if (errno != EACCES) { perror("unexpected denial error"); return 1; }
+    printf("{\"otherUserDenied\":true,\"uid\":%u,\"euid\":%u,\"gid\":%u,\"errno\":%d}\n", getuid(), geteuid(), getgid(), errno);
+    return 0;
+}
 int main(int argc, char **argv) {
+    if (argc == 5 && !strcmp(argv[1], "deny-as")) return deny_as(argv[2], argv[3], argv[4]);
     if (argc == 3 && !strcmp(argv[1], "open")) return open_as_user(argv[2]);
     int eligibility = argc == 3 && !strcmp(argv[1], "eligible");
     if (argc != 1 && !eligibility) { fputs("Usage: probe-macos [eligible INTERFACE | open SOCKET]\n", stderr); return 2; }

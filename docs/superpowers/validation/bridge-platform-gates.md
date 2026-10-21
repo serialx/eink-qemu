@@ -15,7 +15,12 @@ local test scratch; committed results omit private addresses and host identities
 
 ## 2026-10-20 progress
 
-- macOS: native vmnet interface discovery passed; privileged lifecycle untested.
+- macOS (updated 2026-10-21): the disposable VirtualBuddy ARM64 clone runs
+  macOS 26.5.2 build 25F84. Native socket_vmnet 1.2.2 lifecycle passed:
+  app-specific launchd installation, ordinary-user QEMU-framed packet exchange,
+  restart, and removal. Another user in the same socket group received EACCES.
+  Removal preserved addresses/routes and an unrelated test service's PID and
+  configuration. Cleanup removed all temporary services, sockets, and payloads.
 - Linux: created a dedicated Ubuntu 22.04 ARM64 UTM VM, kernel 5.15.0-198,
   NetworkManager 1.36.6. A 30-second checkpoint restored the original active
   Ethernet profile, IPv4 addresses and routes after the configuring process
@@ -55,36 +60,50 @@ local test scratch; committed results omit private addresses and host identities
   MAC as a second Ethernet device; restricting it to the recorded hardware
   identity fixed that probe error. This confirms why MAC alone is insufficient.
 
-These are successful Linux and x64 Windows mechanism gates, not complete
+These are successful Apple-silicon macOS, Linux, and x64 Windows mechanism gates, not complete
 platform acceptance. Packaged service authorization, reboot recovery, end-to-end
 emulator networking and the full UI remain to be validated.
 
-## macOS probe preparation, 2026-10-21
+## macOS implementation validation, 2026-10-21
 
-A copy of the existing VirtualBuddy macOS VM has booted to its login screen.
-The original VM is preserved. Guest inspection and privileged lifecycle tests
-are pending login; no guest lifecycle result is claimed yet.
-
+The original VirtualBuddy VM is preserved; testing used a disposable copy.
 `probe-macos.c` provides read-only vmnet discovery and an ordinary-user socket
-test. The socket test exchanges a complete QEMU-framed Ethernet packet between
-two clients and fails on missing sockets, malformed frames, or a timeout. Its
-three local tests pass, including fragmented stream reads. These tests use a
-temporary local socket and do not establish native vmnet packet transport.
+exercise. Its local tests cover fragmented stream reads, missing sockets, and
+refusal of identity changes by an unelevated caller. Native testing exchanged
+60-byte QEMU-framed Ethernet packets before and after service restart.
 
-`probe-macos.sh` defaults to inspection. Its exercise requires root, an exact
-disposable hostname, a VirtualMac hardware model, an eligible interface, and a
-named ordinary user. It verifies the pinned archive before installing a
-temporary app-specific launchd service. The exercise checks packet access,
-denial for another user in the same socket group, restart, removal, network
-restoration, and preservation of a separate test service. This exercise has not
-run yet. It does not replace packaged-service or reboot acceptance.
+The first cross-user probe stopped because sudoers refused a non-default runas
+group before reaching the socket. The corrected probe drops the root process's
+real/effective UID and groups directly. A different user with the same primary
+and supplementary group as the authorized user then received EACCES from
+`connect`. This distinguishes access denial from an unexecuted test.
+
+The Rust service backend also passed installation, ordinary-user socket open,
+restart, conflict-aware removal, and repeated removal in the same VM. A
+root-owned configuration modified outside the app was preserved and returned
+ECONFLICT. Native testing found two implementation details:
+
+- macOS's `/private/var/run` is root:daemon 0775. This exact system directory
+  needs an exception to the generic no-group-write check; app directories still
+  require root ownership without group/world write access, and connections
+  authenticate the root peer through the kernel.
+- launchd can leave a terminating service briefly visible after bootout. Restart
+  waits for the previous identity to disappear before bootstrapping its replacement.
+
+The backend checks extended ACLs as well as POSIX mode bits. Per-user socket
+directories use the native ACL API and UUID identity, with exactly one
+traversal-only entry. Recovery journals reject ACL write grants too.
 
 The candidate payload is the official [socket_vmnet 1.2.2 release](https://github.com/lima-vm/socket_vmnet/releases/tag/v1.2.2).
-The downloaded ARM64 archive matches the release asset SHA-256:
-`c7bf62308fbcfdc29bdfb8373c9b1951f7ac2396446e4390919796a94972e6dc`.
-The published x86_64 archive SHA-256 is
-`2968a82c97e692c2d36f87230152e8018e00589c1b598e8257775adfe83800a1`;
-that payload has not been downloaded or exercised in this run.
+Both downloaded archives match their published SHA-256:
+
+- ARM64 archive: `c7bf62308fbcfdc29bdfb8373c9b1951f7ac2396446e4390919796a94972e6dc`.
+- x86_64 archive: `2968a82c97e692c2d36f87230152e8018e00589c1b598e8257775adfe83800a1`.
+
+The backend additionally pins the extracted executable hashes. Intel execution,
+reboot recovery, OS authorization, and packaged UI acceptance remain untested.
+The native service component is not yet connected to the durable coordinator or
+the installed helper service.
 
 Native commands are checked against the guest's own help and resulting adapter
 state. Microsoft's [netsh bridge reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-bridge)

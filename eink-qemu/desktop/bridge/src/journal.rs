@@ -17,6 +17,8 @@ impl Journal {
                 return Err(io("Bridge journal directory has unsafe ownership or permissions."));
             }
         }
+        #[cfg(target_os = "macos")]
+        crate::transport::unix::validate_no_acl_writes(&File::open(root).map_err(io)?).map_err(io)?;
         Ok(Self { root: fs::canonicalize(root).map_err(io)? })
     }
     fn open_file(&self, name: &str, create: bool) -> Result<File, BridgeError> {
@@ -32,6 +34,8 @@ impl Journal {
         let file = options.open(self.root.join(name)).map_err(io)?;
         let meta = file.metadata().map_err(io)?;
         if !meta.is_file() { return Err(io("Invalid bridge journal file.")); }
+        #[cfg(target_os = "macos")]
+        crate::transport::unix::validate_no_acl_writes(&file).map_err(io)?;
         #[cfg(unix)] {
             use std::os::unix::fs::MetadataExt;
             if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 || meta.nlink() != 1 {
