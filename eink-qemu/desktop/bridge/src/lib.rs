@@ -27,6 +27,18 @@ pub mod windows_profile;
 #[path = "platform/windows/network_bridge.rs"]
 pub mod windows_network_bridge;
 #[cfg(windows)]
+#[path = "platform/windows/boot.rs"]
+pub mod windows_boot;
+#[cfg(windows)]
+#[path = "platform/windows/dispatch.rs"]
+pub mod windows_dispatch;
+#[cfg(windows)]
+#[path = "platform/windows/server.rs"]
+pub mod windows_server;
+#[cfg(windows)]
+#[path = "platform/windows/membership.rs"]
+pub mod windows_membership;
+#[cfg(windows)]
 #[path = "platform/windows/elevation.rs"]
 pub mod windows_elevation;
 #[cfg(windows)]

@@ -501,9 +501,18 @@ An additional probe created the bridge from two owned TAPs before attaching
 Ethernet. It retained bridge identity through temporary removal and cancellation,
 but failed network preservation: IPv6 addresses/routes disappeared during setup,
 and Ethernet received an IPv4 link-local address while detached. Final recovery
-restored the original network and removed both TAPs. This sequence is not ready
-for the product. A revised sequence is being tested with MAC preservation after
-Ethernet attachment and explicit management of the bridge's host IP bindings.
+restored the original network and removed both TAPs. The revised sequence now
+preserves the MAC after attaching Ethernet, disables the bridge's host IP
+bindings before temporary removal, and restores them after reattachment.
+Native production membership operations passed creation, attachment, temporary
+removal, cancellation, destruction, and replay. Full network comparisons passed
+after setup, temporary removal, and cancellation; cleanup restored the original
+connection and removed both owned TAPs.
+
+The Rust IP-binding operation separately passed disable, restore, and replay
+for IPv4 and IPv6 on an isolated bridge. The complete binding map returned to
+its original state, and Ethernet remained unchanged. This test did not attach
+Ethernet to the bridge.
 
 Four native ownership tests passed for the one-, two-, and three-member
 intermediate states. Runtime verification now requires usable address states;
@@ -511,6 +520,29 @@ tentative or duplicate addresses cannot satisfy readiness. Four native profile
 regressions passed, including privacy-address rotation alongside deprecated
 addresses. Earlier recorded profile probes did not capture address state.
 
-The Windows service dispatcher, complete network lifecycle, and packaged desktop
+The Windows dispatcher now connects authenticated peers, protected plans, the
+approval store, and coordinator leases. A native pipe-peer test with a backend
+that makes no network changes passed: unapproved or stale tickets were refused,
+approved tickets allowed one mutation, restart invalidated approval, and a
+verified selection returned a lease. The actual UAC prompt and installed
+service remain untested.
+
+The native service loop also passed separate-connection authorization, approval
+invalidation across a service-loop restart, a client lease surviving that
+restart, and restoration of unconfirmed setup when the loop stops. This test
+uses the real pipe transport and journal with a backend that does not change
+networking. It does not test SCM installation or the complete native backend.
+
+The restoration snapshot now captures persistent address/route lifetimes and
+NetBIOS/WINS settings. Old snapshots cannot authorize migration without this
+metadata. Six native profile tests passed, including reading both address
+families from the VM. Static configuration setters remain unfinished.
+
+A protected volatile registry key provides the Windows boot identity without
+depending on the wall clock. Native tests passed stable reopening and rejection
+of an untrusted write grant; their temporary registry keys were removed. Its
+full-restart boundary still needs validation.
+
+The installed Windows service, complete network lifecycle, and packaged desktop
 acceptance are still pending. These component tests do not establish a working
 Windows setup wizard.

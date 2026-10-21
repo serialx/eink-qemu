@@ -48,6 +48,43 @@ fn run(bridge: &DeviceIdentity, action: &str) -> Result<BridgeAddress, BridgeErr
 }
 pub fn address(bridge: &DeviceIdentity) -> Result<BridgeAddress, BridgeError> { run(bridge, "") }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum HostProtocol { Ipv4, Ipv6 }
+impl HostProtocol {
+    fn component(self) -> &'static str { match self { Self::Ipv4 => "ms_tcpip", Self::Ipv6 => "ms_tcpip6" } }
+}
+/// The transaction records the bridge's host bindings before temporary
+/// removal. Disable them before detaching Ethernet so the isolated bridge
+/// cannot retain the host's DHCP address; restore them after cancellation has
+/// reattached Ethernet. This changes only a known bridge's selected IP binding.
+pub fn set_host_binding(bridge: &DeviceIdentity, protocol: HostProtocol, before: bool,
+    enabled: bool) -> Result<(), BridgeError> {
+    let component = protocol.component();
+    let value = |value| if value { "$true" } else { "$false" };
+    let script = format!(r#"
+function Read-HostBinding {{
+ $binding=@(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapterBindingSettingData | Where-Object {{ $_.InstanceID -eq ($guid+'::{component}') }})
+ if ($binding.Count -ne 1 -or $binding[0].ComponentID -ne '{component}') {{ throw 'Bridge IP binding identity changed' }}
+ $binding[0]
+}}
+$binding=Read-HostBinding
+if ($binding.Enabled -ne {enabled}) {{
+ if ($binding.Enabled -ne {before}) {{ exit 73 }}
+ Set-NetAdapterBinding -InputObject $binding -Enabled {enabled} -Confirm:$false
+}}
+$deadline=[DateTime]::UtcNow.AddSeconds(30)
+do {{
+ $binding=Read-HostBinding
+ if ($binding.Enabled -eq {enabled}) {{ break }}
+ Start-Sleep -Milliseconds 250
+}} while ([DateTime]::UtcNow -lt $deadline)
+if ($binding.Enabled -ne {enabled}) {{ throw 'Bridge IP binding did not become ready' }}
+"#, enabled=value(enabled), before=value(before));
+    // The shared runner validates the exact native bridge before and after
+    // the command and rejects incomplete or replaced identities.
+    run(bridge, &script).map(|_| ())
+}
+
 /// Persist `before` and the intended address in the transaction journal before
 /// calling. Requires either the recorded old state or the exact completed state;
 /// an administrator's intervening address change is never overwritten.

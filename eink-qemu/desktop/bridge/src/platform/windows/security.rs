@@ -82,18 +82,23 @@ fn validate_access(file: &File, owner: Option<&str>, forbidden: u32) -> Result<(
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
         || info.dwFileAttributes & 0x400 != 0
         || (info.dwFileAttributes & 0x10 == 0 && info.nNumberOfLinks != 1) { return Err(denied()); }
-    validate_acl(file.as_raw_handle(), owner, forbidden, false)
+    validate_acl(file.as_raw_handle(), SE_FILE_OBJECT, owner, forbidden, false)
 }
 /// Clients can exchange data but cannot create another server instance or
 /// change the endpoint's security. Only a SYSTEM-owned endpoint is accepted.
 pub fn validate_pipe(file: &File) -> Result<(), BridgeError> {
-    validate_acl(file.as_raw_handle(), None, 0x500d0004, true)
+    validate_acl(file.as_raw_handle(), SE_FILE_OBJECT, None, 0x500d0004, true)
 }
-fn validate_acl(handle: HANDLE, owner: Option<&str>, forbidden: u32, system_owner: bool) -> Result<(), BridgeError> {
+/// Service boot markers must be SYSTEM-owned and cannot allow untrusted
+/// callers to set values, create keys/links, delete, or change security.
+pub fn validate_registry_key(handle: HANDLE) -> Result<(), BridgeError> {
+    validate_acl(handle, SE_REGISTRY_KEY, None, 0x500d0026, true)
+}
+fn validate_acl(handle: HANDLE, object: SE_OBJECT_TYPE, owner: Option<&str>, forbidden: u32, system_owner: bool) -> Result<(), BridgeError> {
     let mut sid = ptr::null_mut();
     let mut acl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
-    if unsafe { GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    if unsafe { GetSecurityInfo(handle, object, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
         &mut sid, ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) } != 0 { return Err(denied()); }
     let _allocation = LocalAllocation(descriptor);
     let owner_sid = sid_string(sid)?;

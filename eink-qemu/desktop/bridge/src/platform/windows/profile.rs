@@ -24,10 +24,20 @@ pub struct Address {
     // probes can still deserialize, but cannot pass the new readiness check.
     #[serde(default, skip_serializing_if="Option::is_none")]
     pub address_state: Option<u32>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub valid_lifetime_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub preferred_lifetime_ticks: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all="PascalCase", deny_unknown_fields)]
-pub struct Route { pub destination_prefix: String, pub next_hop: String, pub route_metric: u32, pub protocol: u32, pub publish: u32 }
+pub struct Route {
+    pub destination_prefix: String, pub next_hop: String, pub route_metric: u32, pub protocol: u32, pub publish: u32,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub valid_lifetime_ticks: Option<u64>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub preferred_lifetime_ticks: Option<u64>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="PascalCase", deny_unknown_fields)]
 pub struct Dns { pub address_family: u32, pub server_addresses: Vec<String> }
@@ -38,12 +48,23 @@ pub struct DnsClient { pub connection_specific_suffix: String, pub register_this
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct ManualDns { pub protocol: String, pub name_server: String, pub domain: String }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="PascalCase", deny_unknown_fields)]
+pub struct Legacy {
+    pub tcpip_netbios_options: Option<u32>,
+    #[serde(rename="WINSEnableLMHostsLookup")] pub wins_enable_lm_hosts_lookup: Option<bool>,
+    #[serde(rename="WINSPrimaryServer")] pub wins_primary_server: Option<String>,
+    #[serde(rename="WINSSecondaryServer")] pub wins_secondary_server: Option<String>,
+    #[serde(rename="WINSScopeID")] pub wins_scope_id: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct Snapshot {
     pub guid: String, pub instance_id: String, pub mac: String,
     pub interfaces: Vec<Interface>, pub addresses: Vec<Address>, pub routes: Vec<Route>,
     pub active_addresses: Vec<Address>, pub active_routes: Vec<Route>,
     pub dns: Vec<Dns>, pub dns_client: Vec<DnsClient>, pub manual_dns: Vec<ManualDns>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub legacy: Option<Legacy>,
 }
 fn ip(value: &str) -> Result<IpAddr, BridgeError> {
     let bare = if let Some((address, zone)) = value.split_once('%') {
@@ -59,6 +80,13 @@ fn prefix(value: &str) -> Result<(IpAddr, u8), BridgeError> {
     Ok((address,length))
 }
 fn family(address: &IpAddr) -> u32 { if address.is_ipv4() {2} else {23} }
+fn lifetimes(valid: Option<u64>, preferred: Option<u64>) -> Result<(),BridgeError> {
+    match (valid,preferred) {
+        (None,None) => Ok(()),
+        (Some(valid),Some(preferred)) if valid <= i64::MAX as u64 && preferred <= valid => Ok(()),
+        _ => Err(invalid()),
+    }
+}
 impl Snapshot {
     pub fn read(expected: &DeviceIdentity) -> Result<Self, BridgeError> {
         let id=windows_device::guid(&expected.guid)?;
@@ -71,6 +99,7 @@ impl Snapshot {
         let mut snapshot: Self=serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
         snapshot.normalize()?;
         if snapshot.active_addresses.iter().any(|address| address.address_state.is_none()) { return Err(invalid()); }
+        snapshot.require_restorable()?;
         if snapshot.guid != id || !snapshot.instance_id.eq_ignore_ascii_case(&expected.instance_id)
             || windows_device::enumerate()?.get(&id) != Some(expected) { return Err(invalid()); }
         Ok(snapshot)
@@ -88,6 +117,7 @@ impl Snapshot {
         for addresses in [&mut self.addresses,&mut self.active_addresses] {
             for address in addresses.iter_mut() {
                 let value=ip(&address.ip_address)?;
+                lifetimes(address.valid_lifetime_ticks,address.preferred_lifetime_ticks)?;
                 if address.address_state.is_some_and(|state| state>4) || family(&value)!=address.address_family || address.prefix_length>if value.is_ipv4(){32}else{128} {return Err(invalid());}
                 address.ip_address=value.to_string();
             }
@@ -96,6 +126,7 @@ impl Snapshot {
         }
         for routes in [&mut self.routes,&mut self.active_routes] {
             for route in routes.iter_mut() {
+                lifetimes(route.valid_lifetime_ticks,route.preferred_lifetime_ticks)?;
                 let (network,length)=prefix(&route.destination_prefix)?; let next=ip(&route.next_hop)?;
                 if family(&network)!=family(&next) {return Err(invalid());}
                 route.destination_prefix=format!("{network}/{length}"); route.next_hop=next.to_string();
@@ -113,6 +144,28 @@ impl Snapshot {
                 .map(|server|{let value=ip(server)?;if family(&value)!=expected_family {return Err(invalid());} Ok(value.to_string())}).collect::<Result<Vec<_>,BridgeError>>()?;
             dns.name_server=servers.join(",");
         }
+        if let Some(legacy)=&mut self.legacy {
+            if legacy.tcpip_netbios_options.is_some_and(|value|value>2) {return Err(invalid());}
+            for server in [&mut legacy.wins_primary_server,&mut legacy.wins_secondary_server] {
+                if let Some(value)=server {
+                    if value.is_empty() {*server=None;} else {
+                        let address=ip(value)?;
+                        if !address.is_ipv4() {return Err(invalid());}
+                        *value=address.to_string();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Older QA snapshots remain readable for historical comparisons, but
+    /// must never authorize migration without restoration metadata.
+    pub fn require_restorable(&self) -> Result<(), BridgeError> {
+        if self.legacy.is_none()
+            || self.addresses.iter().any(|value|value.valid_lifetime_ticks.is_none() || value.preferred_lifetime_ticks.is_none())
+            || self.routes.iter().any(|value|value.valid_lifetime_ticks.is_none() || value.preferred_lifetime_ticks.is_none()) {
+            return Err(invalid());
+        }
         Ok(())
     }
     /// Fixed settings, excluding lease values and an automatically supplied DNS
@@ -123,6 +176,7 @@ impl Snapshot {
         if self.addresses!=current.addresses {changes.push("static addresses");}
         if self.routes!=current.routes {changes.push("persistent routes");}
         if self.manual_dns!=current.manual_dns {changes.push("configured DNS servers or domain");}
+        if self.legacy!=current.legacy {changes.push("NetBIOS or WINS settings");}
         if self.dns_client.len()!=1 || current.dns_client.len()!=1
             || self.dns_client[0].register_this_connections_address!=current.dns_client[0].register_this_connections_address
             || self.dns_client[0].use_suffix_when_registering!=current.dns_client[0].use_suffix_when_registering {changes.push("DNS registration");}
@@ -197,6 +251,28 @@ mod tests {
         assert!(edited.normalize().is_err());
         edited=original.clone(); edited.active_addresses[0].address_family=99;
         assert!(edited.normalize().is_err());
+    }
+    #[test]
+    fn restoration_requires_lifetimes_and_tracks_legacy_configuration() {
+        let mut original=fixture();
+        assert!(original.require_restorable().is_err());
+        original.legacy=Some(Legacy {tcpip_netbios_options:Some(0),wins_enable_lm_hosts_lookup:Some(true),
+            wins_primary_server:None,wins_secondary_server:None,wins_scope_id:Some(String::new())});
+        for address in &mut original.addresses {
+            address.valid_lifetime_ticks=Some(i64::MAX as u64);address.preferred_lifetime_ticks=Some(i64::MAX as u64);
+        }
+        for route in &mut original.routes {
+            route.valid_lifetime_ticks=Some(i64::MAX as u64);route.preferred_lifetime_ticks=Some(i64::MAX as u64);
+        }
+        original.require_restorable().unwrap();original.normalize().unwrap();
+        let mut changed=original.clone();
+        changed.legacy.as_mut().unwrap().wins_primary_server=Some("192.0.2.53".into());
+        assert_eq!(original.configuration_changes(&changed),vec!["NetBIOS or WINS settings"]);
+        changed.legacy.as_mut().unwrap().tcpip_netbios_options=Some(3);
+        assert!(changed.normalize().is_err());
+        for pair in [(Some(1),Some(2)),(Some(u64::MAX),Some(0)),(None,Some(0)),(Some(0),None)] {
+            assert!(lifetimes(pair.0,pair.1).is_err());
+        }
     }
     #[test]
     fn duplicate_or_tentative_addresses_do_not_satisfy_runtime_verification() {
