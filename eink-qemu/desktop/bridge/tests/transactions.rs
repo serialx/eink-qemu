@@ -389,3 +389,36 @@ fn native_checkpoint_identity_is_durable_before_network_mutation() {
     assert_eq!(service.recover_startup().unwrap().unwrap().state, OperationState::Cancelled);
     assert!(*host.restored.lock().unwrap());
 }
+
+#[test]
+fn committed_native_context_is_saved_with_the_owned_resource() {
+    #[derive(Clone, Serialize, Deserialize)]
+    struct CommitSnapshot { committed: bool }
+    struct CommitHost;
+    impl PlatformOps for CommitHost {
+        type Snapshot = CommitSnapshot;
+        type Mutation = u8;
+        fn prepare(&mut self, request: PlanRequest, id: OperationId, now: u64, _: Option<&eink_bridge::coordinator::Resource<Self::Snapshot>>) -> Result<Prepared<Self::Snapshot, u8>, BridgeError> {
+            Ok(Prepared { plan: BridgePlan { id, request, fingerprint: "nic".into(), changes: vec![], requires_authorization: true, may_disconnect: true, expires_at: now + 300 }, snapshot: CommitSnapshot { committed: false }, mutations: vec![0] })
+        }
+        fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok("nic".into()) }
+        fn apply(&mut self, _: &u8) -> Result<(), BridgeError> { Ok(()) }
+        fn verify(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
+        fn commit(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
+        fn commit_recorded(&mut self, snapshot: &mut Self::Snapshot) -> Result<(), BridgeError> {
+            self.commit(snapshot)?;
+            snapshot.committed = true;
+            Ok(())
+        }
+        fn rollback(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut owner = Coordinator::open(dir.path(), "user", CommitHost).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    owner.apply(&plan.id, 101).unwrap();
+    assert!(owner.resources().unwrap().is_empty());
+    owner.keep(&plan.id, 102).unwrap();
+    drop(owner);
+    let owner = Coordinator::open(dir.path(), "user", CommitHost).unwrap();
+    assert!(owner.resources().unwrap()[0].original.committed, "a committed bridge must not accept temporary staging profiles after restart");
+}

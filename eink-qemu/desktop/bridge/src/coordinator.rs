@@ -23,6 +23,10 @@ pub trait PlatformOps {
     /// Must be idempotent. The durable snapshot remains usable if the helper
     /// crashes after this call but before recording the committed resource.
     fn commit(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
+    /// Record finalized native state with the committed resource. A crash
+    /// before the final journal write still restores the prior undo snapshot,
+    /// so backends must tolerate partial native commit during rollback.
+    fn commit_recorded(&mut self, snapshot: &mut Self::Snapshot) -> Result<(), BridgeError> { self.commit(snapshot) }
     /// Must be idempotent and conflict-aware. Called even after partial apply.
     fn rollback(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
 }
@@ -207,7 +211,7 @@ impl<P: PlatformOps> Coordinator<P> {
         record.operation.confirmation_deadline = None;
         record.operation.stage = "Finalize bridge setup".into();
         self.save(record)?;
-        if let Err(error) = self.platform.commit(&record.prepared.snapshot) {
+        if let Err(error) = self.platform.commit_recorded(&mut record.prepared.snapshot) {
             return self.rollback(record, Some(error));
         }
         self.commit_resource(record)?;
