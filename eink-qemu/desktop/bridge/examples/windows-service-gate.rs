@@ -10,6 +10,16 @@ fn run()->Result<(),Box<dyn std::error::Error>> {
     if std::env::var("COMPUTERNAME").as_deref()!=Ok("WIN-SUNSKHPNVMO") || args.len()!=2 {
         return Err("Requires the disposable Windows test VM".into());
     }
+    if args[1]!="--inspect" {
+        use std::os::windows::io::{AsRawHandle,FromRawHandle,OwnedHandle};
+        use windows_sys::Win32::{Security::TOKEN_QUERY,System::Threading::{OpenProcessToken,GetCurrentProcess}};
+        let mut token=std::ptr::null_mut();
+        if unsafe{OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&mut token)}==0{return Err(std::io::Error::last_os_error().into());}
+        let token=unsafe{OwnedHandle::from_raw_handle(token)};
+        assert_ne!(eink_bridge::windows_security::current_sid()?,"S-1-5-18");
+        assert!(!eink_bridge::windows_security::token_is_elevated_admin(token.as_raw_handle())?,"Approval gates require an unelevated user token");
+        println!("unelevatedClientToken=passed");
+    }
     let request=|request|HelperClient::connect()?.request(HelperRequest{version:VERSION,request});
     let ReplyKind::Inspection{inspection}=request(RequestKind::Inspect)?.reply else{return Err("Missing inspection".into())};
     assert_eq!(inspection.support,SupportState::Ready);

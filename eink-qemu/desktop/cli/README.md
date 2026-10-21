@@ -36,10 +36,11 @@ The app can also live in `~/Applications`; adjust the symlink accordingly.
 On Windows, add the install directory to PATH for the current PowerShell:
 
 ```powershell
-$env:Path += ";$env:LOCALAPPDATA\eink-qemu"
+$env:Path += ";$env:ProgramFiles\eink-qemu"
 ```
 
-Use the folder selected in the installer if it differs from that default.
+The managed-bridge installer uses this fixed per-machine location. Older
+installers may have used a user-selected folder under LocalAppData.
 To keep it on PATH, add that directory (containing `eink-qemu.exe` and
 `eink-qemu-desktop.exe`) to your **user** Path in Environment Variables,
 then open a new terminal.
