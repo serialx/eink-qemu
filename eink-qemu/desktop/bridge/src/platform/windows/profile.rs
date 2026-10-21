@@ -23,7 +23,7 @@ impl Interface {
     }
 }
 impl Interface<Option<u32>> {
-    fn validate(&self)->Result<(),BridgeError>{
+    pub(crate) fn validate(&self)->Result<(),BridgeError>{
         // PersistentStore omits options that Windows has not explicitly saved.
         // Keep those nulls: active values include defaults and RA-derived MTU.
         if self.nl_mtu.is_some_and(|v|v < if self.address_family==2 {68}else{1280} || v>65535)
@@ -79,32 +79,37 @@ pub struct Legacy {
     pub manual_servers: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="PascalCase", deny_unknown_fields)]
+pub struct ConfiguredDhcp {pub address_family:u32,pub enabled:u32}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct Snapshot {
     pub guid: String, pub instance_id: String, pub mac: String,
     pub interfaces: Vec<Interface>, pub addresses: Vec<Address>, pub routes: Vec<Route>,
     #[serde(default, skip_serializing_if="Option::is_none")]
     pub persistent_interfaces: Option<Vec<Interface<Option<u32>>>>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub configured_dhcp: Option<Vec<ConfiguredDhcp>>,
     pub active_addresses: Vec<Address>, pub active_routes: Vec<Route>,
     pub dns: Vec<Dns>, pub dns_client: Vec<DnsClient>, pub manual_dns: Vec<ManualDns>,
     #[serde(default, skip_serializing_if="Option::is_none")]
     pub legacy: Option<Legacy>,
 }
-fn ip(value: &str) -> Result<IpAddr, BridgeError> {
+pub(crate) fn ip(value: &str) -> Result<IpAddr, BridgeError> {
     let bare = if let Some((address, zone)) = value.split_once('%') {
         if !address.contains(':') || zone.parse::<u32>().is_err() { return Err(invalid()); }
         address
     } else { value };
     bare.parse().map_err(|_| invalid())
 }
-fn prefix(value: &str) -> Result<(IpAddr, u8), BridgeError> {
+pub(crate) fn prefix(value: &str) -> Result<(IpAddr, u8), BridgeError> {
     let (address, length)=value.split_once('/').ok_or_else(invalid)?;
     let address=ip(address)?; let length: u8=length.parse().map_err(|_| invalid())?;
     if length > if address.is_ipv4() {32} else {128} {return Err(invalid());}
     Ok((address,length))
 }
 fn family(address: &IpAddr) -> u32 { if address.is_ipv4() {2} else {23} }
-fn lifetimes(valid: Option<u64>, preferred: Option<u64>) -> Result<(),BridgeError> {
+pub(crate) fn lifetimes(valid: Option<u64>, preferred: Option<u64>) -> Result<(),BridgeError> {
     match (valid,preferred) {
         (None,None) => Ok(()),
         (Some(valid),Some(preferred)) if valid <= i64::MAX as u64 && preferred <= valid => Ok(()),
@@ -140,6 +145,10 @@ impl Snapshot {
             rows.sort_by_key(|i|i.address_family);
             if rows.iter().map(|i|i.address_family).collect::<Vec<_>>()!=[2,23] {return Err(invalid());}
             for row in rows { row.validate()?; }
+        }
+        if let Some(rows)=&mut self.configured_dhcp {
+            rows.sort_by_key(|row|row.address_family);
+            if rows.iter().map(|r|r.address_family).collect::<Vec<_>>()!=[2,23] || rows.iter().any(|r|r.enabled>1){return Err(invalid());}
         }
         for addresses in [&mut self.addresses,&mut self.active_addresses] {
             for address in addresses.iter_mut() {
@@ -193,7 +202,7 @@ impl Snapshot {
     /// Older QA snapshots remain readable for historical comparisons, but
     /// must never authorize migration without restoration metadata.
     pub fn require_restorable(&self) -> Result<(), BridgeError> {
-        if self.legacy.as_ref().is_none_or(|legacy|legacy.manual_servers.is_none()) || self.persistent_interfaces.is_none()
+        if self.legacy.as_ref().is_none_or(|legacy|legacy.manual_servers.is_none()) || self.persistent_interfaces.is_none() || self.configured_dhcp.is_none()
             || self.addresses.iter().any(|value|value.valid_lifetime_ticks.is_none() || value.preferred_lifetime_ticks.is_none())
             || self.routes.iter().any(|value|value.valid_lifetime_ticks.is_none() || value.preferred_lifetime_ticks.is_none()) {
             return Err(invalid());
@@ -207,11 +216,16 @@ impl Snapshot {
         // Windows calculates this metric from link speed when automatic mode
         // is enabled. Preserve the mode; do not turn its runtime value into a
         // manual metric when moving settings to a different interface.
+        let known_dhcp=self.configured_dhcp.is_some() && current.configured_dhcp.is_some();
         let interfaces=|rows:&[Interface]|rows.iter().map(|row|{
-            let mut row=row.clone();if row.automatic_metric==1{row.interface_metric=0;}row
+            let mut row=row.clone();if row.automatic_metric==1{row.interface_metric=0;}
+            // Effective DHCP can be disabled while the saved mode is enabled
+            // (for example an isolated bridge without router advertisements).
+            if known_dhcp{row.dhcp=0;}row
         }).collect::<Vec<_>>();
         if interfaces(&self.interfaces)!=interfaces(&current.interfaces) {changes.push("IP interface settings");}
         if self.persistent_interfaces!=current.persistent_interfaces {changes.push("persistent IP interface settings");}
+        if self.configured_dhcp!=current.configured_dhcp {changes.push("configured DHCP settings");}
         if self.addresses!=current.addresses {changes.push("static addresses");}
         if self.routes!=current.routes {changes.push("persistent routes");}
         if self.manual_dns!=current.manual_dns {changes.push("configured DNS servers or domain");}
@@ -309,6 +323,7 @@ mod tests {
         for route in &mut original.routes {
             route.valid_lifetime_ticks=Some(i64::MAX as u64);route.preferred_lifetime_ticks=Some(i64::MAX as u64);
         }
+        original.configured_dhcp=Some(original.interfaces.iter().map(|i|ConfiguredDhcp{address_family:i.address_family,enabled:i.dhcp}).collect());
         original.require_restorable().unwrap();original.normalize().unwrap();
         let mut changed=original.clone();
         changed.legacy.as_mut().unwrap().manual_servers=Some(vec!["192.0.2.53".into()]);
@@ -321,6 +336,15 @@ mod tests {
         for pair in [(Some(1),Some(2)),(Some(u64::MAX),Some(0)),(None,Some(0)),(Some(0),None)] {
             assert!(lifetimes(pair.0,pair.1).is_err());
         }
+    }
+    #[test]
+    fn configured_dhcp_is_independent_of_sparse_interface_defaults(){
+        let mut source=fixture();source.configured_dhcp=Some(vec![ConfiguredDhcp{address_family:2,enabled:1},ConfiguredDhcp{address_family:23,enabled:1}]);
+        let mut inactive=source.clone();inactive.interfaces[1].dhcp=0;
+        assert!(source.configuration_changes(&inactive).is_empty());
+        let mut changed=source.clone();changed.configured_dhcp.as_mut().unwrap()[0].enabled=0;
+        assert_eq!(source.configuration_changes(&changed),vec!["configured DHCP settings"]);
+        changed.configured_dhcp.as_mut().unwrap()[0].enabled=2;assert!(changed.normalize().is_err());
     }
     #[test]
     fn automatic_metrics_are_not_frozen_and_persistent_interfaces_remain_distinct(){

@@ -30,6 +30,12 @@ pub mod windows_options;
 #[path = "platform/windows/static_config.rs"]
 pub mod windows_static;
 #[cfg(windows)]
+#[path = "platform/windows/routes.rs"]
+pub mod windows_routes;
+#[cfg(windows)]
+#[path = "platform/windows/saved.rs"]
+pub mod windows_saved;
+#[cfg(windows)]
 #[path = "platform/windows/network_bridge.rs"]
 pub mod windows_network_bridge;
 #[cfg(windows)]

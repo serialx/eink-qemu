@@ -22,14 +22,18 @@ function Normalize-Servers($value) {
  $servers -join ','
 }
 $current=Read-EinkNetwork $guid
-$interfaceFields=@('Dhcp','RouterDiscovery','AutomaticMetric','NlMtu','Forwarding','WeakHostSend','WeakHostReceive','Advertising','AdvertiseDefaultRoute')
+foreach($family in @(2,23)) {
+ $saved=Family-Row $current.configuredDhcp $family
+ Require-Allowed $saved.Enabled @((Family-Row $before.configuredDhcp $family).Enabled,(Family-Row $desired.configuredDhcp $family).Enabled)
+}
+$interfaceFields=@('RouterDiscovery','AutomaticMetric','NlMtu','Forwarding','WeakHostSend','WeakHostReceive','Advertising','AdvertiseDefaultRoute')
 foreach($family in @(2,23)) {
  $old=Family-Row $before.interfaces $family;$oldSaved=Family-Row $before.persistentInterfaces $family
  $next=Family-Row $desired.interfaces $family;$nextSaved=Family-Row $desired.persistentInterfaces $family
  # A persistent override must match its own saved state. Only active values
  # can temporarily take a persistent value while a two-store update completes.
  $saved=Family-Row $current.persistentInterfaces $family
- foreach($field in $interfaceFields){Require-Allowed $saved.$field @($oldSaved.$field,$nextSaved.$field)}
+ foreach($field in @($interfaceFields)+@('Dhcp')){Require-Allowed $saved.$field @($oldSaved.$field,$nextSaved.$field)}
  Require-Allowed $saved.InterfaceMetric @($oldSaved.InterfaceMetric,$nextSaved.InterfaceMetric)
  foreach($row in @((Family-Row $current.interfaces $family),(Family-Row $current.persistentInterfaces $family))) {
   foreach($field in $interfaceFields){Require-Allowed $row.$field @($old.$field,$oldSaved.$field,$next.$field,$nextSaved.$field)}
@@ -51,6 +55,17 @@ foreach($field in @('TcpipNetbiosOptions','WINSEnableLMHostsLookup','WINSScopeID
 }
 if(!(Equal-Value @($current.legacy.ManualServers) @($before.legacy.ManualServers)) -and !(Equal-Value @($current.legacy.ManualServers) @($desired.legacy.ManualServers))){exit 73}
 
+# DHCP persistence is stored in the protocol's interface registry key even
+# when CIM PersistentStore.Dhcp is null. Use the documented cmdlet, and retain
+# the registry value as independent restoration evidence; never write the key.
+foreach($family in @(2,23)) {
+ $adapter=Native-Adapter
+ $protocol=if($family -eq 2){'Tcpip'}else{'Tcpip6'}
+ $saved=Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\'+$protocol+'\Parameters\Interfaces\'+$guid)
+ $old=(Family-Row $before.configuredDhcp $family).Enabled;$next=(Family-Row $desired.configuredDhcp $family).Enabled
+ Require-Allowed $saved.EnableDHCP @($old,$next)
+ if($saved.EnableDHCP -ne $next){Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily $family -Dhcp ([uint32]$next) -Confirm:$false}
+}
 # Omit PolicyStore when setting persistent configuration so Windows updates
 # both stores. Then restore any distinct ActiveStore values independently.
 foreach($persistent in @($true,$false)) {
@@ -62,7 +77,7 @@ foreach($persistent in @($true,$false)) {
   $oldActive=Family-Row $before.interfaces $family;$oldSaved=Family-Row $before.persistentInterfaces $family
   $nextActive=Family-Row $desired.interfaces $family;$nextSaved=Family-Row $desired.persistentInterfaces $family
   if($persistent){
-   foreach($field in $interfaceFields){Require-Allowed $row.$field @($oldSaved.$field,$nextSaved.$field)}
+   foreach($field in @($interfaceFields)+@('Dhcp')){Require-Allowed $row.$field @($oldSaved.$field,$nextSaved.$field)}
    Require-Allowed $row.InterfaceMetric @($oldSaved.InterfaceMetric,$nextSaved.InterfaceMetric)
   }
   foreach($field in $interfaceFields){Require-Allowed $row.$field @($oldActive.$field,$oldSaved.$field,$nextActive.$field,$nextSaved.$field)}
@@ -70,7 +85,8 @@ foreach($persistent in @($true,$false)) {
   $parameters=@{InterfaceIndex=$adapter.ifIndex;AddressFamily=$family;Confirm=$false}
   if(!$persistent){$parameters.PolicyStore='ActiveStore'}
   $changed=$false
-  foreach($field in $interfaceFields) {
+  $fields=if($persistent){@($interfaceFields)+@('Dhcp')}else{$interfaceFields}
+  foreach($field in $fields) {
    if($row.$field -ne $next.$field) {
     if($null -eq $next.$field){throw 'Cannot erase a saved interface override'}
     $parameter=if($field -eq 'NlMtu'){'NlMtuBytes'}else{$field}

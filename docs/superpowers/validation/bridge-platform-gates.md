@@ -548,8 +548,21 @@ original settings, and repeated restoration on a dedicated TAP. Cleanup removed
 that adapter. Three additional native regressions passed planning compatibility,
 PowerShell parsing/data literals, and rejecting persistent-option conflicts both
 at preflight and immediately before a setter. NetBIOS/WINS changes were skipped
-because the disconnected fixture did not expose those properties; DHCP changes
-and persistent interface setters still need native validation.
+because the disconnected fixture did not expose those properties. A subsequent
+connected-TAP test passed DHCP changes, persistent MTU/manual metrics, and
+NetBIOS/WINS changes, including replay and adapter cleanup. The same options
+survived a full Windows restart; the startup verifier removed its TAP and
+scheduled task afterward.
+
+A later snapshot correction records each protocol's configured DHCP mode from
+its interface registry key. Windows can report a null persistent-interface DHCP
+property even when that configured value is present. Nine profile regressions,
+four route-source checks, four options checks, and two static-planning/parser
+checks passed natively with this correction. A second connected-TAP test
+passed mutation, replay, conflict detection, and cleanup with the updated DHCP
+setter. The reboot test used the earlier setter. Configured DHCP mode is checked
+separately from the active interface mode: Windows can report different values
+for an isolated bridge before it has a live Ethernet member.
 
 The static-address setter passed native IPv4/IPv6 address and route creation,
 replay, refusal of a conflicting route, and usable-address verification on a
@@ -564,13 +577,22 @@ reports protocol 3 for manual, DHCP, and router-advertised routes. The native
 route table identifies IPv6 router advertisements, but reports the VM's IPv4
 DHCP default route with manual origin. The DHCP gateway registry metadata
 identifies that route; protocol or origin alone cannot authorize copying it as
-persistent configuration. Active-only manual route handling remains unfinished.
+persistent configuration. The source validator now rejects unsupported active-only routes before conversion.
+Its live native test accepts the VM's DHCP and router-advertised routes while
+regressions reject temporary routes, changed native evidence, and a temporary
+manual default-route metric.
 
 A protected volatile registry key provides the Windows boot identity without
 depending on the wall clock. Native tests passed stable reopening and rejection
 of an untrusted write grant; their temporary registry keys were removed. A full
 Windows restart changed both the OS boot time and this identity. The test also
 confirmed that Ethernet returned and no temporary TAP devices remained.
+
+Saved configuration is also checked through the persistent IP store and native
+DNS API. An isolated bridge test passed reading and verifying those settings
+with both host IP bindings disabled, rejecting a changed NetBIOS setting,
+restoring the bindings, and removing both test TAPs. This allows removal to
+check for outside changes after active IP and DNS-client objects disappear.
 
 The installed Windows service, complete network lifecycle, and packaged desktop
 acceptance are still pending. These component tests do not establish a working

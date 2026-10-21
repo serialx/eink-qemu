@@ -16,7 +16,7 @@ pub fn validate_source(source:&Snapshot)->Result<(),BridgeError>{
     let mut addresses=BTreeSet::new();let mut routes=BTreeSet::new();
     for row in &source.addresses{
         if row.prefix_origin!=1 || row.suffix_origin!=1 || !addresses.insert(&row.ip_address){return Err(conflict());}
-        if row.address_family==2 && (source.interfaces.iter().any(|i|i.address_family==2 && i.dhcp!=0)
+        if row.address_family==2 && (source.configured_dhcp.as_ref().unwrap().iter().any(|i|i.address_family==2 && i.enabled!=0)
             || source.persistent_interfaces.as_ref().unwrap().iter().any(|i|i.address_family==2 && i.dhcp==Some(1))){
             return Err(BridgeError::new("EHOSTNETWORK","This connection combines DHCP and static IPv4 addresses and needs a compatible migration method."));
         }
@@ -63,6 +63,7 @@ mod tests{
         let mut value:Snapshot=serde_json::from_str(include_str!("../../../tests/fixtures/windows-dhcp-profile.json")).unwrap();
         value.persistent_interfaces=Some(value.interfaces.iter().map(crate::windows_profile::Interface::sparse).collect());
         value.legacy=Some(crate::windows_profile::Legacy{tcpip_netbios_options:Some(0),wins_enable_lm_hosts_lookup:Some(true),wins_primary_server:None,wins_secondary_server:None,wins_scope_id:Some(String::new()),manual_servers:Some(Vec::new())});
+        value.configured_dhcp=Some(value.interfaces.iter().map(|i|crate::windows_profile::ConfiguredDhcp{address_family:i.address_family,enabled:i.dhcp}).collect());
         value.normalize().unwrap();value
     }
     #[test]
@@ -74,6 +75,7 @@ mod tests{
         value.addresses.push(address.clone());
         assert_eq!(validate_source(&value).unwrap_err().code,"EHOSTNETWORK");
         value.interfaces.iter_mut().find(|row|row.address_family==2).unwrap().dhcp=0;
+        value.configured_dhcp.as_mut().unwrap().iter_mut().find(|row|row.address_family==2).unwrap().enabled=0;
         value.persistent_interfaces.as_mut().unwrap().iter_mut().find(|row|row.address_family==2).unwrap().dhcp=Some(0);
         validate_source(&value).unwrap();
         address.ip_address="192.0.2.77".into();value.active_addresses.push(address);

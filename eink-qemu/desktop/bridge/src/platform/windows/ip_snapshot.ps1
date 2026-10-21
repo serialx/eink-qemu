@@ -12,8 +12,10 @@ function Read-EinkNetwork($guid) {
  $wins=Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_'+$guid)
  $legacyConfiguration=$legacy[0] | Select-Object TcpipNetbiosOptions,WINSEnableLMHostsLookup,WINSPrimaryServer,WINSSecondaryServer,WINSScopeID
  $legacyConfiguration | Add-Member -NotePropertyName ManualServers -NotePropertyValue @($wins.NameServerList | Where-Object { $null -ne $_ -and $_ -ne '' })
+ $configuredDhcp=@()
  $manualDns=@('Tcpip','Tcpip6' | ForEach-Object {
   $key=Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\'+$_+'\Parameters\Interfaces\'+$guid)
+  $configuredDhcp += [ordered]@{AddressFamily=$(if($_ -eq 'Tcpip'){2}else{23});Enabled=$key.EnableDHCP}
   [ordered]@{protocol=$_; nameServer=[string]$key.NameServer; domain=[string]$key.Domain}
  })
  [ordered]@{
@@ -28,6 +30,7 @@ function Read-EinkNetwork($guid) {
   activeRoutes=@(Get-NetRoute -InterfaceIndex $index | Select-Object DestinationPrefix,NextHop,RouteMetric,Protocol,Publish)
   dns=@(Get-DnsClientServerAddress -InterfaceIndex $index | Select-Object AddressFamily,ServerAddresses)
   dnsClient=@(Get-DnsClient -InterfaceIndex $index | Select-Object ConnectionSpecificSuffix,RegisterThisConnectionsAddress,UseSuffixWhenRegistering)
+  configuredDhcp=$configuredDhcp
   manualDns=$manualDns
   legacy=$legacyConfiguration
  }

@@ -31,6 +31,52 @@ pub fn validate_transition(before:&Snapshot,desired:&Snapshot)->Result<(),Bridge
     }
     Ok(())
 }
+/// Read-only conflict check for restoration of a partially applied change.
+/// Each value must belong to a recorded state; a third-party edit is not
+/// permission to delete the destination or overwrite that field.
+pub fn validate_current(before:&Snapshot,desired:&Snapshot,current:&Snapshot)->Result<(),BridgeError>{
+    let mut before=before.clone();let mut desired=desired.clone();let mut current=current.clone();
+    for value in [&mut before,&mut desired,&mut current]{value.normalize()?;value.require_restorable()?;}
+    if before.guid!=current.guid || !before.instance_id.eq_ignore_ascii_case(&current.instance_id){return Err(conflict());}
+    fn values(value:&impl serde::Serialize)->Result<serde_json::Value,BridgeError>{serde_json::to_value(value).map_err(|_|conflict())}
+    for family in 0..2 {
+        let enabled=current.configured_dhcp.as_ref().unwrap()[family].enabled;
+        if enabled!=before.configured_dhcp.as_ref().unwrap()[family].enabled && enabled!=desired.configured_dhcp.as_ref().unwrap()[family].enabled{return Err(conflict());}
+        let old=values(&before.interfaces[family])?;let new=values(&desired.interfaces[family])?;
+        let old_saved=values(&before.persistent_interfaces.as_ref().unwrap()[family])?;
+        let new_saved=values(&desired.persistent_interfaces.as_ref().unwrap()[family])?;
+        let active=values(&current.interfaces[family])?;
+        let saved=values(&current.persistent_interfaces.as_ref().unwrap()[family])?;
+        for (field,value) in saved.as_object().unwrap(){if value!=&old_saved[field] && value!=&new_saved[field]{return Err(conflict());}}
+        for (field,value) in active.as_object().unwrap(){
+            if field=="Dhcp" || (field=="InterfaceMetric" && active["AutomaticMetric"]==1){continue;}
+            if [&old[field],&new[field],&old_saved[field],&new_saved[field]].into_iter().all(|known|known!=value){return Err(conflict());}
+        }
+    }
+    for i in 0..2{
+        let old=&before.manual_dns[i];let new=&desired.manual_dns[i];let actual=&current.manual_dns[i];
+        if (actual.name_server!=old.name_server && actual.name_server!=new.name_server)
+            || (actual.domain!=old.domain && actual.domain!=new.domain){return Err(conflict());}
+    }
+    let client=&current.dns_client[0];let old=&before.dns_client[0];let new=&desired.dns_client[0];
+    if (client.register_this_connections_address!=old.register_this_connections_address && client.register_this_connections_address!=new.register_this_connections_address)
+        || (client.use_suffix_when_registering!=old.use_suffix_when_registering && client.use_suffix_when_registering!=new.use_suffix_when_registering){return Err(conflict());}
+    let actual=values(current.legacy.as_ref().unwrap())?;let old=values(before.legacy.as_ref().unwrap())?;let new=values(desired.legacy.as_ref().unwrap())?;
+    for (field,value) in actual.as_object().unwrap(){
+        // Runtime WINS values may be learned from DHCP. ManualServers is the
+        // restoration input and is checked independently below.
+        if matches!(field.as_str(),"WINSPrimaryServer"|"WINSSecondaryServer"){continue;}
+        if value!=&old[field] && value!=&new[field]{return Err(conflict());}
+    }
+    if current.addresses.iter().any(|r|!before.addresses.contains(r) && !desired.addresses.contains(r))
+        || current.routes.iter().any(|r|!before.routes.contains(r) && !desired.routes.contains(r)){return Err(conflict());}
+    for actual in current.active_addresses.iter().filter(|a|a.prefix_origin==1){
+        if !before.active_addresses.iter().chain(&before.addresses).chain(&desired.addresses).any(|known|
+            known.ip_address==actual.ip_address && known.prefix_length==actual.prefix_length && known.skip_as_source==actual.skip_as_source){return Err(conflict());}
+    }
+    Ok(())
+}
+
 /// Apply the intended options or finish a partially applied operation. Each
 /// field must still match one of the recorded states. This function may change
 /// DHCP runtime state; callers must also retain address/route restoration data.
@@ -66,7 +112,22 @@ mod tests{
         value.persistent_interfaces=Some(value.interfaces.iter().map(crate::windows_profile::Interface::sparse).collect());
         value.legacy=Some(crate::windows_profile::Legacy {tcpip_netbios_options:Some(0),wins_enable_lm_hosts_lookup:Some(true),
             wins_primary_server:None,wins_secondary_server:None,wins_scope_id:Some(String::new()),manual_servers:Some(Vec::new())});
+        value.configured_dhcp=Some(value.interfaces.iter().map(|i|crate::windows_profile::ConfiguredDhcp{address_family:i.address_family,enabled:i.dhcp}).collect());
         value.normalize().unwrap();value.require_restorable().unwrap();value
+    }
+    #[test]
+    fn rollback_accepts_partial_updates_but_preserves_external_edits(){
+        let before=fixture();let mut desired=before.clone();
+        desired.interfaces[0].nl_mtu=1400;desired.manual_dns[0].name_server="192.0.2.53".into();
+        let mut partial=before.clone();partial.interfaces[0].nl_mtu=1400;
+        validate_current(&before,&desired,&partial).unwrap();
+        partial.manual_dns[0].domain="administrator.invalid".into();
+        assert_eq!(validate_current(&before,&desired,&partial).unwrap_err().code,"ECONFLICT");
+        partial=before.clone();partial.persistent_interfaces.as_mut().unwrap()[0].nl_mtu=Some(1300);
+        assert_eq!(validate_current(&before,&desired,&partial).unwrap_err().code,"ECONFLICT");
+        partial=before.clone();let mut address=partial.active_addresses[0].clone();
+        address.ip_address="192.0.2.99".into();address.prefix_origin=1;partial.active_addresses.push(address);
+        assert_eq!(validate_current(&before,&desired,&partial).unwrap_err().code,"ECONFLICT");
     }
     #[test]
     fn planning_refuses_unrestorable_options_before_native_work(){
@@ -95,6 +156,7 @@ mod tests{
 function Read-EinkNetwork {{ {} }}
 function Get-NetAdapter {{ [pscustomobject]@{{InterfaceGuid=$guid;PnPDeviceID=$before.instanceId;ifIndex=7}} }}
 function Get-NetIPInterface {{ param($InterfaceIndex,$AddressFamily,$PolicyStore); Family-Row $changed.persistentInterfaces $AddressFamily }}
+function Get-ItemProperty {{ [pscustomobject]@{{EnableDHCP=1}} }}
 function Set-NetIPInterface {{ throw 'Unexpected mutation' }}
 {}
 "#,before.guid,quoted(&before).unwrap(),quoted(&desired).unwrap(),quoted(&changed).unwrap(),

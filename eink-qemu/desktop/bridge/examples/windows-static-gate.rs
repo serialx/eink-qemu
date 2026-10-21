@@ -18,6 +18,7 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
     let before=Snapshot::read(&target)?;
     if !before.addresses.is_empty() || !before.routes.is_empty(){return Err("Fixture already has static configuration".into());}
     let mut desired=before.clone();for row in &mut desired.interfaces{row.dhcp=0;}
+    for row in desired.configured_dhcp.as_mut().ok_or("Missing configured DHCP")?{row.enabled=0;}
     for (ip,prefix,family) in [("192.0.2.10",24,2),("2001:db8:fffe::10",64,23)]{
         desired.addresses.push(Address{ip_address:ip.into(),prefix_length:prefix,address_family:family,prefix_origin:1,suffix_origin:1,skip_as_source:true,address_state:None,valid_lifetime_ticks:Some(i64::MAX as u64),preferred_lifetime_ticks:Some(i64::MAX as u64)});
     }

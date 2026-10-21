@@ -20,16 +20,30 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
     Topology::read()?.require_unbridged(&target)?;
     let path=root.join(format!("options-{}.json",fixture.resource.as_str()));
     let args=std::env::args().skip(1).collect::<Vec<_>>();
-    if args==["--restore"]{
+    if args==["--restore"] || args==["--verify"]{
         let file=fs::File::open(path)?;windows_security::validate_handle(&file,None)?;
         let undo:Undo=serde_json::from_reader(file)?;
         if undo.target!=target{return Err("Options fixture changed".into());}
+        if args==["--verify"]{
+            let current=Snapshot::read(&target)?;
+            let changes=undo.desired.configuration_changes(&current);
+            if !changes.is_empty(){return Err(format!("Options did not survive restart: {changes:?}").into());}
+            println!("nativeOptionsSurviveRestart=passed");return Ok(());
+        }
         windows_options::apply(&target,&undo.desired,&undo.before)?;
         println!("nativeOptionsRestored=passed");return Ok(());
     }
-    if args!=["--run"]{return Err("Expected --run or --restore".into());}
+    let connected=args==["--connected"];
+    if args!=["--run"] && !connected{return Err("Expected --run, --connected or --restore".into());}
     let before=Snapshot::read(&target)?;let mut desired=before.clone();
     for row in &mut desired.interfaces{row.nl_mtu=1400;row.automatic_metric=0;row.interface_metric=55;}
+    if connected {
+        for row in &mut desired.interfaces {row.dhcp=0;}
+        for row in desired.configured_dhcp.as_mut().ok_or("Missing configured DHCP")? {row.enabled=0;}
+        for row in desired.persistent_interfaces.as_mut().ok_or("Missing persistent options")? {
+            row.nl_mtu=Some(1400);row.automatic_metric=Some(0);row.interface_metric=Some(55);
+        }
+    }
     desired.manual_dns[0].name_server="192.0.2.53,192.0.2.54".into();
     desired.manual_dns[1].name_server="2001:db8::53".into();
     desired.manual_dns[0].domain="bridge-test.invalid".into();
@@ -39,7 +53,8 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
     if legacy.tcpip_netbios_options.is_some() {
         legacy.tcpip_netbios_options=Some(2);
         legacy.manual_servers=Some(vec!["192.0.2.80".into()]);
-    } else { println!("nativeLegacyOptions=unavailable-on-disconnected-fixture"); }
+    } else if connected {return Err("Connected fixture has no legacy options".into());}
+    else { println!("nativeLegacyOptions=unavailable-on-disconnected-fixture"); }
     desired.normalize()?;
     let mut file=fs::OpenOptions::new().write(true).create_new(true).open(path)?;windows_security::validate_handle(&file,None)?;
     serde_json::to_writer(&mut file,&Undo{target:target.clone(),before:before.clone(),desired:desired.clone()})?;file.flush()?;file.sync_all()?;drop(file);
@@ -51,6 +66,12 @@ fn run()->Result<(),Box<dyn std::error::Error>>{
     if !before.configuration_changes(&Snapshot::read(&target)?).is_empty(){return Err("Rejected change altered configuration".into());}
     println!("nativeOptionsStage=apply");windows_options::apply(&target,&before,&desired)?;
     println!("nativeOptionsStage=replay");windows_options::apply(&target,&before,&desired)?;
+    if connected {
+        let current=Snapshot::read(&target)?;
+        if !desired.configuration_changes(&current).is_empty(){return Err("Connected options did not persist".into());}
+        if windows_options::validate_transition(&desired,&before).unwrap_err().code!="EHOSTNETWORK"{return Err("Unsafe override erase was permitted".into());}
+        println!("nativeConnectedOptionsApplyReplay=passed");return Ok(());
+    }
     println!("nativeOptionsStage=restore");windows_options::apply(&target,&desired,&before)?;
     windows_options::apply(&target,&desired,&before)?;
     if !before.configuration_changes(&Snapshot::read(&target)?).is_empty(){return Err("Options were not restored".into());}
