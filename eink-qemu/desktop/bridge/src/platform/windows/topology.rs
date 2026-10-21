@@ -66,6 +66,24 @@ impl Topology {
             || !self.bridges().is_empty() || !self.members()?.is_empty() { return Err(conflict()); }
         Ok(())
     }
+    /// Resolve a bridge after an interrupted TAP-first create. A new bridge's
+    /// GUID alone does not prove ownership. Require the dedicated resource's
+    /// exact TAP to be a member, with at most the recorded physical adapter.
+    /// Never use this to adopt a physical-only or otherwise unrelated bridge.
+    pub fn owned_bridge(&self, resource: &crate::model::ResourceId, tap: &DeviceIdentity,
+        physical: &DeviceIdentity) -> Result<Option<DeviceIdentity>, BridgeError> {
+        if !tap.is_tap() || tap.instance_id != crate::windows_driver::instance_id(resource)
+            || physical.is_bridge() || physical.is_tap() || physical.guid == tap.guid
+            || self.device(&tap.guid)? != tap || self.device(&physical.guid)? != physical { return Err(conflict()); }
+        let bridges = self.bridges();
+        let members = self.members()?;
+        if bridges.is_empty() && members.is_empty() { return Ok(None); }
+        if bridges.len() != 1 || self.bindings(&bridges[0].guid)?.get("ms_bridge") != Some(&true)
+            || !members.contains(&tap.guid) || members.iter().any(|id| id != &tap.guid && id != &physical.guid) {
+            return Err(conflict());
+        }
+        Ok(Some(bridges[0].clone()))
+    }
     /// ms_implat is the member-side binding. ms_bridge belongs to the bridge
     /// virtual adapter itself. Neither display labels nor netsh's exit code
     /// can establish that both requested members were attached.
@@ -118,6 +136,27 @@ mod tests {
         let mut native=topology(&[device(0,false),device(1,false),device(2,true)], &[0,1]);
         native.devices.remove(&device(1,false).guid);
         assert!(native.members().is_err());
+    }
+    #[test]
+    fn interrupted_creation_requires_the_dedicated_tap_membership() {
+        let resource = crate::model::ResourceId::new("12".repeat(16)).unwrap();
+        let physical = device(0, false);
+        let tap = DeviceIdentity { instance_id: crate::windows_driver::instance_id(&resource),
+            hardware_ids: vec!["TAP0901".into()], service: "TAP0901".into(), ..device(1, false) };
+        let devices = [physical.clone(), tap.clone(), device(2, true), device(3, false), device(4, true)];
+        assert_eq!(topology(&devices[..2], &[]).owned_bridge(&resource, &tap, &physical).unwrap(), None);
+        for members in [&[1][..], &[0,1][..]] {
+            assert_eq!(topology(&devices[..3], members).owned_bridge(&resource, &tap, &physical).unwrap(), Some(devices[2].clone()));
+        }
+        for native in [topology(&devices[..3], &[]), topology(&devices[..3], &[0]),
+            topology(&devices[..4], &[0,1,3]), topology(&devices, &[0,1])] {
+            assert_eq!(native.owned_bridge(&resource, &tap, &physical).unwrap_err().code, "ECONFLICT");
+        }
+        let native = topology(&devices[..3], &[0,1]);
+        let wrong_resource = crate::model::ResourceId::new("34".repeat(16)).unwrap();
+        assert!(native.owned_bridge(&wrong_resource, &tap, &physical).is_err());
+        let replacement = DeviceIdentity { instance_id: "REPLACEMENT".into(), ..physical.clone() };
+        assert!(native.owned_bridge(&resource, &tap, &replacement).is_err());
     }
     #[test]
     fn native_read_only_topology_uses_machine_identities() {
