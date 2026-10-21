@@ -355,7 +355,24 @@ a transferred handle retained by a child process blocks removal after the
 parent closes its copy, permits another reader, and releases after the last
 holder exits. The native child-process test passed, along with the shared
 transaction and recovery suites. This is lease infrastructure; authenticated
-Windows service transport and QEMU inheritance are not yet integrated.
+Windows service dispatch and provisioning remain pending.
+
+Native Windows named-pipe tests now pass for explicit SYSTEM ownership, restricted
+client permissions, kernel caller identity, bounded partial requests, and
+read-only lease transfer. A temporary standard account successfully connected
+without elevation, could not create another server instance, and rejected a
+caller-owned fake endpoint. The account was removed and its absence verified.
+The first endpoint check failed because LocalSystem's default object owner was
+Administrators; the pipe now explicitly sets SYSTEM as its owner.
+
+The core now passes Windows leases to the child through its otherwise unused
+standard input handle. A native child-process test read EOF, retained the lease
+after all parent handles closed, blocked an exclusive removal open, and released
+it on exit. QEMU's Windows stdio reader now stops at EOF without closing that
+borrowed process handle; a C harness exercises the actual reader with EOF,
+error, and data-then-EOF inputs. All four core network tests passed on Windows
+after restricting Unix path fixtures to Unix. This establishes transport and
+launch plumbing, not an actual packaged QEMU firmware run or UAC acceptance.
 
 ### Native Linux desktop flow
 

@@ -29,6 +29,23 @@ impl InheritedLease {
     }
 }
 
+/// Windows QEMU retains its standard input handle until process exit. The
+/// desktop supplies input through QMP, so an empty read-only lease can occupy
+/// stdin without consuming a device-input channel. Command duplicates only the
+/// child's standard handle; the parent's original remains non-inheritable.
+#[cfg(windows)]
+pub struct InheritedLease { file: std::fs::File }
+#[cfg(windows)]
+impl InheritedLease {
+    pub fn new(file: &std::fs::File) -> Result<Self, AppError> {
+        file.try_clone().map(|file| Self { file })
+            .map_err(|_| AppError::new("EBRIDGELEASE", "Cannot retain the bridge transport lease."))
+    }
+    pub fn configure(self, command: &mut std::process::Command) {
+        command.stdin(std::process::Stdio::from(self.file));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkTarget {
     LinuxBridge { name: String, helper: PathBuf },

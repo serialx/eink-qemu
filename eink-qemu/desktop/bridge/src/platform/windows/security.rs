@@ -59,13 +59,23 @@ fn validate_access(file: &File, owner: Option<&str>, forbidden: u32) -> Result<(
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
         || info.dwFileAttributes & 0x400 != 0
         || (info.dwFileAttributes & 0x10 == 0 && info.nNumberOfLinks != 1) { return Err(denied()); }
+    validate_acl(file.as_raw_handle(), owner, forbidden, false)
+}
+/// Clients can exchange data but cannot create another server instance or
+/// change the endpoint's security. Only a SYSTEM-owned endpoint is accepted.
+pub fn validate_pipe(file: &File) -> Result<(), BridgeError> {
+    validate_acl(file.as_raw_handle(), None, 0x500d0004, true)
+}
+fn validate_acl(handle: HANDLE, owner: Option<&str>, forbidden: u32, system_owner: bool) -> Result<(), BridgeError> {
     let mut sid = ptr::null_mut();
     let mut acl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
-    if unsafe { GetSecurityInfo(file.as_raw_handle(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    if unsafe { GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
         &mut sid, ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) } != 0 { return Err(denied()); }
     let _allocation = LocalAllocation(descriptor);
-    if !trusted(&sid_string(sid)?, owner) || acl.is_null() || unsafe { IsValidAcl(acl) } == 0 { return Err(denied()); }
+    let owner_sid = sid_string(sid)?;
+    if !trusted(&owner_sid, owner) || (system_owner && owner_sid != SYSTEM)
+        || acl.is_null() || unsafe { IsValidAcl(acl) } == 0 { return Err(denied()); }
     for index in 0..unsafe { (*acl).AceCount } {
         let mut ace = ptr::null_mut();
         if unsafe { GetAce(acl, index as u32, &mut ace) } == 0 { return Err(denied()); }

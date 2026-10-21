@@ -89,12 +89,11 @@ static DWORD WINAPI win_stdio_thread(LPVOID param)
         /* Wait for one byte */
         ret = ReadFile(stdio->hStdIn, &stdio->win_stdio_buf, 1, &dwSize, NULL);
 
-        /* Exit in case of error, continue if nothing read */
-        if (!ret) {
+        /* A successful empty read is EOF, including redirected empty files.
+         * Keep the standard handle alive for the process, but stop reading:
+         * retrying at EOF would spin a host CPU indefinitely. */
+        if (!ret || !dwSize) {
             break;
-        }
-        if (!dwSize) {
-            continue;
         }
 
         /* Some terminal emulator returns \r\n for Enter, just pass \n */

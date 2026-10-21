@@ -713,7 +713,7 @@ impl Session {
 
     async fn start_network(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan,
         network: Option<crate::network::NetworkTarget>, lease: Option<std::fs::File>) -> Result<SessionInfo, AppError> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         if lease.is_some() { return Err(AppError::new("EBRIDGELEASE", "This build cannot retain the native bridge lease.")); }
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let id;
@@ -878,11 +878,11 @@ impl Session {
             }
             Err(reason) => Err(reason),
         };
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let inherited_lease = network_lease.map(crate::network::InheritedLease::new).transpose().map_err(failed)?;
         #[cfg(unix)]
         if let Some(lease) = &inherited_lease { args.extend(lease.arguments()); }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let _ = network_lease;
         self.log(format!(
             "$ {} {}",
@@ -894,9 +894,8 @@ impl Session {
         let mut command = tokio::process::Command::new(&binary);
         command
             .args(&args)
-            // On Windows QEMU's stdio chardev reads stdin on a thread that
-            // spins on a NUL handle's endless empty reads; a pipe nobody
-            // writes to blocks it instead.
+            // Keep legacy Windows binaries idle on stdin. Managed launches
+            // below replace it with a lease and use the bundled EOF-safe QEMU.
             .stdin(if cfg!(windows) { std::process::Stdio::piped() } else { std::process::Stdio::null() })
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -905,6 +904,8 @@ impl Session {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         #[cfg(unix)]
         if let Some(lease) = &inherited_lease { lease.configure(command.as_std_mut()); }
+        #[cfg(windows)]
+        if let Some(lease) = inherited_lease { lease.configure(command.as_std_mut()); }
         let mut child = command
             .spawn()
             .map_err(|e| failed(AppError::new("EQEMU", format!("Could not start {}: {e}", binary.display()))))?;
