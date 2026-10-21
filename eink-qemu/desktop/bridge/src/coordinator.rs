@@ -178,13 +178,22 @@ impl<P: PlatformOps> Coordinator<P> {
         }
         self.rollback(&mut record, None)
     }
-    /// Called by the owning helper on startup and periodically. Caller identity
-    /// is irrelevant to restoration of a timed-out or interrupted transaction.
+    /// Run once before the service accepts clients after starting or rebooting.
+    /// An unconfirmed conversion cannot retain a deadline from an earlier
+    /// helper lifetime: its clock and platform checkpoint may no longer exist.
+    pub fn recover_startup(&mut self) -> Result<Option<Operation>, BridgeError> {
+        self.recover_inner(None)
+    }
+    /// Periodic recovery in a running helper. Caller identity is irrelevant to
+    /// restoration; the service must call recover_startup before serving IPC.
     pub fn recover(&mut self, now: u64) -> Result<Option<Operation>, BridgeError> {
+        self.recover_inner(Some(now))
+    }
+    fn recover_inner(&mut self, now: Option<u64>) -> Result<Option<Operation>, BridgeError> {
         let _lock = self.journal.lock()?;
         let Some(mut record) = self.record()? else { return Ok(None); };
         let waiting = record.operation.state == OperationState::Verifying
-            && record.operation.confirmation_deadline.is_some_and(|deadline| now < deadline);
+            && now.is_some_and(|now| record.operation.confirmation_deadline.is_some_and(|deadline| now < deadline));
         if record.undo_required && !waiting { return self.rollback(&mut record, None).map(Some); }
         Ok(Some(record.operation))
     }

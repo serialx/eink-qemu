@@ -62,6 +62,32 @@ fn timeout_after_reopening_recovers_before_accepting_more_changes() {
 }
 
 #[test]
+fn helper_startup_restores_unconfirmed_changes_even_before_the_deadline() {
+    let dir = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut coordinator = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+    let plan = coordinator.plan(request(), 100).unwrap();
+    coordinator.apply(&plan.id, 101).unwrap();
+    // A live helper's timer leaves the user time to confirm.
+    assert_eq!(coordinator.recover(102).unwrap().unwrap().state, OperationState::Verifying);
+    drop(coordinator);
+    // Restart/reboot invalidates that confirmation window. Startup recovery
+    // must not depend on the previous wall clock or the original caller.
+    let mut restarted = Coordinator::open(dir.path(), "service", host.clone()).unwrap();
+    let restored = restarted.recover_startup().unwrap().unwrap();
+    assert_eq!(restored.state, OperationState::Cancelled);
+    assert_eq!(*host.value.lock().unwrap(), 10);
+    assert_eq!(restarted.recover_startup().unwrap().unwrap().revision, restored.revision);
+    let mut original = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+    assert_eq!(original.keep(&plan.id, 103).unwrap_err().code, "ESTALE");
+    let next = original.plan(request(), 104).unwrap();
+    original.apply(&next.id, 105).unwrap();
+    original.keep(&next.id, 106).unwrap();
+    drop(original);
+    assert_eq!(restarted.recover_startup().unwrap().unwrap().state, OperationState::Ready);
+    assert_eq!(*host.value.lock().unwrap(), 20);
+}
+
+#[test]
 fn replacing_adapter_or_expiring_plan_performs_no_mutation() {
     let dir = tempfile::tempdir().unwrap(); let host = Host::new();
     let mut coordinator = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
