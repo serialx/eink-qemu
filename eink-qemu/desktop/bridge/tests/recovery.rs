@@ -13,7 +13,7 @@ impl PlatformOps for Host {
     fn prepare(&mut self, request: PlanRequest, id: OperationId, now: u64, _: Option<&Resource<Snapshot>>) -> Result<Prepared<Snapshot, ()>, BridgeError> {
         Ok(Prepared { plan: BridgePlan { id, request, fingerprint: "nic".into(), changes: vec![], requires_authorization: true, may_disconnect: true, expires_at: now + 300 }, snapshot: Snapshot, mutations: vec![()] })
     }
-    fn fingerprint(&mut self, _: &PlanRequest) -> Result<String, BridgeError> { Ok("nic".into()) }
+    fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok("nic".into()) }
     fn apply(&mut self, _: &()) -> Result<(), BridgeError> { self.mutations.fetch_add(1, Ordering::SeqCst); Ok(()) }
     fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
     fn commit(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }

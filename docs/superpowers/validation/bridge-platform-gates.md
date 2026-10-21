@@ -102,8 +102,12 @@ Both downloaded archives match their published SHA-256:
 
 The backend additionally pins the extracted executable hashes. Intel execution,
 reboot recovery, OS authorization, and packaged UI acceptance remain untested.
-The native service component is not yet connected to the durable coordinator or
-the installed helper service.
+The production macOS backend is connected to the durable coordinator. A native
+acceptance harness passed configuration and repair with a newly constructed
+coordinator between plan and apply, plus removal refusal while a transport lease
+was held. It also terminated the helper process immediately after native service
+creation: startup recovery removed that unconfirmed service using its journal.
+The installed helper service and OS authorization are not yet wired.
 
 Native commands are checked against the guest's own help and resulting adapter
 state. Microsoft's [netsh bridge reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-bridge)

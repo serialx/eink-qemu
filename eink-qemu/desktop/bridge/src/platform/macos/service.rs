@@ -243,6 +243,29 @@ impl NativeService {
             },
         }
     }
+    pub fn state(&self, spec: &ServiceSpec) -> Result<(bool, bool), BridgeError> {
+        let configured = self.check_configuration(spec)?;
+        let running = loaded(spec)?;
+        if !configured && running { return Err(BridgeError::new("ECONFLICT", "An unrecorded service uses this bridge identity.")); }
+        Ok((configured, running))
+    }
+    fn write_configuration(&self, spec: &ServiceSpec) -> Result<(), BridgeError> {
+        if self.check_configuration(spec)? { return Ok(()); }
+        let mut temp = tempfile::NamedTempFile::new_in("/Library/LaunchDaemons").map_err(system_error)?;
+        temp.write_all(&spec.plist()?).map_err(system_error)?;
+        temp.as_file().set_permissions(fs::Permissions::from_mode(0o644)).map_err(system_error)?;
+        temp.as_file().sync_all().map_err(system_error)?;
+        temp.persist_noclobber(spec.plist_path()).map_err(system_error)?;
+        File::open("/Library/LaunchDaemons").and_then(|f| f.sync_all()).map_err(system_error)?;
+        Ok(())
+    }
+    pub fn restore(&self, spec: &ServiceSpec, configured: bool, running: bool) -> Result<(), BridgeError> {
+        if running && !configured { return Err(BridgeError::new("ECONFLICT", "Invalid prior bridge service state.")); }
+        if running { return self.start(spec); }
+        self.remove(spec)?;
+        if configured { self.write_configuration(spec)?; }
+        Ok(())
+    }
     pub fn start(&self, spec: &ServiceSpec) -> Result<(), BridgeError> {
         self.check_payload()?;
         spec.validate_adapter(&crate::inspect()?.adapters)?;
@@ -255,14 +278,7 @@ impl NativeService {
         // 0700 mode while granting only that user traversal, including after
         // socket_vmnet recreates its staff-group socket on restart.
         set_search_acl(&File::open(spec.socket_directory()).map_err(system_error)?, spec.user)?;
-        if !exists {
-            let mut temp = tempfile::NamedTempFile::new_in("/Library/LaunchDaemons").map_err(system_error)?;
-            temp.write_all(&spec.plist()?).map_err(system_error)?;
-            temp.as_file().set_permissions(fs::Permissions::from_mode(0o644)).map_err(system_error)?;
-            temp.as_file().sync_all().map_err(system_error)?;
-            temp.persist_noclobber(spec.plist_path()).map_err(system_error)?;
-            File::open("/Library/LaunchDaemons").and_then(|f| f.sync_all()).map_err(system_error)?;
-        }
+        if !exists { self.write_configuration(spec)?; }
         if active { stop(spec)?; }
         // socket_vmnet unlinks its own old socket before binding. Confirm that
         // an existing leaf cannot refer to a user file or another file type.

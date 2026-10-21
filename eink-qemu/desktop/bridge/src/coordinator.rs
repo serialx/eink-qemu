@@ -8,7 +8,7 @@ pub trait PlatformOps {
     type Snapshot: Serialize + DeserializeOwned + Clone;
     type Mutation: Serialize + DeserializeOwned + Clone;
     fn prepare(&mut self, request: PlanRequest, id: OperationId, now: u64, existing: Option<&Resource<Self::Snapshot>>) -> Result<Prepared<Self::Snapshot, Self::Mutation>, BridgeError>;
-    fn fingerprint(&mut self, request: &PlanRequest) -> Result<String, BridgeError>;
+    fn fingerprint(&mut self, request: &PlanRequest, snapshot: &Self::Snapshot) -> Result<String, BridgeError>;
     fn apply(&mut self, mutation: &Self::Mutation) -> Result<(), BridgeError>;
     fn verify(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
     /// Disarm native timed rollback only after verification and confirmation.
@@ -120,7 +120,7 @@ impl<P: PlatformOps> Coordinator<P> {
             },
         };
         if record.operation.state != OperationState::AwaitingAuthorization { return Err(BridgeError::new("EBUSY", "Bridge operation has already started.")); }
-        if now >= record.prepared.plan.expires_at || self.platform.fingerprint(&record.prepared.plan.request)? != record.prepared.plan.fingerprint {
+        if now >= record.prepared.plan.expires_at || self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
             return Err(BridgeError::new("ESTALE", "The selected connection changed. Review setup again."));
         }
         record.undo_required = true; record.operation.state = OperationState::Applying;

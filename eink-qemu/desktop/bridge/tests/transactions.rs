@@ -21,7 +21,7 @@ impl PlatformOps for Host {
         if self.fail { mutations.push(Mutation::Fail); }
         Ok(Prepared { plan: BridgePlan { id, request, fingerprint: self.fingerprint.lock().unwrap().clone(), changes: vec!["Change connection".into()], requires_authorization: true, may_disconnect: true, expires_at: now + 300 }, snapshot, mutations })
     }
-    fn fingerprint(&mut self, _: &PlanRequest) -> Result<String, BridgeError> { Ok(self.fingerprint.lock().unwrap().clone()) }
+    fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok(self.fingerprint.lock().unwrap().clone()) }
     fn apply(&mut self, mutation: &Mutation) -> Result<(), BridgeError> {
         match mutation { Mutation::Change(value) => { *self.value.lock().unwrap() = *value; Ok(()) }, Mutation::Fail => Err(BridgeError::new("EAPPLY", "Failed mutation")) }
     }
@@ -194,7 +194,7 @@ fn every_mutation_has_durable_intent_and_crash_recovery() {
             prepared.mutations = vec![Mutation::Change(20), Mutation::Change(30), Mutation::Change(40)];
             Ok(prepared)
         }
-        fn fingerprint(&mut self, request: &PlanRequest) -> Result<String, BridgeError> { self.host.fingerprint(request) }
+        fn fingerprint(&mut self, request: &PlanRequest, snapshot: &Self::Snapshot) -> Result<String, BridgeError> { self.host.fingerprint(request, snapshot) }
         fn apply(&mut self, mutation: &Mutation) -> Result<(), BridgeError> {
             let durable: serde_json::Value = serde_json::from_slice(&std::fs::read(&self.journal).unwrap()).unwrap();
             assert_eq!(durable["completed_mutations"], self.step);
