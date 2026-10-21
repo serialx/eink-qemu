@@ -374,6 +374,14 @@ error, and data-then-EOF inputs. All four core network tests passed on Windows
 after restricting Unix path fixtures to Unix. This establishes transport and
 launch plumbing, not an actual packaged QEMU firmware run or UAC acceptance.
 
+Windows discovery now pairs interface GUIDs with SetupAPI device instance IDs,
+native service/hardware identifiers, and permanent hardware addresses. Fingerprints
+change when the underlying device is replaced. The native VM check identified
+the Ethernet adapter as eligible and its preexisting TAP as excluded from
+automatic setup. The same discovery succeeded under a temporary standard user;
+cleanup was verified. Display descriptions no longer determine TAP identity,
+and existing TAP adapters are not treated as app-owned resources.
+
 ### Native Linux desktop flow
 
 The current Tauri app built and ran under Xfce in the disposable Ubuntu VM.

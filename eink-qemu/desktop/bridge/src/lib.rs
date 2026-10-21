@@ -11,6 +11,9 @@ pub mod authorization;
 #[cfg(windows)]
 #[path = "platform/windows/security.rs"]
 pub mod windows_security;
+#[cfg(windows)]
+#[path = "platform/windows/device.rs"]
+pub mod windows_device;
 #[cfg(target_os = "macos")]
 #[path = "platform/macos/service.rs"]
 pub mod macos_service;

@@ -296,6 +296,9 @@ mod tests {
             assert_ne!(unsafe { GetTokenInformation(token.as_raw_handle(), TokenElevation,
                 (&mut elevation as *mut TOKEN_ELEVATION).cast(), std::mem::size_of_val(&elevation) as u32, &mut length) }, 0);
             assert_eq!(elevation.TokenIsElevated, 0, "test client must not be elevated");
+            // Discovery runs in the ordinary desktop before support is
+            // installed; native PnP identity reads must not require elevation.
+            crate::inspect().unwrap();
             let mut pipe = connect_path(&name).unwrap();
             pipe.timeout(Duration::from_secs(30));
             windows_security::validate_pipe(&pipe.file).unwrap();
