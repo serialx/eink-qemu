@@ -71,9 +71,10 @@ impl NetworkManager {
     }
     pub fn checkpoint(&self, device: &OwnedObjectPath, seconds: u32) -> Result<OwnedObjectPath, BridgeError> {
         root()?;
-        // DELETE_NEW_CONNECTIONS: independently remove profiles created after
-        // this checkpoint when NetworkManager restores the host on timeout.
-        self.manager()?.call("CheckpointCreate", &(vec![device], seconds, 2u32)).map_err(error)
+        // DELETE_NEW_CONNECTIONS also deletes unrelated profiles added by
+        // other clients. Restore the device here; the durable journal removes
+        // only the exact app-owned profiles, with content conflict checks.
+        self.manager()?.call("CheckpointCreate", &(vec![device], seconds, 0u32)).map_err(error)
     }
     pub fn checkpoints(&self) -> Result<Vec<OwnedObjectPath>, BridgeError> { self.manager()?.get_property("Checkpoints").map_err(error) }
     pub fn rollback_checkpoint(&self, path: &OwnedObjectPath) -> Result<(), BridgeError> {
