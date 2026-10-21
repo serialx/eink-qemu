@@ -27,9 +27,9 @@ fn known_folder(id: &windows_sys::core::GUID) -> Result<PathBuf, BridgeError> {
 pub fn installation_root() -> Result<PathBuf, BridgeError> { Ok(known_folder(&FOLDERID_ProgramFilesX64)?.join("eink-qemu/bridge")) }
 pub fn journal_root() -> Result<PathBuf, BridgeError> { Ok(known_folder(&FOLDERID_ProgramData)?.join("eink-qemu/bridge")) }
 fn missing() -> BridgeError { BridgeError::new("ENEEDSSETUP", "Install or update Windows bridge support before configuring the connection.") }
-struct InstalledHelper { path: PathBuf, _locks: Vec<File> }
+pub(crate) struct InstalledHelper { pub(crate) path: PathBuf, _locks: Vec<File> }
 impl InstalledHelper {
-    fn open() -> Result<Self, BridgeError> { Self::open_at(&installation_root()?) }
+    pub(crate) fn open() -> Result<Self, BridgeError> { Self::open_at(&installation_root()?) }
     fn open_at(root: &Path) -> Result<Self, BridgeError> {
         if !root.is_absolute() || root.components().any(|c| matches!(c, std::path::Component::ParentDir)) { return Err(missing()); }
         let mut locks = Vec::new();
@@ -42,12 +42,12 @@ impl InstalledHelper {
             let mut info = BY_HANDLE_FILE_INFORMATION::default();
             if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
                 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 { return Err(missing()); }
-            if ancestor == root { windows_security::validate_handle(&file, None)?; }
+            if ancestor == root { windows_security::validate_installed_handle(&file)?; }
             locks.push(file);
         }
         let path = root.join("eink-bridge-helper.exe");
         let file = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&path).map_err(|_| missing())?;
-        windows_security::validate_handle(&file, None)?;
+        windows_security::validate_installed_handle(&file)?;
         if !file.metadata().map_err(|_| missing())?.is_file() { return Err(missing()); }
         locks.push(file);
         Ok(Self { path, _locks: locks })

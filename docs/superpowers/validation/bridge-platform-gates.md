@@ -611,11 +611,38 @@ exact expected map while continuing to reject changes to unrelated bindings.
 The corrected recovery completed, and the full fresh lifecycle passed. The
 installed helper subsequently started through SCM from its fixed Program Files
 location, verified its pinned driver, and served inspection to both LocalSystem
-and the logged-in ordinary user. The ordinary client was denied Apply without
-approval and cancelled its untouched plan. Real UAC approval, service recovery
-during native mutations, installer lifecycle, and packaged desktop acceptance
-remain separate gates; these results do not yet establish a working Windows
-setup wizard.
+and the logged-in guest user. That client was denied Apply without approval
+and cancelled its untouched plan. Its token was later found to have administrator
+privileges, so that run does not establish standard-user isolation. A separate
+native test created a temporary standard account and checked its token. That
+account could inspect the installed service but was denied all package
+maintenance verbs, direct service cleanup, and Apply without approval. The
+account was deleted afterward and the service remained running.
+
+Native package-maintenance tests passed stopping and replacing the helper,
+restarting after a forced process crash, preserving a disabled service during
+installation, removing a disabled service, repeated removal, and reinstalling.
+A separate native test verified that concurrent maintenance is rejected.
+Installation with absent recovery directories created private administrator/
+SYSTEM storage and started the service; cleanup restored the original journal.
+
+The production NSIS installer then passed installation, an update that replaced
+the running service process, removal, and reinstallation in the x64 VM. A
+requested custom destination was ignored in favor of the fixed Program Files
+location. A subsequent clean-directory run exposed the inherited Windows
+Modules Installer permission on Program Files. Installed-code validation now
+accepts that exact service SID; journal, IPC, and mutex checks remain unchanged.
+Native regression tests reject unrelated service SIDs and user write grants.
+The corrected package passed fresh installation, concurrent install/update/
+removal refusal, update, removal, reinstallation, and the temporary standard-user
+test. Removal deleted packaged executables and drivers, unregistered the
+service, and preserved its recovery journal. The archive contained both QEMU
+architectures, the CLI, helper, pinned driver, and license notices. This package
+was cross-built with cargo-xwin and was unsigned. These lifecycle tests used an
+empty resource journal and do not establish package cleanup of a retained
+bridge. Real UAC approval, service recovery during native mutations, and packaged
+desktop acceptance remain separate gates; these results do not yet establish
+a working Windows setup wizard.
 
 ### Real Windows QEMU lease validation
 

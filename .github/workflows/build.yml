@@ -377,6 +377,15 @@ jobs:
         if: runner.os == 'Windows'
         run: EINK_QEMU_CLI="$PWD/../../qemu-install/qemu/bin/eink-qemu.exe" sh scripts/bundle-qemu-windows.sh ../../qemu-install/qemu
 
+      - name: Stage bridge support (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          RUSTFLAGS='-C target-feature=+crt-static' cargo build --locked --release -p eink-bridge --bin eink-bridge-helper
+          curl --fail --location --retry 3 https://github.com/OpenVPN/tap-windows6/releases/download/9.27.0/dist.win10.zip -o target/tap-9.27.0.zip
+          python3 scripts/bridge/stage_dependency.py x86_64-pc-windows-msvc target/tap-9.27.0.zip src-tauri/windows/bridge
+          cp target/release/eink-bridge-helper.exe src-tauri/windows/bridge/
+          python3 -m unittest discover -s ../tests -p test_bridge_dependencies.py
+
       - name: Install build libraries (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -418,7 +427,7 @@ jobs:
           # Keep the app for CLI verification; a dmg-only build removes it.
           config=src-tauri/tauri.bundle.conf.json
           case "$RUNNER_OS" in
-            Windows) bundles=nsis ;;
+            Windows) bundles=nsis; config=src-tauri/tauri.windows.bundle.conf.json ;;
             Linux) bundles=deb; config=src-tauri/tauri.linux.bundle.conf.json ;;
             *) bundles=app,dmg ;;
           esac
@@ -437,6 +446,8 @@ jobs:
         run: |
           7z l target/release/bundle/nsis/*-setup.exe | tee installer-files.txt
           grep -E '[[:space:]]eink-qemu\.exe$' installer-files.txt
+          grep -E 'bridge[\\/]eink-bridge-helper\.exe$' installer-files.txt
+          grep -E 'bridge[\\/]driver[\\/]tap0901\.sys$' installer-files.txt
 
       - name: Verify Debian package payloads (Linux)
         if: runner.os == 'Linux'

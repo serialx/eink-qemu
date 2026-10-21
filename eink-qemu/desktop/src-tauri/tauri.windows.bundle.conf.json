@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "externalBin": ["binaries/eink-qemu"],
+    "resources": {
+      "qemu/": "qemu/",
+      "windows/bridge/": "bridge/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "template": "../scripts/bridge/windows/installer.nsi",
+        "installerHooks": "../scripts/bridge/windows/hooks.nsh"
+      }
+    }
+  }
+}

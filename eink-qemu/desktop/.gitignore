@@ -9,3 +9,6 @@ src-tauri/gen/schemas
 src-tauri/qemu
 src-tauri/binaries
 src-tauri/linux
+src-tauri/windows/bridge
+src-tauri/macos/bridge
+src-tauri/macos/.bridge-build-*

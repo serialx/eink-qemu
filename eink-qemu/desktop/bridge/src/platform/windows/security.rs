@@ -7,6 +7,9 @@ use windows_sys::Win32::{Foundation::{HANDLE, LocalFree}, Security::{*, Authoriz
     System::{Threading::{GetCurrentProcess, OpenProcessToken}, SystemServices::{SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY}}};
 const SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
+// Windows Modules Installer is a protected OS service. Its full-control ACE is
+// inherited by newly installed Program Files directories on native Windows.
+const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 // Generic write/all, delete, write ACL/owner, file data/EA/attributes and
 // directory child deletion. Read and synchronization do not grant mutation.
 const WRITE_MASK: u32 = 0x500d0156;
@@ -71,38 +74,54 @@ fn trusted(sid: &str, owner: Option<&str>) -> bool { sid == SYSTEM || sid == ADM
 /// journal. Pass None when checking a service object handed to an ordinary
 /// client, which must be owned and writable only by SYSTEM/administrators.
 pub fn validate_handle(file: &File, owner: Option<&str>) -> Result<(), BridgeError> {
-    validate_access(file, owner, WRITE_MASK)
+    validate_access(file, owner, WRITE_MASK, false)
 }
 pub fn validate_private_handle(file: &File, owner: &str) -> Result<(), BridgeError> {
     // Journal snapshots are private even when their directory is enumerable.
-    validate_access(file, Some(owner), WRITE_MASK | 0x80000001)
+    validate_access(file, Some(owner), WRITE_MASK | 0x80000001, false)
 }
-fn validate_access(file: &File, owner: Option<&str>, forbidden: u32) -> Result<(), BridgeError> {
+/// Installed code may inherit Windows Modules Installer permissions from
+/// Program Files. This exception does not apply to journals, IPC or mutexes.
+pub(crate) fn validate_installed_handle(file: &File) -> Result<(), BridgeError> {
+    validate_access(file, None, WRITE_MASK, true)
+}
+fn validate_access(file: &File, owner: Option<&str>, forbidden: u32, installer: bool) -> Result<(), BridgeError> {
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
         || info.dwFileAttributes & 0x400 != 0
         || (info.dwFileAttributes & 0x10 == 0 && info.nNumberOfLinks != 1) { return Err(denied()); }
-    validate_acl(file.as_raw_handle(), SE_FILE_OBJECT, owner, forbidden, false)
+    validate_acl(file.as_raw_handle(), SE_FILE_OBJECT, owner, forbidden, false, installer)
 }
 /// Clients can exchange data but cannot create another server instance or
 /// change the endpoint's security. Only a SYSTEM-owned endpoint is accepted.
 pub fn validate_pipe(file: &File) -> Result<(), BridgeError> {
-    validate_acl(file.as_raw_handle(), SE_FILE_OBJECT, None, 0x500d0004, true)
+    validate_acl(file.as_raw_handle(), SE_FILE_OBJECT, None, 0x500d0004, true, false)
 }
 /// Service boot markers must be SYSTEM-owned and cannot allow untrusted
 /// callers to set values, create keys/links, delete, or change security.
 pub fn validate_registry_key(handle: HANDLE) -> Result<(), BridgeError> {
-    validate_acl(handle, SE_REGISTRY_KEY, None, 0x500d0026, true)
+    validate_acl(handle, SE_REGISTRY_KEY, None, 0x500d0026, true, false)
 }
-fn validate_acl(handle: HANDLE, object: SE_OBJECT_TYPE, owner: Option<&str>, forbidden: u32, system_owner: bool) -> Result<(), BridgeError> {
+pub(crate) fn validate_service(handle: HANDLE) -> Result<(), BridgeError> {
+    // Configuration, start/stop/pause and ACL/owner changes belong only to
+    // administrators and SYSTEM. Windows' default service ACL also permits
+    // interactive users to send custom controls; our SCM callback rejects all
+    // custom control codes without performing work.
+    validate_acl(handle, SE_SERVICE, None, 0x500d0072, false, false)
+}
+pub(crate) fn validate_maintenance_mutex(handle: HANDLE) -> Result<(), BridgeError> {
+    validate_acl(handle, SE_KERNEL_OBJECT, None, 0x500d0001, false, false)
+}
+fn validate_acl(handle: HANDLE, object: SE_OBJECT_TYPE, owner: Option<&str>, forbidden: u32, system_owner: bool, installer: bool) -> Result<(), BridgeError> {
     let mut sid = ptr::null_mut();
     let mut acl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
     if unsafe { GetSecurityInfo(handle, object, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
         &mut sid, ptr::null_mut(), &mut acl, ptr::null_mut(), &mut descriptor) } != 0 { return Err(denied()); }
     let _allocation = LocalAllocation(descriptor);
+    let privileged = |sid: &str| trusted(sid, owner) || (installer && sid == TRUSTED_INSTALLER);
     let owner_sid = sid_string(sid)?;
-    if !trusted(&owner_sid, owner) || (system_owner && owner_sid != SYSTEM)
+    if !privileged(&owner_sid) || (system_owner && owner_sid != SYSTEM)
         || acl.is_null() || unsafe { IsValidAcl(acl) } == 0 { return Err(denied()); }
     for index in 0..unsafe { (*acl).AceCount } {
         let mut ace = ptr::null_mut();
@@ -114,7 +133,7 @@ fn validate_acl(handle: HANDLE, object: SE_OBJECT_TYPE, owner: Option<&str>, for
                 if (header.AceSize as usize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>() { return Err(denied()); }
                 let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
                 let sid = (&allowed.SidStart as *const u32).cast_mut().cast();
-                if allowed.Mask & forbidden != 0 && !trusted(&sid_string(sid)?, owner) { return Err(denied()); }
+                if allowed.Mask & forbidden != 0 && !privileged(&sid_string(sid)?) { return Err(denied()); }
             },
             1 => (), // A deny ACE cannot broaden access.
             _ => return Err(denied()), // Conditional/object grants need explicit support.
@@ -141,6 +160,24 @@ mod tests {
         assert_eq!(unsafe { SetNamedSecurityInfoW(path.as_ptr(), SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
             ptr::null_mut(), ptr::null_mut(), acl, ptr::null_mut()) }, 0);
+    }
+    #[test]
+    #[ignore = "requires LocalSystem in a disposable Windows VM"]
+    fn installed_files_allow_only_the_exact_windows_installer_sid() {
+        require_system().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("installed-code");
+        File::create(&path).unwrap();
+        let base = "D:P(A;;FA;;;SY)(A;;FA;;;BA)";
+        policy(&path, &format!("{base}(A;;FA;;;{TRUSTED_INSTALLER})(A;;GRGX;;;BU)"));
+        let file = File::open(&path).unwrap();
+        validate_installed_handle(&file).unwrap();
+        assert_eq!(validate_handle(&file, None).unwrap_err().code, "EPERM");
+        assert_eq!(validate_private_handle(&file, SYSTEM).unwrap_err().code, "EPERM");
+        policy(&path, &format!("{base}(A;;FA;;;S-1-5-80-1-2-3-4-5)"));
+        assert_eq!(validate_installed_handle(&file).unwrap_err().code, "EPERM");
+        policy(&path, &format!("{base}(A;;FA;;;{TRUSTED_INSTALLER})(A;;GW;;;BU)"));
+        assert_eq!(validate_installed_handle(&file).unwrap_err().code, "EPERM");
     }
     #[test]
     fn writable_acl_and_hard_links_cannot_be_trusted_as_private_journals() {

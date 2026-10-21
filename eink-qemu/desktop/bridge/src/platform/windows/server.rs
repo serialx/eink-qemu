@@ -8,9 +8,9 @@ use std::{fs::{File,OpenOptions},os::windows::{fs::OpenOptionsExt,io::AsRawHandl
 use windows_sys::Win32::Storage::FileSystem::*;
 fn io(error:impl std::fmt::Display)->BridgeError{BridgeError::new("ESERVICE",error.to_string())}
 fn now()->u64{SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()}
-struct InstallationLock { _directories:Vec<File>, _file:File }
+pub(crate) struct InstallationLock { _directories:Vec<File>, _file:File }
 impl InstallationLock {
-    fn open(root:&Path)->Result<Self,BridgeError>{
+    pub(crate) fn open(root:&Path)->Result<Self,BridgeError>{
         if !root.is_absolute() || root.components().any(|part|matches!(part,std::path::Component::ParentDir)){return Err(io("Invalid installed service directory."));}
         let mut directories=Vec::new();
         for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev(){

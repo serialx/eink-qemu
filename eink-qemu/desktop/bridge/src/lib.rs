@@ -42,6 +42,9 @@ pub mod windows_platform;
 #[path = "platform/windows/runtime.rs"]
 pub mod windows_runtime;
 #[cfg(windows)]
+#[path = "platform/windows/install.rs"]
+pub mod windows_install;
+#[cfg(windows)]
 #[path = "platform/windows/network_bridge.rs"]
 pub mod windows_network_bridge;
 #[cfg(windows)]

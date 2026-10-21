@@ -8,6 +8,16 @@ fn main() {
         return;
     }
     #[cfg(windows)]
+    if args.len() == 2 && args[0] == "--maintain" {
+        if let Err(error)=eink_bridge::windows_install::maintain(&args[1]){eprintln!("{}: {}",error.code,error.message);std::process::exit(1);}
+        return;
+    }
+    #[cfg(windows)]
+    if args == ["--uninstall-service"] {
+        if let Err(error)=eink_bridge::windows_runtime::uninstall(){eprintln!("{}: {}",error.code,error.message);std::process::exit(1);}
+        return;
+    }
+    #[cfg(windows)]
     if args.len() == 2 && args[0] == "--approve" {
         if let Err(error) = eink_bridge::windows_elevation::approve(&args[1]) { eprintln!("{}: {}", error.code, error.message); std::process::exit(1); }
         return;

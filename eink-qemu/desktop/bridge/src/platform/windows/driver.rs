@@ -43,14 +43,14 @@ impl VerifiedPackage {
             if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
                 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
                 || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 { return Err(invalid("TAP package directories cannot be reparse points.")); }
-            if ancestor == root { windows_security::validate_handle(&file, None)?; }
+            if ancestor == root { windows_security::validate_installed_handle(&file)?; }
             locks.push(file);
         }
         for &(name, length, expected) in FILES {
             let mut file = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
                 .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(root.join(name))
                 .map_err(|_| invalid("The installed TAP driver package is incomplete."))?;
-            windows_security::validate_handle(&file, None)?;
+            windows_security::validate_installed_handle(&file)?;
             let metadata = file.metadata().map_err(|_| invalid("Cannot inspect the TAP driver package."))?;
             if !metadata.is_file() || metadata.len() != length { return Err(invalid("The TAP driver package has an unexpected size or architecture.")); }
             let mut bytes = Vec::new();
