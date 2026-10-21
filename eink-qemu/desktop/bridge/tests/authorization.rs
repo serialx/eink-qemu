@@ -2,6 +2,48 @@ use eink_bridge::{protocol::{HelperRequest, RequestKind}, transport};
 use std::io::Cursor;
 
 #[test]
+fn authorization_proofs_are_bounded_redacted_and_only_accepted_for_apply() {
+    use eink_bridge::authorization::AuthorizationProof;
+    let secret = "ab".repeat(32);
+    let proof: AuthorizationProof = serde_json::from_str(&format!("\"{secret}\"")).unwrap();
+    assert!(!format!("{proof:?}").contains(&secret));
+    for value in ["a".repeat(63), "a".repeat(65), "gg".repeat(32), "AB".repeat(32)] {
+        assert!(serde_json::from_str::<AuthorizationProof>(&format!("\"{value}\"")).is_err());
+    }
+    let id = "a".repeat(32);
+    let request = eink_bridge::protocol::decode_request(&format!(
+        r#"{{"version":1,"kind":"apply","planId":"{id}","authorization":"{secret}"}}"#)).unwrap();
+    assert!(!format!("{request:?}").contains(&secret));
+    for kind in ["inspect", "recover", "keep", "cancel"] {
+        let operation = if kind == "keep" || kind == "cancel" { format!(r#", "operationId":"{id}""#) } else { String::new() };
+        assert!(eink_bridge::protocol::decode_request(&format!(
+            r#"{{"version":1,"kind":"{kind}"{operation},"authorization":"{secret}"}}"#)).is_err());
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_real_authorization_reference_without_rights_cannot_authorize_mutation() {
+    use eink_bridge::authorization::macos::Authorization;
+    let reference = Authorization::empty().unwrap();
+    let proof = reference.proof().unwrap();
+    assert_eq!(Authorization::verify(&proof).unwrap_err().code, "EAUTHDENIED");
+    drop(reference);
+    assert_eq!(Authorization::verify(&proof).unwrap_err().code, "EAUTHDENIED");
+    let forged = serde_json::from_str(&format!("\"{}\"", "00".repeat(32))).unwrap();
+    assert_eq!(Authorization::verify(&forged).unwrap_err().code, "EAUTHDENIED");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn installation_refuses_an_unbundled_executable_before_requesting_authorization() {
+    assert_eq!(eink_bridge::authorization::macos::authorize_install().unwrap_err().code, "EPACKAGE");
+    if unsafe { libc::geteuid() } != 0 {
+        assert_eq!(eink_bridge::authorization::macos::register_right().unwrap_err().code, "EPERM");
+    }
+}
+
+#[test]
 fn streaming_requests_reject_oversized_and_truncated_frames() {
     let frame = eink_bridge::protocol::encode_frame(&HelperRequest::inspect()).unwrap();
     assert!(matches!(transport::read_request(&mut Cursor::new(&frame)).unwrap().request, RequestKind::Inspect));

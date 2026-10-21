@@ -3,7 +3,14 @@
 let open: HTMLDialogElement | null = null;
 let count = 0;
 
-export const dialogOpen = () => !!open;
+const managed = new Set<HTMLDialogElement>();
+export const dialogOpen = () => !!open || managed.size > 0;
+
+/** Registers custom native dialogs with the emulator's keyboard guard. */
+export function registerDialog(dialog: HTMLDialogElement): () => void {
+  managed.add(dialog);
+  return () => managed.delete(dialog);
+}
 
 /** One option of a choice dialog; `note` is a second line under its label. */
 export interface Choice { value: string; label: string; note?: string; disabled?: boolean }

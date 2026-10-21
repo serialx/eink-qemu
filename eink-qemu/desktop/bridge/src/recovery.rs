@@ -26,6 +26,9 @@ impl RecoveryWorker {
             return Err(BridgeError::new("EINVAL", "Bridge recovery must run at least once per second."));
         }
         restored(coordinator.recover_startup()?)?;
+        for (resource, error) in coordinator.resume_resources()? {
+            eprintln!("Bridge {} needs repair after startup: {error}", resource.as_str());
+        }
         let (stop, receiver) = mpsc::channel();
         let failure = Arc::new(Mutex::new(None));
         let worker_failure = failure.clone();

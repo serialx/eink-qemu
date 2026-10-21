@@ -131,6 +131,16 @@ impl Settings {
         std::fs::rename(temp, path)
     }
 
+    /// Persist first, then publish the new selection/preferences in memory.
+    pub fn update_and_save(&mut self, path: &Path,
+        change: impl FnOnce(&mut Settings) -> Result<(), eink_core::session::AppError>) -> Result<Settings, eink_core::session::AppError> {
+        let mut next = self.clone();
+        change(&mut next)?;
+        next.save(path)?;
+        *self = next;
+        Ok(self.clone())
+    }
+
     /// Apply a whole patch, or nothing when any field is invalid.
     pub fn apply(&mut self, patch: SettingsPatch) -> Result<(), String> {
         let mut next = self.clone();
@@ -265,5 +275,21 @@ mod tests {
         assert_eq!(loaded.card, Some(PathBuf::from("card-4.img")));
         let old: Settings = serde_json::from_str(r#"{"card":"old.img"}"#).unwrap();
         assert!(old.recent_cards.is_empty());
+    }
+    #[test]
+    fn bridge_save_failure_keeps_the_previous_selection_and_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut settings = Settings::default();
+        settings.wifi_mode = "bridge".into();
+        let selected = serde_json::from_value(serde_json::json!({
+            "version":1,"platform":"macos","adapterId":"en0","fingerprint":"original",
+            "resourceId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","displayName":"Ethernet"
+        })).unwrap();
+        let result = settings.update_and_save(&path, |next| { next.bridge = Some(selected); Ok(()) });
+        assert!(result.is_err(), "a directory cannot be replaced with the settings file");
+        assert!(settings.bridge.is_none());
+        assert_eq!(settings.wifi_mode, "bridge");
     }
 }

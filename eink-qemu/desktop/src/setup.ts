@@ -4,6 +4,7 @@
    and finds the ELF (src-tauri/src/lib.rs `choose_firmware`); this paints
    what it reports and hands choices back. */
 import type { Settings, Setup } from './types';
+import type { BridgeInspection } from './bridge-types';
 import { selectedDevice, devicesOf } from './devices.ts';
 
 export type RunOption = 'wifi' | 'ghosting' | 'turbo';
@@ -14,6 +15,7 @@ export interface SetupHandlers {
   panel(panel: Settings['panel']): void;
   option(option: RunOption, on: boolean): void;
   wifiMode(mode: Settings['wifiMode']): void;
+  manageBridge?(trigger: HTMLElement): void;
   chooseElf(): void;
   forgetElf(): void;
 }
@@ -30,6 +32,26 @@ export const hasGhosting = (device: Machine | null) => device === 'x3' || device
 const chip = $<HTMLButtonElement>('flash');
 const card = $('setup-card');
 let state: Setup | null = null;
+let bridgeInspection: BridgeInspection | null = null;
+export function paintBridgeInspection(inspection: BridgeInspection) {
+  bridgeInspection = inspection;
+  paintBridgeStatus();
+}
+function paintBridgeStatus() {
+  const status = $('setup-bridge-status'), manage = $('setup-bridge-manage');
+  if (!status || !manage) return;
+  const selection = bridgeInspection?.selection ?? state?.settings.bridge;
+  const override = $('setup-network-override');
+  if (override) {
+    override.textContent = bridgeInspection?.externalOverride ? `${bridgeInspection.externalOverride} controls networking for this launch.` : '';
+    override.hidden = !override.textContent;
+  }
+  manage.textContent = selection ? 'Manage bridge' : 'Set up bridge';
+  status.textContent = bridgeInspection?.externalOverride
+    ? `${bridgeInspection.externalOverride} controls networking for this launch.`
+    : selection ? `Host connection: ${selection.displayName}. Join PICSimLabWifi in the firmware after Start.`
+    : 'Choose a host connection, then join PICSimLabWifi in the firmware.';
+}
 let idle = true;
 let handlers: SetupHandlers | null = null;
 
@@ -120,6 +142,7 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
     }
     $('setup-wifi-nat').hidden = mode !== 'nat';
     $('setup-wifi-bridge').hidden = mode !== 'bridge';
+    paintBridgeStatus();
   }
 
   // Recent firmware, the chosen one marked.
@@ -183,6 +206,11 @@ $('setup-wifi')?.addEventListener('click', (event) => {
   if (idle && b && !b.disabled && b.getAttribute('aria-checked') !== 'true') {
     handlers?.wifiMode(b.dataset.wifiMode as Settings['wifiMode']);
   }
+});
+$('setup-bridge-manage')?.addEventListener('click', () => {
+  const trigger = $('setup-bridge-manage');
+  open(false);
+  handlers?.manageBridge?.(trigger);
 });
 $('setup-recent').addEventListener('click', (event) => {
   const b = (event.target as Element).closest<HTMLButtonElement>('[data-path]');

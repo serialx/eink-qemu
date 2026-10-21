@@ -7,6 +7,7 @@ import type {
   SessionInfo, Settings, Setup, StartOptions, UploadPlan,
 } from './types';
 import type { HeapEvents } from './heap-log';
+import type { BridgeBackend } from './bridge-types';
 
 /** A file the backend handed the page: a host path on the desktop, a token
     for a File or a dropped entry in a browser. Only the backend reads it. */
@@ -66,6 +67,8 @@ export interface DropHandlers {
 }
 
 export interface Backend {
+  /** Native provisioning is deliberately absent from the browser backend. */
+  readonly bridge?: BridgeBackend;
   readonly can: Capabilities;
   /** The blank cards on offer; one size needs no choice. */
   readonly cardSizes: CardSize[];

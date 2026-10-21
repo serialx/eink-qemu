@@ -11,6 +11,9 @@ pub trait PlatformOps {
     fn fingerprint(&mut self, request: &PlanRequest, snapshot: &Self::Snapshot) -> Result<String, BridgeError>;
     fn apply(&mut self, mutation: &Self::Mutation) -> Result<(), BridgeError>;
     fn verify(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
+    /// Restore volatile runtime state for an already committed resource at boot.
+    /// Preserve changed persistent configuration; this is not automatic repair.
+    fn resume(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError> { self.verify(snapshot) }
     /// Disarm native timed rollback only after verification and confirmation.
     /// Must be idempotent. The durable snapshot remains usable if the helper
     /// crashes after this call but before recording the committed resource.
@@ -30,9 +33,13 @@ pub struct Resource<S> {
     pub fingerprint: String,
     pub original: S,
 }
-/// Kept by the helper for the lifetime of an authenticated transport session.
-/// Closing the connection or exiting the helper releases the OS file lock.
+/// Shared OS lock for an authenticated transport session. Unix helpers transfer
+/// a read-only duplicate to the desktop so helper restarts cannot release it.
 pub struct ResourceLease { _file: std::fs::File }
+impl ResourceLease {
+    /// Native transports may duplicate this read-only descriptor to the caller.
+    pub fn file(&self) -> &std::fs::File { &self._file }
+}
 #[derive(Clone, Serialize, Deserialize)]
 struct Record<S, M> {
     version: u32, owner: String, prepared: Prepared<S, M>, operation: Operation,
@@ -67,6 +74,42 @@ impl<P: PlatformOps> Coordinator<P> {
     pub fn resources(&self) -> Result<Vec<Resource<P::Snapshot>>, BridgeError> {
         let _lock = self.journal.lock()?;
         Ok(self.record()?.map(|r| r.resources.into_iter().filter(|r| r.owner == self.owner).collect()).unwrap_or_default())
+    }
+    /// Service startup only, after interrupted transactions have been restored.
+    /// A surviving emulator owns its runtime state until its lease is released.
+    /// Per-resource failures remain available for explicit repair and must not
+    /// prevent other users' healthy bridges from starting.
+    pub fn resume_resources(&mut self) -> Result<Vec<(ResourceId, BridgeError)>, BridgeError> {
+        let _lock = self.journal.lock()?;
+        let Some(record) = self.record()? else { return Ok(Vec::new()); };
+        if record.undo_required { return Err(BridgeError::new("ERECOVERY", "Restore the interrupted bridge operation first.")); }
+        let mut failures = Vec::new();
+        for resource in record.resources {
+            let _lease = match self.journal.resource_lock(&resource.id, false) {
+                Ok(lease) => lease,
+                Err(error) if error.code == "EBUSY" => continue,
+                Err(error) => return Err(error),
+            };
+            if let Err(error) = self.platform.resume(&resource.original) { failures.push((resource.id, error)); }
+        }
+        Ok(failures)
+    }
+    /// Polling never performs recovery or reveals another user's operation.
+    /// Only the service-owned watchdog invokes recovery across principals.
+    pub fn operation(&self) -> Result<Option<Operation>, BridgeError> {
+        let _lock = self.journal.lock()?;
+        Ok(self.record()?.filter(|record| record.owner == self.owner).map(|record| record.operation))
+    }
+    /// Verify while holding both the transaction lock and the transport lease.
+    /// The returned lease prevents repair/removal until the native client exits.
+    pub fn verify_resource(&mut self, id: &ResourceId) -> Result<(Resource<P::Snapshot>, ResourceLease), BridgeError> {
+        let _lock = self.journal.lock()?;
+        let record = self.record()?.ok_or_else(|| BridgeError::new("ENOENT", "Bridge setup no longer exists."))?;
+        let resource = self.resource(&record.resources, id)?.clone();
+        if record.undo_required { return Err(BridgeError::new("EBUSY", "Finish bridge setup before starting an emulator.")); }
+        let lease = ResourceLease { _file: self.journal.resource_lock(id, true)? };
+        self.platform.verify(&resource.original)?;
+        Ok((resource, lease))
     }
     fn resource<'a>(&self, resources: &'a [Resource<P::Snapshot>], id: &ResourceId) -> Result<&'a Resource<P::Snapshot>, BridgeError> {
         let resource = resources.iter().find(|r| r.id == *id).ok_or_else(|| BridgeError::new("ENOENT", "Bridge setup no longer exists."))?;
@@ -111,6 +154,7 @@ impl<P: PlatformOps> Coordinator<P> {
         self.journal.write(&record)?; Ok(plan)
     }
     pub fn apply(&mut self, id: &OperationId, now: u64) -> Result<Operation, BridgeError> {
+        let started = std::time::Instant::now();
         let _lock = self.journal.lock()?; let mut record = self.owned(id)?;
         let _lease = match &record.prepared.plan.request {
             PlanRequest::Configure { .. } => None,
@@ -141,7 +185,7 @@ impl<P: PlatformOps> Coordinator<P> {
         record.operation.state = OperationState::Verifying; record.operation.stage = "Check connection".into();
         self.save(&mut record)?;
         if let Err(error) = self.platform.verify(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
-        if record.prepared.plan.may_disconnect { record.operation.confirmation_deadline = Some(now.saturating_add(120)); }
+        if record.prepared.plan.may_disconnect { record.operation.confirmation_deadline = Some(now.saturating_add(started.elapsed().as_secs()).saturating_add(120)); }
         else { return self.finish(&mut record); }
         self.save(&mut record)
     }
@@ -205,6 +249,12 @@ impl<P: PlatformOps> Coordinator<P> {
     fn recover_inner(&mut self, now: Option<u64>) -> Result<Option<Operation>, BridgeError> {
         let _lock = self.journal.lock()?;
         let Some(mut record) = self.record()? else { return Ok(None); };
+        // A recorded conflict needs an explicit owner retry. Restarting the
+        // service must not repeat a restoration the OS already refused.
+        if record.undo_required && record.operation.state == OperationState::Failed
+            && record.operation.error.as_ref().is_some_and(|error| error.code == "EROLLBACK") {
+            return Ok(Some(record.operation));
+        }
         let waiting = record.operation.state == OperationState::Verifying
             && now.is_some_and(|now| record.operation.confirmation_deadline.is_some_and(|deadline| now < deadline));
         if record.undo_required && !waiting { return self.rollback(&mut record, None).map(Some); }

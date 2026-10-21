@@ -7,8 +7,8 @@ struct Snapshot { value: i32 }
 #[derive(Clone, Serialize, Deserialize)]
 enum Mutation { Change(i32), Fail }
 #[derive(Clone)]
-struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool }
-impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false } } }
+struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool, resumes: Arc<Mutex<usize>>, apply_delay: u64 }
+impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false, resumes: Arc::new(Mutex::new(0)), apply_delay: 0 } } }
 impl PlatformOps for Host {
     type Snapshot = Snapshot;
     type Mutation = Mutation;
@@ -23,6 +23,7 @@ impl PlatformOps for Host {
     }
     fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok(self.fingerprint.lock().unwrap().clone()) }
     fn apply(&mut self, mutation: &Mutation) -> Result<(), BridgeError> {
+        std::thread::sleep(std::time::Duration::from_secs(self.apply_delay));
         match mutation { Mutation::Change(value) => { *self.value.lock().unwrap() = *value; Ok(()) }, Mutation::Fail => Err(BridgeError::new("EAPPLY", "Failed mutation")) }
     }
     fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
@@ -31,12 +32,46 @@ impl PlatformOps for Host {
         assert!(!self.crash_commit, "crash after native checkpoint commit");
         if self.commit_fails { Err(BridgeError::new("ECOMMIT", "Native checkpoint could not be committed")) } else { Ok(()) }
     }
+    fn resume(&mut self, _: &Snapshot) -> Result<(), BridgeError> {
+        *self.resumes.lock().unwrap() += 1;
+        if self.fail { return Err(BridgeError::new("ECONFLICT", "Changed native configuration")); }
+        *self.value.lock().unwrap() = 20; Ok(())
+    }
     fn rollback(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> {
         if self.rollback_fails { return Err(BridgeError::new("EIO", "Host restoration failed")); }
         *self.value.lock().unwrap() = snapshot.value; Ok(())
     }
 }
 fn request() -> PlanRequest { PlanRequest::Configure { adapter_id: AdapterId::new("adapter").unwrap() } }
+
+#[test]
+fn polling_is_read_only_and_hides_another_users_operation() {
+    let dir = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    let operation = owner.apply(&plan.id, 101).unwrap();
+    assert_eq!(owner.operation().unwrap(), Some(operation.clone()));
+    let other = Coordinator::open(dir.path(), "user-b", host.clone()).unwrap();
+    assert_eq!(other.operation().unwrap(), None);
+    assert_eq!(*host.value.lock().unwrap(), 20, "polling must not roll back a pending operation");
+    assert_eq!(owner.operation().unwrap(), Some(operation));
+}
+
+#[test]
+fn verified_resource_holds_a_lease_and_rejects_other_users() {
+    let dir = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    owner.apply(&plan.id, 101).unwrap(); owner.keep(&plan.id, 102).unwrap();
+    let id = ResourceId::new(plan.id.as_str()).unwrap();
+    let (resource, lease) = owner.verify_resource(&id).unwrap();
+    assert_eq!(resource.id, id);
+    let mut other = Coordinator::open(dir.path(), "user-b", host.clone()).unwrap();
+    assert!(matches!(other.verify_resource(&id), Err(error) if error.code == "EPERM"));
+    assert_eq!(owner.plan(PlanRequest::Remove { resource_id: id.clone() }, 103).unwrap_err().code, "EBUSY");
+    drop(lease);
+    owner.plan(PlanRequest::Remove { resource_id: id }, 104).unwrap();
+}
 
 #[test]
 fn a_failed_mutation_restores_the_original_host() {
@@ -127,7 +162,9 @@ fn failed_restoration_is_retained_for_repair_instead_of_becoming_ready() {
     drop(coordinator);
     host.rollback_fails = false;
     let mut recovered = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
-    assert_eq!(recovered.recover(102).unwrap().unwrap().state, OperationState::Cancelled);
+    assert_eq!(recovered.recover(102).unwrap().unwrap().state, OperationState::Failed);
+    assert_eq!(*host.value.lock().unwrap(), 20, "a recorded restoration conflict requires an explicit retry");
+    assert_eq!(recovered.cancel(&plan.id).unwrap().state, OperationState::Cancelled);
     assert_eq!(*host.value.lock().unwrap(), 10);
 }
 
@@ -277,4 +314,40 @@ fn extended_acl_cannot_make_the_recovery_journal_writable() {
     let status = std::process::Command::new("/bin/chmod").args(["+a", "group:staff allow add_file"]).arg(dir.path()).status().unwrap();
     assert!(status.success());
     assert!(Coordinator::open(dir.path(), "user-a", Host::new()).is_err());
+}
+
+#[test]
+fn startup_resumes_committed_resources_but_skips_active_leases() {
+    let dir = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    owner.apply(&plan.id, 101).unwrap();
+    assert_eq!(owner.resume_resources().unwrap_err().code, "ERECOVERY");
+    owner.keep(&plan.id, 102).unwrap();
+    let id = ResourceId::new(plan.id.as_str()).unwrap();
+    let lease = owner.lease(&id).unwrap();
+    let mut service = Coordinator::open(dir.path(), "service", host.clone()).unwrap();
+    assert!(service.resume_resources().unwrap().is_empty());
+    assert_eq!(*host.resumes.lock().unwrap(), 0);
+    drop(lease);
+    *host.value.lock().unwrap() = 0;
+    assert!(service.resume_resources().unwrap().is_empty());
+    assert_eq!(*host.value.lock().unwrap(), 20);
+    assert_eq!(*host.resumes.lock().unwrap(), 1);
+    let mut changed = host.clone(); changed.fail = true;
+    let mut service = Coordinator::open(dir.path(), "service", changed).unwrap();
+    let failures = service.resume_resources().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].0, id);
+    assert_eq!(failures[0].1.code, "ECONFLICT");
+    assert_eq!(owner.resources().unwrap().len(), 1, "resume failures preserve ownership for explicit repair");
+}
+
+#[test]
+fn confirmation_time_starts_after_slow_native_setup() {
+    let dir = tempfile::tempdir().unwrap(); let mut host = Host::new(); host.apply_delay = 1;
+    let mut owner = Coordinator::open(dir.path(), "user-a", host).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    let operation = owner.apply(&plan.id, 101).unwrap();
+    assert!(operation.confirmation_deadline.unwrap() >= 222, "native setup must not consume the confirmation window");
 }

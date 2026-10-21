@@ -94,6 +94,76 @@ pub fn verify_peer(stream: &UnixStream, expected_uid: u32) -> Result<(), BridgeE
     Ok(())
 }
 
+/// Send only after the versioned lease reply, on its authenticated connection.
+/// SCM_RIGHTS retains the same open file description and its shared OS lock.
+pub fn send_lease_file(stream: &UnixStream, file: &std::fs::File) -> Result<(), BridgeError> {
+    let mut marker = 1u8;
+    let mut io = libc::iovec { iov_base: (&mut marker as *mut u8).cast(), iov_len: 1 };
+    let mut control = [0usize; 8]; // Aligned for cmsghdr on Darwin and Linux.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut io; message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = unsafe { libc::CMSG_SPACE(std::mem::size_of::<i32>() as _) } as _;
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET; (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as _) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), file.as_raw_fd());
+        if libc::sendmsg(stream.as_raw_fd(), &message, libc::MSG_NOSIGNAL) != 1 {
+            return Err(BridgeError::new("EIPC", "Cannot transfer the bridge transport lease."));
+        }
+    }
+    Ok(())
+}
+
+/// Call only after authenticating the root helper and matching its lease reply.
+/// Close every received descriptor on malformed/truncated ancillary messages.
+pub fn receive_lease_file(stream: &UnixStream) -> Result<std::fs::File, BridgeError> {
+    use std::os::fd::FromRawFd;
+    let invalid = || BridgeError::new("EPROTOCOL", "Invalid bridge transport lease.");
+    let mut marker = 0u8;
+    let mut io = libc::iovec { iov_base: (&mut marker as *mut u8).cast(), iov_len: 1 };
+    let mut control = [0usize; 16];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut io; message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast(); message.msg_controllen = std::mem::size_of_val(&control) as _;
+    #[cfg(target_os = "linux")]
+    let flags = libc::MSG_CMSG_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let flags = 0;
+    let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, flags) };
+    if received < 0 { return Err(invalid()); }
+    let mut files = Vec::new();
+    let mut malformed = false;
+    unsafe {
+        let mut header = libc::CMSG_FIRSTHDR(&message);
+        while !header.is_null() {
+            let base = libc::CMSG_LEN(0) as usize;
+            let length = (*header).cmsg_len as usize;
+            let end = message.msg_control as usize + message.msg_controllen as usize;
+            if length < base || header as usize + length > end { malformed = true; break; }
+            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
+                let size = std::mem::size_of::<i32>();
+                if (length - base) % size != 0 { malformed = true; }
+                for offset in (0..length - base).step_by(size) {
+                    if offset + size > length - base { break; }
+                    let fd = std::ptr::read_unaligned(libc::CMSG_DATA(header).add(offset).cast::<i32>());
+                    let file = std::fs::File::from_raw_fd(fd);
+                    if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) < 0 { malformed = true; }
+                    files.push(file);
+                }
+            } else { malformed = true; }
+            header = libc::CMSG_NXTHDR(&message, header);
+        }
+    }
+    if malformed || received != 1 || marker != 1 || message.msg_flags & libc::MSG_CTRUNC != 0 || files.len() != 1 { return Err(invalid()); }
+    let file = files.pop().unwrap();
+    let metadata = file.metadata().map_err(|_| invalid())?;
+    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != 0
+        || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) } & libc::O_ACCMODE != libc::O_RDONLY { return Err(invalid()); }
+    Ok(file)
+}
+
 /// App-side connection to the fixed, installer-owned service endpoint.
 pub fn connect() -> Result<UnixStream, BridgeError> {
     #[cfg(target_os = "macos")]

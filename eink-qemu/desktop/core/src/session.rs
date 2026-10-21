@@ -703,6 +703,18 @@ impl Session {
     /// Only native Rust callers may supply a resolved managed target.
     pub async fn start_with_network(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan,
         network: Option<crate::network::NetworkTarget>) -> Result<SessionInfo, AppError> {
+        self.start_network(options, flash, trace, network, None).await
+    }
+
+    pub async fn start_with_network_lease(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan,
+        network: crate::network::NetworkTarget, lease: std::fs::File) -> Result<SessionInfo, AppError> {
+        self.start_network(options, flash, trace, Some(network), Some(lease)).await
+    }
+
+    async fn start_network(self: &Arc<Self>, options: StartOptions, flash: Vec<u8>, trace: TracePlan,
+        network: Option<crate::network::NetworkTarget>, lease: Option<std::fs::File>) -> Result<SessionInfo, AppError> {
+        #[cfg(not(unix))]
+        if lease.is_some() { return Err(AppError::new("EBRIDGELEASE", "This build cannot retain the native bridge lease.")); }
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let id;
         {
@@ -726,7 +738,7 @@ impl Session {
         let _ops = self.ops.lock().await;
         *self.screen.lock().unwrap() = None;
         let result = match self.checked_card_path() {
-            Ok(card) => self.launch(id, &options, flash, &card, trace, cancel_rx, network.as_ref()).await,
+            Ok(card) => self.launch(id, &options, flash, &card, trace, cancel_rx, network.as_ref(), lease.as_ref()).await,
             Err(error) => Err((Exit { kind: "failed", reason: Some(error.message.clone()) }, error)),
         };
         self.complete_start(result)
@@ -828,6 +840,7 @@ impl Session {
         trace: TracePlan,
         cancel: watch::Receiver<bool>,
         network: Option<&crate::network::NetworkTarget>,
+        network_lease: Option<&std::fs::File>,
     ) -> Result<Arc<Run>, (Exit, AppError)> {
         let failed = |error: AppError| (Exit { kind: "failed", reason: Some(error.message.clone()) }, error);
         let binary = self.qemu.binary(&options.machine);
@@ -865,6 +878,12 @@ impl Session {
             }
             Err(reason) => Err(reason),
         };
+        #[cfg(unix)]
+        let inherited_lease = network_lease.map(crate::network::InheritedLease::new).transpose().map_err(failed)?;
+        #[cfg(unix)]
+        if let Some(lease) = &inherited_lease { args.extend(lease.arguments()); }
+        #[cfg(not(unix))]
+        let _ = network_lease;
         self.log(format!(
             "$ {} {}",
             binary.file_name().unwrap_or_default().to_string_lossy(),
@@ -884,6 +903,8 @@ impl Session {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        #[cfg(unix)]
+        if let Some(lease) = &inherited_lease { lease.configure(command.as_std_mut()); }
         let mut child = command
             .spawn()
             .map_err(|e| failed(AppError::new("EQEMU", format!("Could not start {}: {e}", binary.display()))))?;

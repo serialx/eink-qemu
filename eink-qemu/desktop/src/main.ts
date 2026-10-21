@@ -1,4 +1,5 @@
 import './app.css';
+import './bridge.css';
 import { appendLines } from './console';
 import './heap';
 

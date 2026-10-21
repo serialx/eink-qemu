@@ -107,7 +107,26 @@ acceptance harness passed configuration and repair with a newly constructed
 coordinator between plan and apply, plus removal refusal while a transport lease
 was held. It also terminated the helper process immediately after native service
 creation: startup recovery removed that unconfirmed service using its journal.
-The installed helper service and OS authorization are not yet wired.
+The helper executable now serves authenticated local requests and runs its
+startup/timed recovery independently of clients. Native tests passed ordinary
+user inspection and planning, rejection of missing authorization and valid
+authorization references without the required right, cancellation, and isolation
+of malformed clients. Denied authorization left no installed bridge resource.
+
+The installer uses matching app/helper code-signing requirements and SMJobBless
+to retain macOS 12.3 compatibility. A local development identity signed the test
+app and embedded helper successfully. Installation through the system prompt,
+reboot acceptance, and distribution signing remain unverified. The release
+workflow's existing ad-hoc identity is insufficient for this installation path;
+an Apple-issued signing identity must be configured. Apple's
+[SMJobBless requirements](https://developer.apple.com/documentation/servicemanagement/smjobbless%28_%3A_%3A_%3A_%3A%29)
+describe the paired code requirements; Apple also warns about ad-hoc service
+signing in its [Service Management discussion](https://developer.apple.com/forums/thread/799910).
+
+Unix transport leases transfer a read-only lock descriptor to the desktop.
+Tests confirm the lock survives sender exit and releases only when the client
+closes it; helper restarts therefore cannot make an active emulator's bridge
+available for removal. Full desktop session integration remains pending.
 
 Native commands are checked against the guest's own help and resulting adapter
 state. Microsoft's [netsh bridge reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-bridge)
@@ -128,3 +147,33 @@ Windows x64 LTSC evaluation ISO SHA-256:
 
 Windows 11 standard English x64 ISO SHA-256:
 `bd4307df32bc8af33b39ccecb1174aeb345386630f89a2b86c7a4e36b55ea650`.
+
+### Desktop integration and Linux profile checks
+
+The wizard now calls the native Tauri commands for inspection, support installation,
+planning, applying, confirmation, restoration and saving. The current macOS workspace
+suite passes 219 Rust tests (3 ignored), and 14 bridge UI tests pass. TypeScript and
+Vite builds pass. Native visual and packaged installer acceptance remain pending;
+these results do not establish delivery of the three-platform feature.
+
+An actual QEMU process, launched without a network device, retained the inherited
+bridge lease after its launcher closed its descriptor and released it on exit.
+Startup reconciliation skips resources with live leases and preserves changed
+persistent configuration. The new macOS reboot reconciliation still needs a native
+reboot acceptance run.
+
+On Ubuntu 22.04 ARM64 with NetworkManager 1.36.6, 38 bridge crate tests pass under
+Rust 1.90.0 as an ordinary user. The native D-Bus reader round-trips the active
+profile, including its variant types, through the protected journal representation.
+A separate root exercise creates and removes inactive bridge and port profiles with
+autoconnect disabled. It performs no activation or host connection conversion.
+NetworkManager adds an equivalent legacy interface-name alias and empty VLAN lists;
+comparison ignores only those defaults and still rejects edited values.
+
+NetworkManager profile snapshots use D-Bus wire bytes inside the JSON journal.
+Plain JSON serialization of nested variants failed the native round-trip test and
+was replaced. Profile access and checkpoint calls follow the official
+[NetworkManager D-Bus API](https://www.networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.html)
+and [connection settings API](https://www.networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Settings.Connection.html).
+The Linux lifecycle coordinator, authorization service and packaging are still
+in progress; the inactive-profile exercise is not a conversion acceptance run.

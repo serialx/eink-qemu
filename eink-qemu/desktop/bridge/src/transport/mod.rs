@@ -1,6 +1,6 @@
 //! Bounded messages and OS-authenticated caller identities. Authorization for
 //! mutation is separate: possession of a local connection grants no privilege.
-use crate::{model::{BridgeError, Readiness}, protocol::{self, HelperReply, HelperRequest, ReplyKind, RequestKind, MAX_MESSAGE}};
+use crate::{model::{BridgeError, BridgeSelection, LaunchTarget, Platform, Readiness}, protocol::{self, HelperReply, HelperRequest, ReplyKind, RequestKind, MAX_MESSAGE}};
 use std::io::{Read, Write};
 
 #[cfg(unix)]
@@ -8,7 +8,14 @@ pub mod unix;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caller { principal: String }
-impl Caller { pub fn principal(&self) -> &str { &self.principal } }
+impl Caller {
+    pub fn principal(&self) -> &str { &self.principal }
+    #[cfg(unix)]
+    pub fn uid(&self) -> Result<u32, BridgeError> {
+        self.principal.strip_prefix("uid:").and_then(|uid| uid.parse().ok())
+            .ok_or_else(|| BridgeError::new("EPERM", "Missing authenticated Unix caller."))
+    }
+}
 
 fn invalid() -> BridgeError { BridgeError::new("EPROTOCOL", "Incomplete or invalid bridge helper message.") }
 fn read_payload(reader: &mut impl Read) -> Result<Vec<u8>, BridgeError> {
@@ -35,9 +42,29 @@ pub fn write_reply(writer: &mut impl Write, reply: &HelperReply) -> Result<(), B
 /// A request uses one authenticated connection. Consuming the client prevents
 /// reuse of a stream after a truncated or otherwise invalid response.
 pub struct HelperClient { stream: Box<dyn Channel + Send> }
+/// Native session ownership keeps the lease alive even if the helper restarts.
+pub struct TransportLease { pub target: LaunchTarget, _file: std::fs::File }
+impl TransportLease {
+    pub fn into_parts(self) -> (LaunchTarget, std::fs::File) { (self.target, self._file) }
+}
 trait Channel: Read + Write {}
 impl<T: Read + Write> Channel for T {}
 impl HelperClient {
+    pub fn acquire(selection: BridgeSelection) -> Result<TransportLease, BridgeError> {
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            let mut stream = unix::connect()?;
+            let reply = exchange(&mut stream, &HelperRequest { version: crate::model::VERSION, request: RequestKind::Acquire { selection } })?;
+            let ReplyKind::Lease { target, .. } = reply.reply else { return Err(invalid()); };
+            let file = unix::receive_lease_file(&stream)?;
+            if file.metadata().map_err(|_| invalid())?.uid() != 0 { return Err(invalid()); }
+            Ok(TransportLease { target, _file: file })
+        }
+        #[cfg(not(unix))] {
+            let _ = selection;
+            Err(BridgeError::new("ENEEDSSETUP", "The native bridge lease connection is not available."))
+        }
+    }
     pub fn connect() -> Result<Self, BridgeError> {
         #[cfg(unix)]
         { Ok(Self { stream: Box::new(unix::connect()?) }) }
@@ -56,10 +83,15 @@ pub fn exchange(channel: &mut (impl Read + Write), request: &HelperRequest) -> R
     let matches = match (&request.request, &reply.reply) {
         (RequestKind::Inspect, ReplyKind::Inspection { .. }) => true,
         (RequestKind::Plan { request }, ReplyKind::Plan { plan }) => plan.request == *request,
-        (RequestKind::Apply { plan_id: id }, ReplyKind::Operation { operation: Some(operation) })
+        (RequestKind::Apply { plan_id: id, .. }, ReplyKind::Operation { operation: Some(operation) })
         | (RequestKind::Keep { operation_id: id }, ReplyKind::Operation { operation: Some(operation) })
         | (RequestKind::Cancel { operation_id: id }, ReplyKind::Operation { operation: Some(operation) }) => operation.id == *id,
         (RequestKind::Recover, ReplyKind::Operation { .. }) => true,
+        (RequestKind::Acquire { selection: expected }, ReplyKind::Lease { selection, target }) => {
+            expected == selection && matches!((selection.platform, target),
+                (Platform::Macos, LaunchTarget::MacSocket { .. }) | (Platform::Linux, LaunchTarget::LinuxBridge { .. })
+                | (Platform::Windows, LaunchTarget::WindowsTap { .. }))
+        },
         (RequestKind::Verify { selection: expected }, ReplyKind::Verification { selection, readiness }) => {
             selection.as_ref().is_none_or(|selection| selection == expected)
                 && (*readiness != Readiness::Ready || selection.is_some())

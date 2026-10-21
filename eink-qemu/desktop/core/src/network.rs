@@ -2,6 +2,33 @@
 use crate::session::{AppError, WifiMode};
 use std::path::PathBuf;
 
+/// QEMU owns a duplicate in its fdset for its entire process lifetime, even if
+/// the desktop is killed. Only the child's descriptor loses close-on-exec.
+#[cfg(unix)]
+pub struct InheritedLease { file: std::sync::Arc<std::fs::File> }
+#[cfg(unix)]
+impl InheritedLease {
+    pub fn new(file: &std::fs::File) -> Result<Self, AppError> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if fd < 0 { return Err(AppError::new("EBRIDGELEASE", "Cannot retain the bridge transport lease.")); }
+        Ok(Self { file: std::sync::Arc::new(unsafe { std::fs::File::from_raw_fd(fd) }) })
+    }
+    pub fn arguments(&self) -> [String; 2] {
+        use std::os::fd::AsRawFd;
+        ["-add-fd".into(), format!("fd={},set=19472,opaque=eink-bridge-lease", self.file.as_raw_fd())]
+    }
+    pub fn configure(&self, command: &mut std::process::Command) {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let file = self.file.clone();
+        unsafe { command.pre_exec(move || {
+            // fcntl is async-signal-safe; this executes only in the forked child.
+            if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) < 0 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        }); }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkTarget {
     LinuxBridge { name: String, helper: PathBuf },

@@ -9,8 +9,13 @@ pub const MAX_MESSAGE: usize = 1024 * 1024;
 pub enum RequestKind {
     Inspect,
     Plan { request: PlanRequest },
-    Apply { #[serde(rename = "planId")] plan_id: OperationId },
+    Apply {
+        #[serde(rename = "planId")] plan_id: OperationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization: Option<crate::authorization::AuthorizationProof>,
+    },
     Verify { selection: BridgeSelection },
+    Acquire { selection: BridgeSelection },
     Keep { #[serde(rename = "operationId")] operation_id: OperationId },
     Cancel { #[serde(rename = "operationId")] operation_id: OperationId },
     Recover,
@@ -24,8 +29,8 @@ pub struct HelperRequest {
 impl HelperRequest {
     pub fn inspect() -> Self { Self { version: VERSION, request: RequestKind::Inspect } }
 }
-/// Only descriptive state crosses this channel. Launch targets are resolved by
-/// native code after verification and are never accepted from WebView input.
+/// Launch targets travel only from the authenticated helper to native code,
+/// after verification, with a transport lease. Never accept them from WebView input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ReplyKind {
@@ -33,6 +38,7 @@ pub enum ReplyKind {
     Plan { plan: BridgePlan },
     Operation { operation: Option<Operation> },
     Verification { readiness: Readiness, selection: Option<BridgeSelection> },
+    Lease { selection: BridgeSelection, target: LaunchTarget },
     Error { error: BridgeError },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +75,13 @@ struct Envelope {
     plan_id: Option<OperationId>,
     selection: Option<BridgeSelection>,
     operation_id: Option<OperationId>,
+    #[serde(default, deserialize_with = "present_authorization")]
+    authorization: Option<crate::authorization::AuthorizationProof>,
+}
+
+fn present_authorization<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<crate::authorization::AuthorizationProof>, D::Error> {
+    // A field explicitly set to null is not an absent authorization field.
+    crate::authorization::AuthorizationProof::deserialize(deserializer).map(Some)
 }
 
 pub fn decode_request(json: &str) -> Result<HelperRequest, BridgeError> {
@@ -79,14 +92,16 @@ pub fn decode_request(json: &str) -> Result<HelperRequest, BridgeError> {
     if envelope.version != VERSION {
         return Err(BridgeError::new("EPROTOCOL", "Bridge helper version does not match the app."));
     }
+    if envelope.authorization.is_some() && envelope.kind != "apply" { return Err(invalid()); }
     let present = (envelope.request.is_some(), envelope.plan_id.is_some(),
         envelope.selection.is_some(), envelope.operation_id.is_some());
     let request = match (envelope.kind.as_str(), present) {
         ("inspect", (false, false, false, false)) => RequestKind::Inspect,
         ("recover", (false, false, false, false)) => RequestKind::Recover,
         ("plan", (true, false, false, false)) => RequestKind::Plan { request: envelope.request.unwrap() },
-        ("apply", (false, true, false, false)) => RequestKind::Apply { plan_id: envelope.plan_id.unwrap() },
+        ("apply", (false, true, false, false)) => RequestKind::Apply { plan_id: envelope.plan_id.unwrap(), authorization: envelope.authorization },
         ("verify", (false, false, true, false)) => RequestKind::Verify { selection: envelope.selection.unwrap() },
+        ("acquire", (false, false, true, false)) => RequestKind::Acquire { selection: envelope.selection.unwrap() },
         ("keep", (false, false, false, true)) => RequestKind::Keep { operation_id: envelope.operation_id.unwrap() },
         ("cancel", (false, false, false, true)) => RequestKind::Cancel { operation_id: envelope.operation_id.unwrap() },
         _ => return Err(invalid()),

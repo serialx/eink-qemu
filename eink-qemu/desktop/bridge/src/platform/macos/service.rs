@@ -7,12 +7,25 @@ use std::{ffi::CStr, path::PathBuf};
 
 pub const INSTALL_ROOT: &str = "/Library/Application Support/eink-qemu/bridge";
 pub const SOCKET_ROOT: &str = "/var/run/eink-qemu";
+pub const JOURNAL_ROOT: &str = "/Library/Application Support/eink-qemu/bridge/journal";
 pub const SOCKET_VMNET_VERSION: &str = "1.2.2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalUser { uid: u32, gid: u32 }
 impl LocalUser {
+    /// Resolve the primary group from the local account database, never JSON.
+    pub fn lookup(uid: u32) -> Result<Self, BridgeError> {
+        let mut buffer = vec![0u8; 1024];
+        loop {
+            let mut account: libc::passwd = unsafe { std::mem::zeroed() };
+            let mut result = std::ptr::null_mut();
+            let rc = unsafe { libc::getpwuid_r(uid, &mut account, buffer.as_mut_ptr().cast(), buffer.len(), &mut result) };
+            if rc == libc::ERANGE && buffer.len() < 65536 { buffer.resize(buffer.len() * 2, 0); continue; }
+            if rc != 0 || result.is_null() || account.pw_uid != uid { return Err(BridgeError::new("EPERM", "Cannot resolve the local bridge user.")); }
+            return Self::new(uid, account.pw_gid);
+        }
+    }
     pub fn new(uid: u32, gid: u32) -> Result<Self, BridgeError> {
         if !(501..0x80000000).contains(&uid) {
             return Err(BridgeError::new("EPERM", "Bridge setup requires an ordinary local user."));
@@ -155,7 +168,7 @@ fn read_small(mut file: File) -> Result<Vec<u8>, BridgeError> {
 }
 /// Only fixed OS tools and arguments derived from validated native state call
 /// this private runner. Temporary output files prevent pipe-buffer deadlocks.
-fn command(program: &str, arguments: &[&str]) -> Result<(bool, String), BridgeError> {
+fn command(program: &str, arguments: &[&str]) -> Result<(Option<i32>, String), BridgeError> {
     let mut output = tempfile::tempfile().map_err(system_error)?;
     let mut child = Command::new(program).args(arguments).env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .stdin(Stdio::null()).stdout(output.try_clone().map_err(system_error)?).stderr(output.try_clone().map_err(system_error)?)
@@ -166,7 +179,7 @@ fn command(program: &str, arguments: &[&str]) -> Result<(bool, String), BridgeEr
             output.rewind().map_err(system_error)?;
             let mut bytes = Vec::new();
             output.take(16384).read_to_end(&mut bytes).map_err(system_error)?;
-            return Ok((status.success(), String::from_utf8_lossy(&bytes).into_owned()));
+            return Ok((status.code(), String::from_utf8_lossy(&bytes).into_owned()));
         }
         if Instant::now() >= deadline || output.metadata().map_err(system_error)?.len() > 1024 * 1024 {
             let _ = child.kill(); let _ = child.wait();
@@ -176,13 +189,23 @@ fn command(program: &str, arguments: &[&str]) -> Result<(bool, String), BridgeEr
     }
 }
 fn required(program: &str, args: &[&str]) -> Result<(), BridgeError> {
-    let (success, detail) = command(program, args)?;
-    if success { Ok(()) } else {
+    let (status, detail) = command(program, args)?;
+    if status == Some(0) { Ok(()) } else {
         Err(BridgeError { code: "ESERVICE".into(), message: "macOS could not update the bridge service.".into(),
             detail: Some(format!("{program} {}: {detail}", args.first().copied().unwrap_or(""))) })
     }
 }
-fn loaded(spec: &ServiceSpec) -> Result<bool, BridgeError> { command("/bin/launchctl", &["print", &format!("system/{}", spec.label())]).map(|result| result.0) }
+fn loaded_status(status: Option<i32>, detail: String) -> Result<bool, BridgeError> {
+    match status {
+        Some(0) => Ok(true),
+        Some(113) => Ok(false), // launchctl: service not found in this domain
+        _ => Err(BridgeError { code: "ESERVICE".into(), message: "macOS could not inspect the bridge service.".into(), detail: Some(format!("launchctl print ({status:?}): {detail}")) }),
+    }
+}
+fn loaded(spec: &ServiceSpec) -> Result<bool, BridgeError> {
+    let (status, detail) = command("/bin/launchctl", &["print", &format!("system/{}", spec.label())])?;
+    loaded_status(status, detail)
+}
 fn stop(spec: &ServiceSpec) -> Result<(), BridgeError> {
     if !loaded(spec)? { return Ok(()); }
     let (_, detail) = command("/bin/launchctl", &["bootout", &format!("system/{}", spec.label())])?;
@@ -207,6 +230,11 @@ impl NativeService {
     pub fn new() -> Result<Self, BridgeError> {
         if unsafe { libc::geteuid() } != 0 { return Err(BridgeError::new("EAUTH", "Administrator authorization is required.")); }
         Ok(Self { _private: () })
+    }
+    pub fn prepare_helper_directories(&self) -> Result<(), BridgeError> {
+        self.check_payload()?;
+        directory(Path::new(JOURNAL_ROOT), 0o700)?;
+        directory(Path::new(SOCKET_ROOT), 0o755)
     }
     pub fn install_payload(&self, bytes: &[u8]) -> Result<(), BridgeError> {
         verify_payload(bytes, PayloadArchitecture::current())?;
@@ -291,6 +319,27 @@ impl NativeService {
                 Err(e) if Instant::now() >= deadline => return Err(e),
                 Err(_) => std::thread::sleep(Duration::from_millis(100)),
             }
+        }
+    }
+    /// /var/run is cleared at boot. Recreate only this volatile state for an
+    /// unchanged committed service. Existing state is verified, not rewritten.
+    pub fn resume(&self, spec: &ServiceSpec) -> Result<(), BridgeError> {
+        if !self.check_configuration(spec)? {
+            return Err(BridgeError::new("ENEEDSREPAIR", "The saved bridge service configuration is missing."));
+        }
+        match fs::symlink_metadata(spec.socket_directory()) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.start(spec),
+            Err(error) => Err(system_error(error)),
+            Ok(meta) => {
+                if !meta.is_dir() || meta.uid() != 0 || meta.mode() & 0o777 != 0o700 { return Err(unsafe_file()); }
+                protected_directory(&spec.socket_directory())?;
+                verify_search_acl(&File::open(spec.socket_directory()).map_err(system_error)?, spec.user)?;
+                self.check_socket_leaf(spec, false)?;
+                // Several committed services can share the same user's runtime
+                // directory. Another service may already have recreated it.
+                if !spec.socket().try_exists().map_err(system_error)? || !loaded(spec)? { self.start(spec) }
+                else { self.verify(spec) }
+            },
         }
     }
     fn check_socket_leaf(&self, spec: &ServiceSpec, required: bool) -> Result<(), BridgeError> {
@@ -409,6 +458,16 @@ pub fn set_search_acl(file: &File, user: LocalUser) -> Result<(), BridgeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launchd_absence_is_distinct_from_permission_or_service_failure() {
+        assert_eq!(loaded_status(Some(0), String::new()).unwrap(), true);
+        assert_eq!(loaded_status(Some(113), "Could not find service".into()).unwrap(), false);
+        for status in [Some(1), Some(5), Some(64), None] {
+            let error = loaded_status(status, "native failure detail".into()).unwrap_err();
+            assert_eq!(error.code, "ESERVICE");
+            assert!(error.detail.unwrap().contains("native failure detail"));
+        }
+    }
     #[test]
     fn native_command_failure_retains_diagnostic_output() {
         let error = required("/usr/bin/stat", &["/eink-bridge-no-such-native-test-file"]).unwrap_err();

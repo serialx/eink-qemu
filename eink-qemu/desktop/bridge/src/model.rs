@@ -128,9 +128,13 @@ pub struct Capabilities {
     pub existing_bridge: bool,
     pub reason: Option<String>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SupportState { Missing, Ready, NeedsUpdate }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Inspection {
+    pub support: SupportState,
     pub platform: Platform,
     pub adapters: Vec<Adapter>,
     pub capabilities: Capabilities,
@@ -139,7 +143,8 @@ pub struct Inspection {
     pub active_operation: Option<Operation>,
     pub external_override: Option<String>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum LaunchTarget {
     LinuxBridge { name: String, helper: std::path::PathBuf },
     MacSocket { path: std::path::PathBuf },

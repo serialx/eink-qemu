@@ -13,6 +13,7 @@ export interface SessionInfo {
   seq: number;
 }
 export interface Settings {
+  bridge?: import('./bridge-types').BridgeSelection | null;
   device: 'auto' | Machine;
   panel: 'uc8279-68' | 'uc8179';
   wifi: boolean;

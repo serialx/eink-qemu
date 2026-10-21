@@ -7,6 +7,7 @@
 //! accept only those recorded paths.
 
 mod settings;
+mod bridge;
 
 use eink_core::cards::{card_key, identity_key, open_card, reserve, reserve_path, validate_card, Card};
 use eink_core::script::automation::{Automation, Finalizer};
@@ -68,6 +69,7 @@ impl Events for DesktopEvents {
 }
 
 struct App {
+    bridge: bridge::Control,
     session: Arc<Session>,
     events: Arc<DesktopEvents>,
     settings: Mutex<Settings>,
@@ -89,11 +91,7 @@ impl App {
     /// Change the settings and save them; nothing changes when saving fails.
     fn update(&self, change: impl FnOnce(&mut Settings) -> Result<(), AppError>) -> Result<Settings, AppError> {
         let mut settings = self.settings.lock().unwrap();
-        let mut next = settings.clone();
-        change(&mut next)?;
-        next.save(&self.settings_path)?;
-        *settings = next;
-        Ok(settings.clone())
+        settings.update_and_save(&self.settings_path, change)
     }
 
     fn card_info(&self, path: &Path) -> Option<FileInfo> {
@@ -462,7 +460,8 @@ async fn firmware_read(app: State<'_, App>) -> Result<Response, AppError> {
 
 /// Body: the composed 16 MiB flash image. Header `x-options`: StartOptions JSON.
 #[tauri::command]
-async fn start(app: State<'_, App>, request: Request<'_>) -> Result<SessionInfo, AppError> {
+async fn start(window: tauri::WebviewWindow, app: State<'_, App>, request: Request<'_>) -> Result<SessionInfo, AppError> {
+    bridge::check_window(window.label()).map_err(|error| AppError::new(&error.code, error.message))?;
     let InvokeBody::Raw(flash) = request.body() else {
         return Err(AppError::new("EINVAL", "Expected the flash image as the request body."));
     };
@@ -482,8 +481,14 @@ async fn start(app: State<'_, App>, request: Request<'_>) -> Result<SessionInfo,
         return Err(AppError::new("EINVAL", format!("Unknown X4 Pro panel: {}.", options.panel)));
     }
     let flash = flash.clone();
+    let _bridge_gate = app.bridge.gate.lock().await;
+    if app.session.info().state != "idle" { return Err(AppError::busy()); }
+    let network = bridge::launch_lease(&app, options.wifi, options.wifi_mode).await
+        .map_err(|error| AppError::new("EBRIDGE", error.message))?;
     let trace = trace_plan(&app, &flash).await;
-    app.session.start(options, flash, trace).await
+    if let Some((target, lease)) = network {
+        app.session.start_with_network_lease(options, flash, trace, target, lease).await
+    } else { app.session.start(options, flash, trace).await }
 }
 
 #[tauri::command]
@@ -1062,6 +1067,7 @@ pub fn run() {
             }
             let _ = settings.save(&settings_path);
             app.manage(App {
+                bridge: Default::default(),
                 session,
                 events,
                 settings: Mutex::new(settings),
@@ -1108,6 +1114,14 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            bridge::bridge_inspect,
+            bridge::bridge_install,
+            bridge::bridge_plan,
+            bridge::bridge_apply,
+            bridge::bridge_keep,
+            bridge::bridge_cancel,
+            bridge::bridge_operation,
+            bridge::bridge_verify,
             attach,
             note,
             settings_set,

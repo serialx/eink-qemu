@@ -83,6 +83,7 @@ impl PlatformOps for MacPlatform {
         } else { self.native.verify(&snapshot.service) }
     }
     fn commit(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
+    fn resume(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> { self.native.resume(&snapshot.service) }
     fn rollback(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> {
         self.native.restore(&snapshot.service, snapshot.was_configured, snapshot.was_running)
     }

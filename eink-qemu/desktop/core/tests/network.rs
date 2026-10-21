@@ -1,5 +1,29 @@
 use eink_core::{network::{self, NetworkOverrides, NetworkTarget}, session::WifiMode};
 
+#[cfg(unix)]
+#[test]
+fn the_emulator_inherits_the_lease_without_making_parent_descriptors_inheritable() {
+    use std::{fs::OpenOptions, os::fd::AsRawFd, process::{Command, Stdio}};
+    let path = tempfile::NamedTempFile::new().unwrap();
+    let file = OpenOptions::new().read(true).open(path.path()).unwrap();
+    file.try_lock_shared().unwrap();
+    let lease = network::InheritedLease::new(&file).unwrap();
+    let args = lease.arguments();
+    assert_eq!(args[0], "-add-fd");
+    assert!(args[1].contains("opaque=eink-bridge-lease"));
+    let mut command = Command::new("/bin/cat");
+    command.stdin(Stdio::piped()).stdout(Stdio::null());
+    lease.configure(&mut command);
+    let mut child = command.spawn().unwrap();
+    assert_ne!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC, 0);
+    drop(file); drop(lease); drop(command);
+    let contender = OpenOptions::new().read(true).open(path.path()).unwrap();
+    assert!(contender.try_lock().is_err(), "the running child must retain its lease after the parent drops it");
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
+    contender.try_lock().unwrap();
+}
+
 #[test]
 fn managed_targets_preserve_qemu_argument_boundaries() {
     let overrides = NetworkOverrides::default();

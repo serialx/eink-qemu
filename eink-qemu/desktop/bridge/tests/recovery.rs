@@ -76,6 +76,12 @@ fn failed_restoration_stops_the_watchdog_without_repeating_mutations() {
     assert_eq!(worker.health().unwrap_err().code, "EROLLBACK");
     assert_eq!(worker.stop().unwrap_err().code, "EROLLBACK");
     assert!(restored.try_recv().is_err());
-    let mut coordinator = Coordinator::open(dir.path(), "user", host).unwrap();
+    let restarted = RecoveryWorker::start(Coordinator::open(dir.path(), "service", host.clone()).unwrap(), Duration::from_secs(1), || 223);
+    assert!(matches!(restarted, Err(error) if error.code == "EROLLBACK"));
+    assert!(restored.try_recv().is_err(), "service restart must not retry a recorded restoration conflict");
+    let mut coordinator = Coordinator::open(dir.path(), "user", host.clone()).unwrap();
     assert_eq!(coordinator.plan(PlanRequest::Configure { adapter_id: AdapterId::new("other").unwrap() }, 223).unwrap_err().code, "ERECOVERY");
+    host.fail_restore.store(false, Ordering::SeqCst);
+    assert_eq!(coordinator.cancel(&plan.id).unwrap().state, OperationState::Cancelled);
+    restored.try_recv().expect("an explicit retry may restore the protected snapshot");
 }

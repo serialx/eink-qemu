@@ -9,7 +9,8 @@ import { selectedDevice } from './devices';
 import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
 import { Readiness } from './readiness';
 import { keyboardKey, keyboardHint, keyHint, keyTitle } from './keyboard';
-import { attachSetup, closeSetup, hasGhosting, paintSetup } from './setup';
+import { attachSetup, closeSetup, hasGhosting, paintSetup, paintBridgeInspection } from './setup';
+import { openBridgeDialog } from './bridge-dialog';
 import { AppError, type CardInfo, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -124,6 +125,14 @@ function fail(message: string) {
   api.note(`Error: ${message}`);
 }
 
+async function manageBridge(trigger: HTMLElement) {
+  if (!api.bridge) return;
+  closeSetup();
+  await openBridgeDialog(api.bridge, trigger, () => !pending && session.state === 'idle');
+  await refreshSetup();
+  try { paintBridgeInspection(await api.bridge.inspect()); } catch (error) { fail(errorMessage(error)); }
+}
+
 async function start() {
   if (pending || session.state !== 'idle') return;
   if (!firmware) {
@@ -170,6 +179,17 @@ async function start() {
       fail(errorMessage(error));
     }
     paintControls();
+    if ((error as AppError).code === 'EBRIDGE' && api.bridge) {
+      const action = await choose('Bridge connection needs setup', errorMessage(error), [
+        { value: 'setup', label: 'Open bridge setup' },
+        { value: 'nat', label: 'Use NAT', note: 'Save NAT mode and retry Start.' },
+      ], 'setup', 'Continue');
+      if (action === 'setup') await manageBridge(button('start'));
+      else if (action === 'nat') {
+        try { settings = await api.settings({ wifiMode: 'nat' }); await refreshSetup(); await start(); }
+        catch (error) { fail(errorMessage(error)); }
+      }
+    }
   }
 }
 
@@ -909,6 +929,7 @@ export async function boot(backend: Backend) {
     problem: fail,
   });
   settings = state.settings;
+  if (api.bridge) void api.bridge.inspect().then(paintBridgeInspection).catch(() => {});
   firmware = state.firmware;
   card = state.card;
   if (state.session.seq > session.seq) session = state.session;
@@ -965,7 +986,10 @@ export async function boot(backend: Backend) {
     device: async (device) => { if (await save({ device }) && firmware) void start(); },
     panel: async (panel) => { if (await save({ panel }) && firmware) void start(); },
     option: (option, on) => void save({ [option]: on }),
-    wifiMode: (wifiMode) => void save({ wifiMode }),
+    wifiMode: async (wifiMode) => {
+      if (await save({ wifiMode }) && wifiMode === 'bridge' && api.bridge) await manageBridge(button('flash'));
+    },
+    manageBridge: trigger => void manageBridge(trigger),
     chooseElf: async () => {
       const info = await api.heapPickElf().catch((error) => { fail(errorMessage(error)); return null; });
       if (info) await refreshSetup();

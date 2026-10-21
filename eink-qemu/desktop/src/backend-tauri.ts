@@ -7,6 +7,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { Backend, DropHandlers, Screen } from './backend';
 import type { HeapEvents } from './heap-log';
+import type { BridgeInspection, BridgeOperation, BridgePlan } from './bridge-types';
 import { Panel } from './panel';
 import {
   AppError, type Attached, type CardInfo, type FileInfo, type HeapHistoryPoint, type HeapPast, type HeapSite,
@@ -114,6 +115,29 @@ function onDisplay(buffer: ArrayBuffer) {
 }
 
 export const tauri: Backend = {
+  bridge: {
+    inspect: () => call<BridgeInspection>('bridge_inspect'),
+    install: () => call<BridgeInspection>('bridge_install'),
+    plan: (request) => call<BridgePlan>('bridge_plan', { request }),
+    apply: (planId) => call<BridgeOperation>('bridge_apply', { planId }),
+    keep: (operationId) => call<BridgeOperation>('bridge_keep', { operationId }),
+    cancel: (operationId) => call<BridgeOperation>('bridge_cancel', { operationId }),
+    verify: () => call<BridgeInspection>('bridge_verify'),
+    async watch(handler) {
+      let disposed = false, polling = false;
+      const unlisten = await listen<BridgeOperation>('bridge-operation', event => { if (!disposed) handler(event.payload); });
+      const timer = window.setInterval(async () => {
+        if (disposed || polling) return;
+        polling = true;
+        try {
+          const operation = await call<BridgeOperation | null>('bridge_operation');
+          if (!disposed && operation) handler(operation);
+        } catch { /* Inspection/actions surface errors; polling never installs support. */ }
+        finally { polling = false; }
+      }, 1000);
+      return () => { disposed = true; window.clearInterval(timer); unlisten(); };
+    },
+  },
   can: { heap: true, cardOpen: true, cardNew: true, cardResize: true, cardRecent: true, cardSwitchRunning: true, cardReveal: true },
   /** All with the stock card's 32 KiB clusters (sd.rs). */
   cardSizes: [

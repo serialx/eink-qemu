@@ -54,7 +54,11 @@ impl Journal {
         Ok(file)
     }
     pub fn resource_lock(&self, id: &crate::model::ResourceId, shared: bool) -> Result<File, BridgeError> {
-        let file = self.open_file(&format!("resource-{}.lock", id.as_str()), true)?;
+        let name = format!("resource-{}.lock", id.as_str());
+        let created = self.open_file(&name, true)?;
+        // The ordinary client may retain this descriptor across helper restarts.
+        // Give it only read access to the empty lock file, never a root writer.
+        let file = if shared { drop(created); self.open_file(&name, false)? } else { created };
         let result = if shared { file.try_lock_shared() } else { file.try_lock() };
         result.map_err(|_| BridgeError::new("EBUSY", "This bridge is in use. Stop its emulators first."))?;
         Ok(file)
