@@ -19,7 +19,9 @@ fn check_idle(state: &str) -> Result<(), BridgeError> {
 fn check_apply(operation: Option<&Operation>, id: &OperationId) -> Result<(), BridgeError> {
     let operation = operation.filter(|operation| operation.id == *id)
         .ok_or_else(|| BridgeError::new("ESTALE", "Review bridge setup again before applying it."))?;
-    if operation.state != OperationState::AwaitingAuthorization {
+    let paused_for_reboot = operation.state == OperationState::Applying && operation.reboot_required
+        && operation.confirmation_deadline.is_none();
+    if operation.state != OperationState::AwaitingAuthorization && !paused_for_reboot {
         return Err(BridgeError::new("EBUSY", "This bridge operation has already started."));
     }
     Ok(())
@@ -227,6 +229,15 @@ mod tests {
         assert_eq!(check_apply(None, &id).unwrap_err().code, "ESTALE");
         assert_eq!(check_apply(Some(&op), &OperationId::new("b".repeat(32)).unwrap()).unwrap_err().code, "ESTALE");
         op.state = OperationState::Ready;
+        assert_eq!(check_apply(Some(&op), &id).unwrap_err().code, "EBUSY");
+        op.reboot_required = true;
+        assert_eq!(check_apply(Some(&op), &id).unwrap_err().code, "EBUSY");
+        op.state = OperationState::Applying;
+        assert!(check_apply(Some(&op), &id).is_ok());
+        op.confirmation_deadline = Some(300);
+        assert_eq!(check_apply(Some(&op), &id).unwrap_err().code, "EBUSY");
+        op.confirmation_deadline = None;
+        op.reboot_required = false;
         assert_eq!(check_apply(Some(&op), &id).unwrap_err().code, "EBUSY");
     }
 }
