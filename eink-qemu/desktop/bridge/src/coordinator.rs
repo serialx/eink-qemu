@@ -11,6 +11,10 @@ pub trait PlatformOps {
     fn fingerprint(&mut self, request: &PlanRequest) -> Result<String, BridgeError>;
     fn apply(&mut self, mutation: &Self::Mutation) -> Result<(), BridgeError>;
     fn verify(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
+    /// Disarm native timed rollback only after verification and confirmation.
+    /// Must be idempotent. The durable snapshot remains usable if the helper
+    /// crashes after this call but before recording the committed resource.
+    fn commit(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
     /// Must be idempotent and conflict-aware. Called even after partial apply.
     fn rollback(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
 }
@@ -138,7 +142,7 @@ impl<P: PlatformOps> Coordinator<P> {
         self.save(&mut record)?;
         if let Err(error) = self.platform.verify(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
         if record.prepared.plan.may_disconnect { record.operation.confirmation_deadline = Some(now.saturating_add(120)); }
-        else { self.commit_resource(&mut record)?; }
+        else { return self.finish(&mut record); }
         self.save(&mut record)
     }
     pub fn keep(&mut self, id: &OperationId, now: u64) -> Result<Operation, BridgeError> {
@@ -148,9 +152,18 @@ impl<P: PlatformOps> Coordinator<P> {
         }
         if now >= record.operation.confirmation_deadline.unwrap() { return self.rollback(&mut record, None); }
         if let Err(error) = self.platform.verify(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
-        self.commit_resource(&mut record)?;
-        record.operation.confirmation_deadline = None; record.operation.stage = "Bridge ready".into();
-        self.save(&mut record)
+        self.finish(&mut record)
+    }
+    fn finish(&mut self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
+        record.operation.confirmation_deadline = None;
+        record.operation.stage = "Finalize bridge setup".into();
+        self.save(record)?;
+        if let Err(error) = self.platform.commit(&record.prepared.snapshot) {
+            return self.rollback(record, Some(error));
+        }
+        self.commit_resource(record)?;
+        record.operation.stage = "Bridge ready".into();
+        self.save(record)
     }
     fn commit_resource(&self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<(), BridgeError> {
         match &record.prepared.plan.request {

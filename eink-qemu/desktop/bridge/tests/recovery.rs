@@ -16,6 +16,7 @@ impl PlatformOps for Host {
     fn fingerprint(&mut self, _: &PlanRequest) -> Result<String, BridgeError> { Ok("nic".into()) }
     fn apply(&mut self, _: &()) -> Result<(), BridgeError> { self.mutations.fetch_add(1, Ordering::SeqCst); Ok(()) }
     fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
+    fn commit(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
     fn rollback(&mut self, _: &Snapshot) -> Result<(), BridgeError> { self.restored.send(()).unwrap(); if self.fail_restore.load(Ordering::SeqCst) { Err(BridgeError::new("EIO", "Host refused restoration")) } else { Ok(()) } }
 }
 

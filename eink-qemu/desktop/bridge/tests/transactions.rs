@@ -7,8 +7,8 @@ struct Snapshot { value: i32 }
 #[derive(Clone, Serialize, Deserialize)]
 enum Mutation { Change(i32), Fail }
 #[derive(Clone)]
-struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool }
-impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false } } }
+struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool }
+impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false } } }
 impl PlatformOps for Host {
     type Snapshot = Snapshot;
     type Mutation = Mutation;
@@ -26,6 +26,11 @@ impl PlatformOps for Host {
         match mutation { Mutation::Change(value) => { *self.value.lock().unwrap() = *value; Ok(()) }, Mutation::Fail => Err(BridgeError::new("EAPPLY", "Failed mutation")) }
     }
     fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
+    fn commit(&mut self, _: &Snapshot) -> Result<(), BridgeError> {
+        *self.commits.lock().unwrap() += 1;
+        assert!(!self.crash_commit, "crash after native checkpoint commit");
+        if self.commit_fails { Err(BridgeError::new("ECOMMIT", "Native checkpoint could not be committed")) } else { Ok(()) }
+    }
     fn rollback(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> {
         if self.rollback_fails { return Err(BridgeError::new("EIO", "Host restoration failed")); }
         *self.value.lock().unwrap() = snapshot.value; Ok(())
@@ -201,6 +206,7 @@ fn every_mutation_has_durable_intent_and_crash_recovery() {
             Ok(())
         }
         fn verify(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> { self.host.verify(snapshot) }
+        fn commit(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> { self.host.commit(snapshot) }
         fn rollback(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> { self.host.rollback(snapshot) }
     }
     for crash_at in 0..3 {
@@ -221,4 +227,45 @@ fn every_mutation_has_durable_intent_and_crash_recovery() {
         assert_eq!(restarted.recover(102).unwrap().unwrap().state, OperationState::Cancelled);
         assert_eq!(*host.value.lock().unwrap(), 10);
     }
+}
+
+#[test]
+fn keep_commits_the_native_checkpoint_once_and_commit_failure_restores() {
+    for fail in [false, true] {
+        let dir = tempfile::tempdir().unwrap(); let mut host = Host::new(); host.commit_fails = fail;
+        let mut coordinator = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+        let plan = coordinator.plan(request(), 100).unwrap();
+        coordinator.apply(&plan.id, 101).unwrap();
+        assert_eq!(*host.commits.lock().unwrap(), 0, "Apply must leave native rollback armed");
+        let operation = coordinator.keep(&plan.id, 102).unwrap();
+        assert_eq!(*host.commits.lock().unwrap(), 1);
+        if fail {
+            assert_eq!(operation.state, OperationState::Failed);
+            assert_eq!(operation.error.unwrap().code, "ECOMMIT");
+            assert_eq!(*host.value.lock().unwrap(), 10);
+            assert!(coordinator.resources().unwrap().is_empty());
+        } else {
+            assert_eq!(operation.state, OperationState::Ready);
+            assert_eq!(*host.value.lock().unwrap(), 20);
+            assert_eq!(coordinator.resources().unwrap().len(), 1);
+        }
+        assert!(coordinator.keep(&plan.id, 103).is_err());
+        assert_eq!(*host.commits.lock().unwrap(), 1);
+    }
+}
+
+#[test]
+fn crash_after_native_commit_does_not_discard_the_recovery_snapshot() {
+    let dir = tempfile::tempdir().unwrap(); let mut host = Host::new(); host.crash_commit = true;
+    let mut coordinator = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
+    let plan = coordinator.plan(request(), 100).unwrap();
+    coordinator.apply(&plan.id, 101).unwrap();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| coordinator.keep(&plan.id, 102))).is_err());
+    assert_eq!(*host.commits.lock().unwrap(), 1);
+    assert_eq!(*host.value.lock().unwrap(), 20);
+    drop(coordinator);
+    let mut restarted = Coordinator::open(dir.path(), "service", host.clone()).unwrap();
+    assert_eq!(restarted.recover_startup().unwrap().unwrap().state, OperationState::Cancelled);
+    assert_eq!(*host.value.lock().unwrap(), 10);
+    assert!(restarted.resources().unwrap().is_empty());
 }
