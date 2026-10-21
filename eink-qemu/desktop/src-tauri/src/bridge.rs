@@ -170,6 +170,13 @@ pub(crate) async fn bridge_verify(window: WebviewWindow, app: State<'_, App>) ->
     }
     if inspection.support != SupportState::Ready { return Err(BridgeError::new("ENEEDSSETUP", "Install bridge support first.")); }
     let selection = inspection.selection.clone();
+    #[cfg(windows)]
+    let _verified_lease = if let Some(selection) = selection.clone() {
+        // The Windows service cannot establish that this ordinary desktop can
+        // open the TAP device. Probe from this process and hold its lease while
+        // saving the verified selection.
+        Some(blocking(move || HelperClient::acquire(selection)).await?)
+    } else { None };
     app.update(|settings| { settings.bridge = selection; Ok(()) })
         .map_err(|error| BridgeError::new(&error.code, error.message))?;
     Ok(inspection)

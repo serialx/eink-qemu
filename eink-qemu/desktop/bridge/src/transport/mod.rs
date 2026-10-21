@@ -81,6 +81,7 @@ impl HelperClient {
             let ReplyKind::Lease { target, .. } = reply.reply else { return Err(invalid()); };
             let file = stream.receive_lease()?;
             stream.acknowledge()?;
+            crate::windows_verify::probe_target(&target)?;
             Ok(TransportLease { target, _file: file })
         }
         #[cfg(not(any(unix, windows)))] {

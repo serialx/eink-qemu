@@ -299,6 +299,10 @@ mod tests {
             // Discovery runs in the ordinary desktop before support is
             // installed; native PnP identity reads must not require elevation.
             crate::inspect().unwrap();
+            if let Ok(guid) = std::env::var("EINK_PIPE_TEST_TAP_GUID") {
+                assert_eq!(crate::windows_verify::probe(&guid).unwrap(), [9, 27, 0]);
+                crate::windows_verify::probe_target(&crate::windows_verify::target(&guid).unwrap()).unwrap();
+            }
             let mut pipe = connect_path(&name).unwrap();
             pipe.timeout(Duration::from_secs(30));
             windows_security::validate_pipe(&pipe.file).unwrap();
@@ -345,7 +349,10 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let executable = wide(exe.to_str().unwrap());
         let mut command = wide(&format!("\"{}\" --exact transport::windows::tests::ordinary_user_cannot_forge_server_and_receives_read_only_lease --include-ignored", exe.display()));
-        let environment = wide(&format!("{CHILD}={name}\0SystemRoot=C:\\Windows\0TEMP=C:\\Windows\\Temp\0"));
+        let tap_fixture = std::env::var("EINK_BRIDGE_TEST_TAP_GUID").ok().map(|guid| {
+            format!("EINK_PIPE_TEST_TAP_GUID={}\0", crate::windows_device::guid(&guid).unwrap())
+        }).unwrap_or_default();
+        let environment = wide(&format!("{CHILD}={name}\0{tap_fixture}SystemRoot=C:\\Windows\0TEMP=C:\\Windows\\Temp\0"));
         let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
         startup.cb = std::mem::size_of_val(&startup) as u32;
         let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };

@@ -28,6 +28,7 @@
 
 #include "qemu/osdep.h"
 #include "tap_int.h"
+#include "tap-win32-identity.h"
 
 #include "clients.h"            /* net_init_tap */
 #include "net/eth.h"
@@ -606,13 +607,24 @@ static int tap_win32_open(tap_win32_overlapped_t **phandle,
     DWORD version_len;
     DWORD idThread;
 
-    if (preferred_name != NULL) {
-        snprintf(name_buffer, sizeof(name_buffer), "%s", preferred_name);
-    }
+    if (preferred_name && !strncmp(preferred_name, "guid:", 5)) {
+        /* Managed setup resolves a native device identity. Opening its GUID
+         * avoids a rename race or a collision with another app's TAP name.
+         * The version IOCTL below still verifies that this is a TAP device. */
+        if (!tap_win32_guid_target(preferred_name, device_guid)) {
+            return -1;
+        }
+    } else {
+        if (preferred_name != NULL) {
+            snprintf(name_buffer, sizeof(name_buffer), "%s", preferred_name);
+        }
 
-    rc = get_device_guid(device_guid, sizeof(device_guid), name_buffer, sizeof(name_buffer));
-    if (rc)
-        return -1;
+        rc = get_device_guid(device_guid, sizeof(device_guid),
+                             name_buffer, sizeof(name_buffer));
+        if (rc) {
+            return -1;
+        }
+    }
 
     device_path = g_strdup_printf("%s%s%s",
               USERMODEDEVICEDIR,
@@ -642,6 +654,7 @@ static int tap_win32_open(tap_win32_overlapped_t **phandle,
     }
 
     if (!tap_win32_set_status(handle, TRUE)) {
+        CloseHandle(handle);
         return -1;
     }
 

@@ -70,6 +70,8 @@ fn managed_targets_preserve_qemu_argument_boundaries() {
         (NetworkTarget::MacSocket { path: "/var/run/reader's bridge,1/socket".into() },
          "stream,server=off,addr.type=unix,addr.path=/var/run/reader's bridge,,1/socket,model=esp32_wifi"),
         (NetworkTarget::WindowsTap { name: "Reader LAN,2".into() }, "tap,ifname=Reader LAN,,2,model=esp32_wifi"),
+        (NetworkTarget::WindowsTap { name: "guid:{12345678-1234-5678-9abc-1234567890ab}".into() },
+         "tap,ifname=guid:{12345678-1234-5678-9abc-1234567890ab},model=esp32_wifi"),
         #[cfg(unix)]
         (NetworkTarget::LinuxBridge { name: "br-reader".into(), helper: "/opt/reader's bridge/helper".into() },
          "bridge,br=br-reader,model=esp32_wifi,helper='/opt/reader'\\''s bridge/helper'"),

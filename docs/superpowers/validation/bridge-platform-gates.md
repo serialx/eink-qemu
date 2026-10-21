@@ -382,6 +382,19 @@ automatic setup. The same discovery succeeded under a temporary standard user;
 cleanup was verified. Display descriptions no longer determine TAP identity,
 and existing TAP adapters are not treated as app-owned resources.
 
+The Rust ordinary-user TAP probe passed against the pinned 9.27 release. It
+opens the exact native GUID with QEMU's requested access and sharing mode,
+queries the driver version, and closes the handle without enabling media.
+Managed Windows verification and acquisition now require this probe in the
+desktop process. A failed access check therefore prevents saving readiness or
+starting the emulator without elevating either process.
+
+QEMU now accepts an explicit `guid:{...}` TAP target for managed launches;
+legacy display-name selection remains available. A C test validates its exact,
+bounded syntax. This avoids resolving a changed display name to a different
+adapter after setup verification. The actual rebuilt Windows QEMU run remains
+pending while the disposable VM's build toolchain is prepared.
+
 ### Native Linux desktop flow
 
 The current Tauri app built and ran under Xfce in the disposable Ubuntu VM.
