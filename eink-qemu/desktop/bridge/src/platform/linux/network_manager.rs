@@ -23,6 +23,36 @@ impl NetworkManager {
     }
     fn manager(&self) -> Result<Proxy<'_>, BridgeError> { self.proxy(ROOT, SERVICE) }
     fn profile_proxy(&self, path: &OwnedObjectPath) -> Result<Proxy<'_>, BridgeError> { self.proxy(path.as_str(), "org.freedesktop.NetworkManager.Settings.Connection") }
+    pub fn link_identity(&self, interface: &str) -> Result<([u8; 6], u32), BridgeError> {
+        let device: OwnedObjectPath = self.manager()?.call("GetDeviceByIpIface", &(interface,)).map_err(error)?;
+        let proxy = self.proxy(device.as_str(), "org.freedesktop.NetworkManager.Device")?;
+        let mac: String = proxy.get_property("HwAddress").map_err(error)?;
+        let mac = mac.split(':').map(|part| u8::from_str_radix(part, 16).map_err(error)).collect::<Result<Vec<_>, _>>()?;
+        Ok((mac.try_into().map_err(|_| error("Invalid Ethernet MAC"))?, proxy.get_property("Mtu").map_err(error)?))
+    }
+    pub fn wait_preserved(&self, interface: &str, expected: &crate::linux_verify::HostSnapshot) -> Result<(), BridgeError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match expected.verify_preserved(&self.runtime(interface)?) {
+                Ok(()) => return Ok(()),
+                Err(error) if std::time::Instant::now() >= deadline => return Err(error),
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+    pub fn runtime(&self, interface: &str) -> Result<crate::linux_verify::HostSnapshot, BridgeError> {
+        use crate::linux_verify::{FamilySnapshot, HostSnapshot};
+        let device: OwnedObjectPath = self.manager()?.call("GetDeviceByIpIface", &(interface,)).map_err(error)?;
+        let proxy = self.proxy(device.as_str(), "org.freedesktop.NetworkManager.Device")?;
+        let family = |property: &str, interface: &str| -> Result<Option<FamilySnapshot>, BridgeError> {
+            let path: OwnedObjectPath = proxy.get_property(property).map_err(error)?;
+            if path.as_str() == "/" { return Ok(None); }
+            let properties = self.proxy(path.as_str(), "org.freedesktop.DBus.Properties")?.call("GetAll", &(interface,)).map_err(error)?;
+            FamilySnapshot::from_properties(properties).map(Some)
+        };
+        Ok(HostSnapshot { ipv4: family("Ip4Config", "org.freedesktop.NetworkManager.IP4Config")?,
+            ipv6: family("Ip6Config", "org.freedesktop.NetworkManager.IP6Config")? })
+    }
     pub fn read_profile(&self, path: &OwnedObjectPath) -> Result<Profile, BridgeError> {
         self.profile_proxy(path)?.call::<_, _, Settings>("GetSettings", &()).map(Profile).map_err(error)
     }

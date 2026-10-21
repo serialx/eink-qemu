@@ -32,6 +32,40 @@ impl<'de> Deserialize<'de> for Profile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migration { pub bridge: Profile, pub port: Profile, pub original_disabled: Profile }
+impl Migration {
+    /// Saved "auto" defaults are not portable from Ethernet to a bridge. Keep
+    /// the live link identity and effective priorities, leaving the original
+    /// profile untouched for restoration. The caller must still verify the
+    /// complete live address/route/DNS snapshot after activation.
+    pub fn preserve_runtime(&mut self, runtime: &crate::linux_verify::HostSnapshot, mac: [u8; 6], mtu: u32) -> Result<(), BridgeError> {
+        if mac == [0; 6] || mac[0] & 1 != 0 || mtu < 68 || mtu > 65535 {
+            return Err(BridgeError::new("EHOSTNETWORK", "Cannot preserve this adapter's hardware address or MTU."));
+        }
+        let mut updated = self.clone();
+        let mac: OwnedValue = zbus::zvariant::Value::from(mac.to_vec()).try_into().map_err(|_| unsupported())?;
+        updated.bridge.get_mut("bridge").ok_or_else(unsupported)?.insert("mac-address".into(), mac.clone());
+        for profile in [&mut updated.bridge, &mut updated.port] {
+            let wired = profile.entry("802-3-ethernet".into()).or_default();
+            wired.remove("assigned-mac-address");
+            wired.insert("cloned-mac-address".into(), mac.clone());
+            wired.insert("mtu".into(), mtu.into());
+        }
+        for (family, live) in [("ipv4", &runtime.ipv4), ("ipv6", &runtime.ipv6)] {
+            let settings = updated.bridge.get_mut(family).ok_or_else(unsupported)?;
+            let method = settings.get("method").and_then(|v| <&str>::try_from(v).ok());
+            if method == Some("disabled") { continue; }
+            let live = live.as_ref().ok_or_else(|| BridgeError::new("EUNSUPPORTED", "Wait until both configured IP families are ready before converting this connection."))?;
+            if settings.get("route-metric").map(|v| i64::try_from(v)).transpose().map_err(|_| unsupported())?.unwrap_or(-1) == -1 {
+                settings.insert("route-metric".into(), live.route_metric()?.into());
+            }
+            if settings.get("dns-priority").map(|v| i32::try_from(v)).transpose().map_err(|_| unsupported())?.unwrap_or(0) == 0 {
+                settings.insert("dns-priority".into(), live.dns_priority()?.into());
+            }
+        }
+        *self = updated;
+        Ok(())
+    }
+}
 fn unsupported() -> BridgeError { BridgeError::new("EUNSUPPORTED", "This connection cannot be converted automatically. Select an existing bridge or use a plain Ethernet connection.") }
 fn text(value: &str) -> OwnedValue { Str::from(value).into() }
 fn string<'a>(profile: &'a Profile, section: &str, key: &str) -> Option<&'a str> { profile.get(section)?.get(key).and_then(|v| <&str>::try_from(v).ok()) }
@@ -51,6 +85,9 @@ pub fn migrate(original: &Profile, adapter: &str, bridge_name: &str, bridge_uuid
     if ["master", "controller", "slave-type", "port-type"].iter().any(|key| connection.contains_key(*key)) { return Err(unsupported()); }
     if connection.get("secondaries").is_some_and(|v| Vec::<String>::try_from(v.clone()).map_or(true, |v| !v.is_empty())) { return Err(unsupported()); }
     for section in ["ipv4", "ipv6"] {
+        if string(original, section, "method") == Some("ignore") {
+            return Err(BridgeError::new("EUNSUPPORTED", "This connection leaves IP configuration outside NetworkManager. Select an existing bridge or configure NetworkManager to manage both IP families first."));
+        }
         if !matches!(string(original, section, "method"), None | Some("auto" | "manual" | "disabled" | "ignore" | "link-local" | "dhcp")) { return Err(unsupported()); }
     }
     let mut bridge = original.clone();
@@ -89,6 +126,17 @@ pub fn same_configuration(left: &Profile, right: &Profile) -> bool {
     let normalize = |value: &Profile| {
         let mut value = value.clone();
         if let Some(connection) = value.get_mut("connection") { connection.remove("timestamp"); }
+        if let Some(wired) = value.get_mut("802-3-ethernet") {
+            // GetSettings emits both the deprecated byte-array property and
+            // its string alias. Ignore the alias only when it agrees exactly.
+            let assigned = wired.get("assigned-mac-address").and_then(|v| <&str>::try_from(v).ok())
+                .and_then(|value| value.split(':').map(|part| u8::from_str_radix(part, 16)).collect::<Result<Vec<_>, _>>().ok());
+            let cloned = wired.get("cloned-mac-address").and_then(|v| Vec::<u8>::try_from(v.clone()).ok());
+            if assigned.as_ref().is_some_and(|mac| mac.len() == 6) && assigned == cloned { wired.remove("assigned-mac-address"); }
+            if wired.get("auto-negotiate").and_then(|v| bool::try_from(v).ok()) == Some(false) { wired.remove("auto-negotiate"); }
+            if wired.get("mac-address-blacklist").is_some_and(|v| Vec::<String>::try_from(v.clone()).is_ok_and(|v| v.is_empty())) { wired.remove("mac-address-blacklist"); }
+            if wired.get("s390-options").is_some_and(|v| std::collections::HashMap::<String, String>::try_from(v.clone()).is_ok_and(|v| v.is_empty())) { wired.remove("s390-options"); }
+        }
         let interface = string(&value, "connection", "interface-name").map(str::to_owned);
         for section in ["bridge", "bridge-port"] {
           if let Some(bridge) = value.get_mut(section) {

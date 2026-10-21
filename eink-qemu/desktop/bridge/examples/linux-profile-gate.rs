@@ -5,6 +5,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 4 || !matches!(args[1].as_str(), "--inspect" | "--exercise") { return Err("requires --inspect/--exercise exact-hostname adapter".into()); }
     if std::fs::read_to_string("/etc/hostname")?.trim() != args[2] { return Err("wrong disposable host".into()); }
     let nm = NetworkManager::connect()?;
+    let runtime = nm.runtime(&args[3])?;
+    let restored = serde_json::from_slice(&serde_json::to_vec(&runtime)?)?;
+    runtime.verify_preserved(&restored)?;
+    runtime.verify_preserved(&nm.runtime(&args[3])?)?;
+    println!("nativeHostAddressesRoutesAndDnsSnapshot=passed");
     let active = nm.active_profile(&args[3])?;
     let bytes = serde_json::to_vec(&active.profile)?;
     let decoded: Profile = serde_json::from_slice(&bytes)?;

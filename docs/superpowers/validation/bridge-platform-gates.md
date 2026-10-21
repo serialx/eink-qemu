@@ -225,3 +225,28 @@ The wizard was visually checked at 1000×640 with a fixture backend in light and
 dark themes. Connection selection, review, confirmation, Ready, and management
 controls fit; Keep was disabled when the deadline elapsed. This is UI validation,
 not packaged native acceptance.
+
+### Linux live network preservation
+
+On the same Ubuntu 22.04 ARM64 VM, a native conversion test now checks live
+addresses, routes, ordered DNS settings, MAC address, and MTU, then restores the
+original profile and verifies its live state. The first run detected a changed
+DHCP address and Ethernet route metric 100 becoming bridge metric 425. Pinning the
+uplink MAC preserved its DHCP address; recording the effective route and DNS
+priorities preserved routing. This follows NetworkManager's documented
+[device-dependent route defaults](https://www.networkmanager.dev/docs/api/latest/settings-ipv4.html)
+and [bridge MAC setting](https://www.networkmanager.dev/docs/api/latest/settings-bridge.html).
+
+The cloud image's original IPv6 profile uses `ignore`. Its Ethernet interface
+disables router advertisements, whereas a new bridge inherits a different kernel
+default and acquires additional IPv6 routes. Automatic conversion now rejects
+unmanaged IP configuration before mutation. The successful conversion exercise
+explicitly prepares a managed link-local IPv6 fixture inside the checkpoint; it
+does not claim support for converting `ignore` profiles. The outer checkpoint
+restores the original unmanaged profile and exact live host state afterward.
+
+NetworkManager also emits an equivalent string MAC alias and empty wired defaults.
+Comparison accepts only matching aliases and equivalent empty/false defaults;
+tests retain conflicts for changed MAC, negotiation, blacklist, and s390 options.
+The final native conversion and restoration both passed. All 47 Linux bridge tests
+passed. Production lifecycle integration and packaged acceptance remain unfinished.

@@ -47,6 +47,9 @@ fn conversion_preserves_addressing_routes_dns_mtu_and_autoconnect() {
 }
 #[test]
 fn unsupported_profiles_are_rejected_before_planning_mutations() {
+    let mut unmanaged = profile("auto");
+    unmanaged.get_mut("ipv6").unwrap().insert("method".into(), string("ignore"));
+    assert!(migrate(&unmanaged, "enp0s1", "ebr1234567890", "fd77321a-8520-4d05-8075-420b465d0846", "29457488-31f2-47e2-a46a-871e32b69271").is_err());
     for kind in ["802-11-wireless", "bond", "vlan", "bridge", "vpn"] {
         let mut value = profile("auto"); value.get_mut("connection").unwrap().insert("type".into(), string(kind));
         assert!(migrate(&value, "enp0s1", "ebr1234567890", "fd77321a-8520-4d05-8075-420b465d0846", "29457488-31f2-47e2-a46a-871e32b69271").is_err());
@@ -87,4 +90,23 @@ fn network_manager_bridge_defaults_do_not_hide_user_edits() {
     saved.get_mut("bridge").unwrap().insert("interface-name".into(), string("ebr1234567890"));
     saved.get_mut("bridge").unwrap().insert("vlans".into(), Value::from(vec![std::collections::HashMap::from([("vid-start", OwnedValue::from(10u16)), ("vid-end", OwnedValue::from(20u16))])]).try_into().unwrap());
     assert!(!same_configuration(&migration.bridge, &saved));
+}
+
+#[test]
+fn wired_default_normalization_keeps_mac_and_nondefault_edits_visible() {
+    let mut expected = converted(&profile("auto")).bridge;
+    expected.get_mut("802-3-ethernet").unwrap().insert("cloned-mac-address".into(), Value::from(vec![2u8, 1, 2, 3, 4, 5]).try_into().unwrap());
+    let mut actual = expected.clone();
+    let wired = actual.get_mut("802-3-ethernet").unwrap();
+    wired.insert("assigned-mac-address".into(), string("02:01:02:03:04:05"));
+    wired.insert("auto-negotiate".into(), false.into());
+    wired.insert("mac-address-blacklist".into(), Value::from(Vec::<String>::new()).try_into().unwrap());
+    wired.insert("s390-options".into(), Value::from(std::collections::HashMap::<String, String>::new()).try_into().unwrap());
+    assert!(same_configuration(&expected, &actual));
+    for (key, value) in [("assigned-mac-address", string("02:01:02:03:04:06")), ("auto-negotiate", true.into()),
+        ("mac-address-blacklist", Value::from(vec!["02:01:02:03:04:07"]).try_into().unwrap()),
+        ("s390-options", Value::from(std::collections::HashMap::from([("layer2", "1")])).try_into().unwrap())] {
+        let mut changed = actual.clone(); changed.get_mut("802-3-ethernet").unwrap().insert(key.into(), value);
+        assert!(!same_configuration(&expected, &changed), "{key} edit must remain a conflict");
+    }
 }
