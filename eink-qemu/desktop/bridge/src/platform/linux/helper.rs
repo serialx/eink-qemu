@@ -126,6 +126,63 @@ pub fn verify_grant(grant: &Grant) -> Result<(), BridgeError> {
     Ok(())
 }
 
+/// Open the installed helper as the authenticated ordinary account and confirm
+/// its returned TAP belongs to the selected bridge. Closing the descriptor
+/// removes this temporary TAP; no persistent adapter is created by the probe.
+pub fn probe_as_user(grant: &Grant) -> Result<(), BridgeError> {
+    use std::{os::{fd::AsRawFd, unix::{fs::FileTypeExt, net::UnixStream, process::CommandExt}},
+        process::{Child, Command, Stdio}, time::{Duration, Instant}};
+    if unsafe { libc::geteuid() } != 0 { return Err(invalid()); }
+    verify_grant(grant)?;
+    let denied = || BridgeError::new("EACCESS", "The installed bridge helper cannot open this connection for your user account.");
+    let mut buffer = vec![0u8; 65536];
+    let mut account: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    if unsafe { libc::getpwuid_r(grant.uid, &mut account, buffer.as_mut_ptr().cast(), buffer.len(), &mut result) } != 0
+        || result.is_null() || account.pw_uid != grant.uid { return Err(denied()); }
+    let uid = grant.uid; let gid = account.pw_gid;
+    let (parent, child_socket) = UnixStream::pair().map_err(io)?;
+    parent.set_read_timeout(Some(Duration::from_secs(5))).map_err(io)?;
+    let child_fd = child_socket.as_raw_fd();
+    let mut command = Command::new(HELPER);
+    command.args([format!("--br={}", grant.bridge), format!("--fd={child_fd}")])
+        .env_clear().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    unsafe { command.pre_exec(move || {
+        // Only async-signal-safe calls in the forked child. Drop all inherited
+        // group privileges before executing the fixed setuid packet helper.
+        if libc::setgroups(0, std::ptr::null()) != 0 || libc::setgid(gid) != 0 || libc::setuid(uid) != 0 { return Err(std::io::Error::last_os_error()); }
+        let flags = libc::fcntl(child_fd, libc::F_GETFD);
+        if flags < 0 || libc::fcntl(child_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 { return Err(std::io::Error::last_os_error()); }
+        Ok(())
+    }); }
+    struct Running(Child);
+    impl Drop for Running { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+    let mut child = Running(command.spawn().map_err(io)?);
+    drop(child_socket);
+    let tap = crate::transport::unix::receive_descriptor(&parent, 0).map_err(|_| denied())?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.0.try_wait().map_err(io)? {
+            Some(status) if status.success() => break,
+            Some(_) => return Err(denied()),
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            None => return Err(denied()),
+        }
+    }
+    if !tap.metadata().map_err(io)?.file_type().is_char_device() { return Err(denied()); }
+    let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+    // TUNGETIFF from linux/if_tun.h, identical on supported x64 and ARM64.
+    if unsafe { libc::ioctl(tap.as_raw_fd(), 0x800454d2, &mut request) } != 0
+        || unsafe { request.ifr_ifru.ifru_flags } & (libc::IFF_TAP | libc::IFF_NO_PI) as i16 != (libc::IFF_TAP | libc::IFF_NO_PI) as i16 { return Err(denied()); }
+    let length = request.ifr_name.iter().position(|c| *c == 0).ok_or_else(denied)?;
+    let bytes = request.ifr_name[..length].iter().map(|c| *c as u8).collect::<Vec<_>>();
+    let name = std::str::from_utf8(&bytes).map_err(|_| denied())?;
+    Grant::new(uid, name)?;
+    let master = fs::canonicalize(Path::new("/sys/class/net").join(name).join("master")).map_err(io)?;
+    if master.file_name().and_then(|name| name.to_str()) != Some(grant.bridge.as_str()) { return Err(denied()); }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut name = [0 as libc::c_char; 256];
     if unsafe { libc::geteuid() } != 0 || unsafe { libc::gethostname(name.as_mut_ptr(), name.len()) } != 0
         || unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str()? != "eink-bridge-test" { return Err("requires disposable root test host".into()); }
+    if std::env::args().nth(1).as_deref() == Some("--probe") {
+        access::probe_as_user(&Grant::new(1000, "einkgate0")?)?;
+        println!("nativeOrdinaryUserTransportProbe=passed");
+        return Ok(());
+    }
     if std::path::Path::new(POLICY).symlink_metadata().is_ok() { return Err("preexisting policy must be preserved".into()); }
     let alice = Grant::new(1000, "einkgate0")?;
     let bob = Grant::new(1001, "br-other")?;

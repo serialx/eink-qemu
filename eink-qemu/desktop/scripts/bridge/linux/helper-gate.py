@@ -55,6 +55,8 @@ else:
         helper.chmod(0o4755)
         run('ip','link','add',bridge,'type','bridge')
         run('ip','link','set',bridge,'up')
+        if '--policy-gate' in sys.argv:
+            subprocess.run(['/home/ubuntu/eink-bridge-tests/target/debug/examples/linux-policy-gate', '--probe'], check=True)
         account = pwd.getpwnam('ubuntu')
         def drop():
             os.setgroups([]); os.setgid(account.pw_gid); os.setuid(account.pw_uid)

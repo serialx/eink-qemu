@@ -124,6 +124,16 @@ pub fn send_lease_file(stream: &UnixStream, file: &std::fs::File) -> Result<(), 
 /// Call only after authenticating the root helper and matching its lease reply.
 /// Close every received descriptor on malformed/truncated ancillary messages.
 pub fn receive_lease_file(stream: &UnixStream) -> Result<std::fs::File, BridgeError> {
+    let invalid = || BridgeError::new("EPROTOCOL", "Invalid bridge transport lease.");
+    let file = receive_descriptor(stream, 1)?;
+    let metadata = file.metadata().map_err(|_| invalid())?;
+    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != 0
+        || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) } & libc::O_ACCMODE != libc::O_RDONLY { return Err(invalid()); }
+    Ok(file)
+}
+/// Bounded single-descriptor transport shared with the fixed Linux packet
+/// helper. Callers must validate the descriptor's type before using it.
+pub(crate) fn receive_descriptor(stream: &UnixStream, expected_marker: u8) -> Result<std::fs::File, BridgeError> {
     use std::os::fd::FromRawFd;
     let invalid = || BridgeError::new("EPROTOCOL", "Invalid bridge transport lease.");
     let mut marker = 0u8;
@@ -161,11 +171,8 @@ pub fn receive_lease_file(stream: &UnixStream) -> Result<std::fs::File, BridgeEr
             header = libc::CMSG_NXTHDR(&message, header);
         }
     }
-    if malformed || received != 1 || marker != 1 || message.msg_flags & libc::MSG_CTRUNC != 0 || files.len() != 1 { return Err(invalid()); }
+    if malformed || received != 1 || marker != expected_marker || message.msg_flags & libc::MSG_CTRUNC != 0 || files.len() != 1 { return Err(invalid()); }
     let file = files.pop().unwrap();
-    let metadata = file.metadata().map_err(|_| invalid())?;
-    if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() != 0
-        || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) } & libc::O_ACCMODE != libc::O_RDONLY { return Err(invalid()); }
     Ok(file)
 }
 
