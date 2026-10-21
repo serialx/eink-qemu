@@ -42,6 +42,9 @@ pub mod windows_dispatch;
 #[path = "platform/windows/server.rs"]
 pub mod windows_server;
 #[cfg(windows)]
+#[path = "platform/windows/scm.rs"]
+pub mod windows_scm;
+#[cfg(windows)]
 #[path = "platform/windows/membership.rs"]
 pub mod windows_membership;
 #[cfg(windows)]
