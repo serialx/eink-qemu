@@ -84,17 +84,47 @@ impl Topology {
         }
         Ok(Some(bridges[0].clone()))
     }
+    /// During isolated preparation, both TAP identities are journaled before
+    /// bridge creation. The permanent TAP must establish ownership even when
+    /// native creation attaches only one of the requested adapters.
+    pub fn owned_prepared_bridge(&self, resource: &crate::model::ResourceId, tap: &DeviceIdentity,
+        bootstrap_resource: &crate::model::ResourceId, bootstrap: &DeviceIdentity,
+        physical: &DeviceIdentity) -> Result<Option<DeviceIdentity>, BridgeError> {
+        if resource == bootstrap_resource || tap.guid == bootstrap.guid
+            || !tap.is_tap() || tap.instance_id != crate::windows_driver::instance_id(resource)
+            || !bootstrap.is_tap() || bootstrap.instance_id != crate::windows_driver::instance_id(bootstrap_resource)
+            || physical.is_bridge() || physical.is_tap() || physical.guid == tap.guid || physical.guid == bootstrap.guid
+            || self.device(&tap.guid)? != tap || self.device(&bootstrap.guid)? != bootstrap
+            || self.device(&physical.guid)? != physical { return Err(conflict()); }
+        let bridges = self.bridges();
+        let members = self.members()?;
+        if bridges.is_empty() && members.is_empty() { return Ok(None); }
+        if bridges.len() != 1 || self.bindings(&bridges[0].guid)?.get("ms_bridge") != Some(&true)
+            || !members.contains(&tap.guid)
+            || members.iter().any(|id| id != &tap.guid && id != &bootstrap.guid && id != &physical.guid) {
+            return Err(conflict());
+        }
+        Ok(Some(bridges[0].clone()))
+    }
     /// ms_implat is the member-side binding. ms_bridge belongs to the bridge
     /// virtual adapter itself. Neither display labels nor netsh's exit code
     /// can establish that both requested members were attached.
     pub fn require_members(&self, bridge: &DeviceIdentity, members: &[DeviceIdentity]) -> Result<(), BridgeError> {
+        if members.len() != 2 { return Err(conflict()); }
+        self.require_transition_members(bridge, members)
+    }
+    /// Exact intermediate membership, including a one-TAP bridge while removal
+    /// awaits confirmation or three members while replacing the bootstrap TAP.
+    /// Callers must establish ownership from the protected transaction first.
+    pub fn require_transition_members(&self, bridge: &DeviceIdentity, members: &[DeviceIdentity]) -> Result<(), BridgeError> {
+        if !(1..=3).contains(&members.len()) { return Err(conflict()); }
         if !bridge.is_bridge() || self.bridges() != vec![bridge] || self.device(&bridge.guid)? != bridge
             || self.bindings(&bridge.guid)?.get("ms_bridge") != Some(&true) { return Err(conflict()); }
         let mut expected = BTreeSet::new();
         for member in members {
             if member.is_bridge() || self.device(&member.guid)? != member || !expected.insert(member.guid.clone()) { return Err(conflict()); }
         }
-        if expected.len() != 2 || self.members()? != expected { return Err(conflict()); }
+        if self.members()? != expected { return Err(conflict()); }
         Ok(())
     }
 }
@@ -157,6 +187,34 @@ mod tests {
         assert!(native.owned_bridge(&wrong_resource, &tap, &physical).is_err());
         let replacement = DeviceIdentity { instance_id: "REPLACEMENT".into(), ..physical.clone() };
         assert!(native.owned_bridge(&resource, &tap, &replacement).is_err());
+    }
+    #[test]
+    fn isolated_preparation_requires_both_owned_identities_and_exact_transitions() {
+        let resource = crate::model::ResourceId::new("12".repeat(16)).unwrap();
+        let bootstrap_resource = crate::model::ResourceId::new("34".repeat(16)).unwrap();
+        let physical = device(0, false);
+        let tap = DeviceIdentity { instance_id: crate::windows_driver::instance_id(&resource),
+            hardware_ids: vec!["TAP0901".into()], service: "TAP0901".into(), ..device(1, false) };
+        let bootstrap = DeviceIdentity { instance_id: crate::windows_driver::instance_id(&bootstrap_resource),
+            ..DeviceIdentity { guid: device(3, false).guid, ..tap.clone() } };
+        let bridge = device(2, true);
+        let devices = [physical.clone(), tap.clone(), bridge.clone(), bootstrap.clone(), device(4, false)];
+        for indices in [&[1][..], &[1,3][..], &[0,1,3][..], &[0,1][..]] {
+            let native = topology(&devices, indices);
+            assert_eq!(native.owned_prepared_bridge(&resource, &tap, &bootstrap_resource, &bootstrap, &physical).unwrap(), Some(bridge.clone()));
+            let expected = indices.iter().map(|index| devices[*index as usize].clone()).collect::<Vec<_>>();
+            native.require_transition_members(&bridge, &expected).unwrap();
+            if indices.len() != 2 { assert!(native.require_members(&bridge, &expected).is_err()); }
+        }
+        for indices in [&[0][..], &[3][..], &[1,4][..], &[0,1,3,4][..]] {
+            assert!(topology(&devices, indices).owned_prepared_bridge(&resource, &tap, &bootstrap_resource, &bootstrap, &physical).is_err());
+        }
+        let native = topology(&devices, &[1,3]);
+        assert!(native.owned_prepared_bridge(&resource, &tap, &resource, &bootstrap, &physical).is_err());
+        let replacement = DeviceIdentity { instance_id: "REPLACEMENT".into(), ..bootstrap.clone() };
+        assert!(native.owned_prepared_bridge(&resource, &tap, &bootstrap_resource, &replacement, &physical).is_err());
+        assert!(native.require_transition_members(&bridge, &[tap.clone(), tap]).is_err());
+        assert!(native.require_transition_members(&bridge, &[]).is_err());
     }
     #[test]
     fn native_read_only_topology_uses_machine_identities() {

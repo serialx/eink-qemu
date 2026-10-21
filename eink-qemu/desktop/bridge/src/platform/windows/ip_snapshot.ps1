@@ -18,7 +18,7 @@ function Read-EinkNetwork($guid) {
   interfaces=@(Get-NetIPInterface -InterfaceIndex $index | Select-Object AddressFamily,Dhcp,RouterDiscovery,AutomaticMetric,InterfaceMetric,NlMtu,Forwarding,WeakHostSend,WeakHostReceive,Advertising,AdvertiseDefaultRoute)
   addresses=@($persistentAddresses | Select-Object IPAddress,PrefixLength,AddressFamily,PrefixOrigin,SuffixOrigin,SkipAsSource)
   routes=@($persistentRoutes | Select-Object DestinationPrefix,NextHop,RouteMetric,Protocol,Publish)
-  activeAddresses=@(Get-NetIPAddress -InterfaceIndex $index | Select-Object IPAddress,PrefixLength,AddressFamily,PrefixOrigin,SuffixOrigin,SkipAsSource)
+  activeAddresses=@(Get-NetIPAddress -InterfaceIndex $index | Select-Object IPAddress,PrefixLength,AddressFamily,PrefixOrigin,SuffixOrigin,SkipAsSource,AddressState)
   activeRoutes=@(Get-NetRoute -InterfaceIndex $index | Select-Object DestinationPrefix,NextHop,RouteMetric,Protocol,Publish)
   dns=@(Get-DnsClientServerAddress -InterfaceIndex $index | Select-Object AddressFamily,ServerAddresses)
   dnsClient=@(Get-DnsClient -InterfaceIndex $index | Select-Object ConnectionSpecificSuffix,RegisterThisConnectionsAddress,UseSuffixWhenRegistering)

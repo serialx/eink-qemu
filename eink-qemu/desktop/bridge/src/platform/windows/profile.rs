@@ -20,6 +20,10 @@ pub struct Address {
     #[serde(rename="IPAddress")] pub ip_address: String,
     pub prefix_length: u8, pub address_family: u32, pub prefix_origin: u32,
     pub suffix_origin: u32, pub skip_as_source: bool,
+    // Persistent entries do not establish runtime usability. Older recorded
+    // probes can still deserialize, but cannot pass the new readiness check.
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub address_state: Option<u32>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all="PascalCase", deny_unknown_fields)]
@@ -66,6 +70,7 @@ impl Snapshot {
         let output=windows_command::run(Tool::PowerShell,&arguments,Duration::from_secs(120))?.checked()?;
         let mut snapshot: Self=serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
         snapshot.normalize()?;
+        if snapshot.active_addresses.iter().any(|address| address.address_state.is_none()) { return Err(invalid()); }
         if snapshot.guid != id || !snapshot.instance_id.eq_ignore_ascii_case(&expected.instance_id)
             || windows_device::enumerate()?.get(&id) != Some(expected) { return Err(invalid()); }
         Ok(snapshot)
@@ -83,7 +88,7 @@ impl Snapshot {
         for addresses in [&mut self.addresses,&mut self.active_addresses] {
             for address in addresses.iter_mut() {
                 let value=ip(&address.ip_address)?;
-                if family(&value)!=address.address_family || address.prefix_length>if value.is_ipv4(){32}else{128} {return Err(invalid());}
+                if address.address_state.is_some_and(|state| state>4) || family(&value)!=address.address_family || address.prefix_length>if value.is_ipv4(){32}else{128} {return Err(invalid());}
                 address.ip_address=value.to_string();
             }
             addresses.sort();
@@ -129,7 +134,11 @@ impl Snapshot {
     pub fn runtime_changes(&self, current: &Self) -> Result<Vec<&'static str>,BridgeError> {
         let mut changes=Vec::new();
         let addresses=|snapshot:&Self| -> Result<BTreeSet<String>,BridgeError> {
-            snapshot.active_addresses.iter().map(|address| {
+            if snapshot.active_addresses.iter().any(|address| address.address_state.is_none()) { return Err(invalid()); }
+            // Tentative, duplicate, invalid, or deprecated addresses must not
+            // make a connection look ready. Privacy-address rotation may leave
+            // deprecated entries alongside a usable preferred replacement.
+            snapshot.active_addresses.iter().filter(|address| address.address_state==Some(4)).map(|address| {
                 let value=ip(&address.ip_address)?;
                 if let IpAddr::V6(value)=value {
                     if value.is_unicast_link_local() {return Ok("ipv6-link-local".into());}
@@ -188,6 +197,22 @@ mod tests {
         assert!(edited.normalize().is_err());
         edited=original.clone(); edited.active_addresses[0].address_family=99;
         assert!(edited.normalize().is_err());
+    }
+    #[test]
+    fn duplicate_or_tentative_addresses_do_not_satisfy_runtime_verification() {
+        let original=fixture();
+        for state in [0,1,2,3] {
+            let mut unavailable=original.clone();
+            unavailable.active_addresses.iter_mut().find(|address|address.address_family==2).unwrap().address_state=Some(state);
+            assert!(original.runtime_changes(&unavailable).unwrap().contains(&"active addresses"));
+        }
+        let mut missing=original.clone();missing.active_addresses[0].address_state=None;
+        assert!(original.runtime_changes(&missing).is_err());
+        let mut rotating=original.clone();
+        let mut old=rotating.active_addresses.iter().find(|address|address.prefix_origin==4).unwrap().clone();
+        old.address_state=Some(3);old.ip_address="2001:db8:abcd:1234::1111".into();
+        rotating.active_addresses.push(old);
+        assert!(original.runtime_changes(&rotating).unwrap().is_empty());
     }
     #[test]
     fn native_read_only_profile_contains_both_address_families() {

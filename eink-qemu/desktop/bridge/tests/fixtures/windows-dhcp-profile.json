@@ -39,7 +39,8 @@
       "AddressFamily": 23,
       "PrefixOrigin": 2,
       "SuffixOrigin": 4,
-      "SkipAsSource": false
+      "SkipAsSource": false,
+      "AddressState": 4
     },
     {
       "IPAddress": "2001:db8:abcd:1234:f5f4:6ea:a8f0:bddb",
@@ -47,7 +48,8 @@
       "AddressFamily": 23,
       "PrefixOrigin": 4,
       "SuffixOrigin": 5,
-      "SkipAsSource": false
+      "SkipAsSource": false,
+      "AddressState": 4
     },
     {
       "IPAddress": "2001:db8:abcd:1234:2fba:a310:2ae6:50be",
@@ -55,7 +57,8 @@
       "AddressFamily": 23,
       "PrefixOrigin": 4,
       "SuffixOrigin": 4,
-      "SkipAsSource": false
+      "SkipAsSource": false,
+      "AddressState": 4
     },
     {
       "IPAddress": "192.0.2.7",
@@ -63,7 +66,8 @@
       "AddressFamily": 2,
       "PrefixOrigin": 3,
       "SuffixOrigin": 3,
-      "SkipAsSource": false
+      "SkipAsSource": false,
+      "AddressState": 4
     }
   ],
   "activeRoutes": [
