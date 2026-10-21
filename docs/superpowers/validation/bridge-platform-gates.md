@@ -59,6 +59,33 @@ These are successful Linux and x64 Windows mechanism gates, not complete
 platform acceptance. Packaged service authorization, reboot recovery, end-to-end
 emulator networking and the full UI remain to be validated.
 
+## macOS probe preparation, 2026-10-21
+
+A copy of the existing VirtualBuddy macOS VM has booted to its login screen.
+The original VM is preserved. Guest inspection and privileged lifecycle tests
+are pending login; no guest lifecycle result is claimed yet.
+
+`probe-macos.c` provides read-only vmnet discovery and an ordinary-user socket
+test. The socket test exchanges a complete QEMU-framed Ethernet packet between
+two clients and fails on missing sockets, malformed frames, or a timeout. Its
+three local tests pass, including fragmented stream reads. These tests use a
+temporary local socket and do not establish native vmnet packet transport.
+
+`probe-macos.sh` defaults to inspection. Its exercise requires root, an exact
+disposable hostname, a VirtualMac hardware model, an eligible interface, and a
+named ordinary user. It verifies the pinned archive before installing a
+temporary app-specific launchd service. The exercise checks packet access,
+denial for another user in the same socket group, restart, removal, network
+restoration, and preservation of a separate test service. This exercise has not
+run yet. It does not replace packaged-service or reboot acceptance.
+
+The candidate payload is the official [socket_vmnet 1.2.2 release](https://github.com/lima-vm/socket_vmnet/releases/tag/v1.2.2).
+The downloaded ARM64 archive matches the release asset SHA-256:
+`c7bf62308fbcfdc29bdfb8373c9b1951f7ac2396446e4390919796a94972e6dc`.
+The published x86_64 archive SHA-256 is
+`2968a82c97e692c2d36f87230152e8018e00589c1b598e8257775adfe83800a1`;
+that payload has not been downloaded or exercised in this run.
+
 Native commands are checked against the guest's own help and resulting adapter
 state. Microsoft's [netsh bridge reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/netsh-bridge)
 describes creation and destruction, but a zero command exit status alone does
