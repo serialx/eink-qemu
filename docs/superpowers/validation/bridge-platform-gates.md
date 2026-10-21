@@ -543,6 +543,15 @@ A native PowerShell parser test also passed with configuration strings containin
 quotes and command syntax treated as data. Static configuration setters and
 complete migration remain unfinished.
 
+The native options setter passed stale-state rejection without mutation, changing
+and replaying active MTU/manual metrics and IPv4/IPv6 DNS settings, restoring the
+original settings, and repeated restoration on a dedicated TAP. Cleanup removed
+that adapter. Three additional native regressions passed planning compatibility,
+PowerShell parsing/data literals, and rejecting persistent-option conflicts both
+at preflight and immediately before a setter. NetBIOS/WINS changes were skipped
+because the disconnected fixture did not expose those properties; DHCP changes
+and persistent interface setters still need native validation.
+
 A protected volatile registry key provides the Windows boot identity without
 depending on the wall clock. Native tests passed stable reopening and rejection
 of an untrusted write grant; their temporary registry keys were removed. A full
