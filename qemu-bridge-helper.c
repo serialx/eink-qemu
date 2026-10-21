@@ -50,6 +50,9 @@
 
 #define DEFAULT_ACL_FILE CONFIG_QEMU_CONFDIR "/bridge.conf"
 #include "qemu-bridge-helper-path.h"
+#ifdef EINK_BRIDGE_ACL_FILE
+#include "qemu-bridge-helper-acl.h"
+#endif
 
 enum {
     ACL_ALLOW = 0,
@@ -72,6 +75,7 @@ static void usage(void)
             "Usage: qemu-bridge-helper [--use-vnet] --br=bridge --fd=unixfd\n");
 }
 
+#ifndef EINK_BRIDGE_ACL_FILE
 static int parse_acl_file(const char *filename, ACLList *acl_list)
 {
     FILE *f;
@@ -160,6 +164,7 @@ err:
     return -1;
 
 }
+#endif
 
 static bool has_vnet_hdr(int fd)
 {
@@ -247,7 +252,9 @@ int main(int argc, char **argv)
     ACLList acl_list;
     int access_allowed, access_denied;
     int ret = EXIT_SUCCESS;
+#ifndef EINK_BRIDGE_ACL_FILE
     g_autofree char *acl_file = NULL;
+#endif
 
 #ifdef CONFIG_LIBCAP_NG
     /* if we're run from an suid binary, immediately drop privileges preserving
@@ -287,6 +294,15 @@ int main(int argc, char **argv)
 
     /* parse default acl file */
     QSIMPLEQ_INIT(&acl_list);
+#ifdef EINK_BRIDGE_ACL_FILE
+    FILE *managed_acl = eink_bridge_acl_open();
+    access_allowed = managed_acl && eink_bridge_acl_allowed(managed_acl,
+                                                           getuid(), bridge);
+    access_denied = 0;
+    if (managed_acl) {
+        fclose(managed_acl);
+    }
+#else
     acl_file = bridge_acl_path();
     if (parse_acl_file(acl_file, &acl_list) == -1) {
         fprintf(stderr, "failed to parse default acl file `%s'\n",
@@ -321,6 +337,7 @@ int main(int argc, char **argv)
             break;
         }
     }
+#endif
 
     if ((access_allowed == 0) || (access_denied == 1)) {
         fprintf(stderr, "access denied by acl file\n");
