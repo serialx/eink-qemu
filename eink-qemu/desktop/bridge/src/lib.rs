@@ -15,6 +15,9 @@ pub mod windows_security;
 #[path = "platform/windows/device.rs"]
 pub mod windows_device;
 #[cfg(windows)]
+#[path = "platform/windows/driver.rs"]
+pub mod windows_driver;
+#[cfg(windows)]
 #[path = "platform/windows/verify.rs"]
 pub mod windows_verify;
 #[cfg(target_os = "macos")]

@@ -395,6 +395,33 @@ bounded syntax. This avoids resolving a changed display name to a different
 adapter after setup verification. The actual rebuilt Windows QEMU run remains
 pending while the disposable VM's build toolchain is prepared.
 
+### Dedicated Windows TAP installation
+
+The native x64 test now creates a dedicated TAP device using a recorded resource
+ID in its device instance path. The helper verifies pinned 9.27 INF, catalog,
+and driver hashes, checks the catalog with Windows trust verification, and holds
+the protected package open against replacement during installation. Corrupted
+payloads and an unsigned catalog were rejected in native tests.
+
+Installation stages the package and calls `DiInstallDevice` for the exact new
+device and selected driver. Calling only `DIF_INSTALLDEVICE` initially left the
+adapter inaccessible to a standard user; the complete installation sequence
+fixed that without custom ACL or registry permission changes. A real temporary
+standard user then opened the new device and queried its version. The account
+was removed, and its absence was verified.
+
+The lifecycle test also passed rejection of a mismatched recorded GUID, removal,
+repeated removal, and preservation of every original device, including an
+existing TAP adapter that remained usable. A separate test terminated the
+installer process immediately after device registration, before driver
+installation or a returned network GUID. Recovery used the persisted resource
+ID to remove that incomplete device and restored the original device list.
+
+These tests cover dedicated-device provisioning, not Windows bridge membership,
+UAC, the production service, or packaged UI acceptance. A device deletion must
+run only with a durable cleanup record: recreating it does not preserve its
+old network GUID. The shared driver package is deliberately retained.
+
 ### Native Linux desktop flow
 
 The current Tauri app built and ran under Xfce in the disposable Ubuntu VM.
