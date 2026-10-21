@@ -535,13 +535,19 @@ networking. It does not test SCM installation or the complete native backend.
 
 The restoration snapshot now captures persistent address/route lifetimes and
 NetBIOS/WINS settings. Old snapshots cannot authorize migration without this
-metadata. Six native profile tests passed, including reading both address
-families from the VM. Static configuration setters remain unfinished.
+metadata. The snapshot now also distinguishes unset persistent interface options
+from active defaults and separates manually configured WINS servers from
+runtime values. An initial native test exposed null persistent properties; the
+corrected schema passed eight profile tests, including a live dual-stack read.
+A native PowerShell parser test also passed with configuration strings containing
+quotes and command syntax treated as data. Static configuration setters and
+complete migration remain unfinished.
 
 A protected volatile registry key provides the Windows boot identity without
 depending on the wall clock. Native tests passed stable reopening and rejection
-of an untrusted write grant; their temporary registry keys were removed. Its
-full-restart boundary still needs validation.
+of an untrusted write grant; their temporary registry keys were removed. A full
+Windows restart changed both the OS boot time and this identity. The test also
+confirmed that Ethernet returned and no temporary TAP devices remained.
 
 The installed Windows service, complete network lifecycle, and packaged desktop
 acceptance are still pending. These component tests do not establish a working

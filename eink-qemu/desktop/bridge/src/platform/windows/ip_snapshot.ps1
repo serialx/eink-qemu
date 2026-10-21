@@ -9,6 +9,9 @@ function Read-EinkNetwork($guid) {
  $persistentRoutes=@(Get-NetRoute -PolicyStore PersistentStore | Where-Object InterfaceIndex -eq $index)
  $legacy=@(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.SettingID -eq $guid })
  if ($legacy.Count -ne 1) { throw 'Missing legacy network configuration.' }
+ $wins=Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_'+$guid)
+ $legacyConfiguration=$legacy[0] | Select-Object TcpipNetbiosOptions,WINSEnableLMHostsLookup,WINSPrimaryServer,WINSSecondaryServer,WINSScopeID
+ $legacyConfiguration | Add-Member -NotePropertyName ManualServers -NotePropertyValue @($wins.NameServerList | Where-Object { $null -ne $_ -and $_ -ne '' })
  $manualDns=@('Tcpip','Tcpip6' | ForEach-Object {
   $key=Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Services\'+$_+'\Parameters\Interfaces\'+$guid)
   [ordered]@{protocol=$_; nameServer=[string]$key.NameServer; domain=[string]$key.Domain}
@@ -18,6 +21,7 @@ function Read-EinkNetwork($guid) {
   instanceId=$adapter.PnPDeviceID
   mac=$adapter.MacAddress
   interfaces=@(Get-NetIPInterface -InterfaceIndex $index | Select-Object AddressFamily,Dhcp,RouterDiscovery,AutomaticMetric,InterfaceMetric,NlMtu,Forwarding,WeakHostSend,WeakHostReceive,Advertising,AdvertiseDefaultRoute)
+  persistentInterfaces=@(Get-NetIPInterface -PolicyStore PersistentStore -InterfaceIndex $index | Select-Object AddressFamily,Dhcp,RouterDiscovery,AutomaticMetric,InterfaceMetric,NlMtu,Forwarding,WeakHostSend,WeakHostReceive,Advertising,AdvertiseDefaultRoute)
   addresses=@($persistentAddresses | Select-Object IPAddress,PrefixLength,AddressFamily,PrefixOrigin,SuffixOrigin,SkipAsSource,@{Name='ValidLifetimeTicks';Expression={$_.ValidLifetime.Ticks}},@{Name='PreferredLifetimeTicks';Expression={$_.PreferredLifetime.Ticks}})
   routes=@($persistentRoutes | Select-Object DestinationPrefix,NextHop,RouteMetric,Protocol,Publish,@{Name='ValidLifetimeTicks';Expression={$_.ValidLifetime.Ticks}},@{Name='PreferredLifetimeTicks';Expression={$_.PreferredLifetime.Ticks}})
   activeAddresses=@(Get-NetIPAddress -InterfaceIndex $index | Select-Object IPAddress,PrefixLength,AddressFamily,PrefixOrigin,SuffixOrigin,SkipAsSource,AddressState)
@@ -25,6 +29,6 @@ function Read-EinkNetwork($guid) {
   dns=@(Get-DnsClientServerAddress -InterfaceIndex $index | Select-Object AddressFamily,ServerAddresses)
   dnsClient=@(Get-DnsClient -InterfaceIndex $index | Select-Object ConnectionSpecificSuffix,RegisterThisConnectionsAddress,UseSuffixWhenRegistering)
   manualDns=$manualDns
-  legacy=($legacy[0] | Select-Object TcpipNetbiosOptions,WINSEnableLMHostsLookup,WINSPrimaryServer,WINSSecondaryServer,WINSScopeID)
+  legacy=$legacyConfiguration
  }
 }

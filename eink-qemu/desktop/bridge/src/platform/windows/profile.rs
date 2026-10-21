@@ -8,11 +8,31 @@ use std::{collections::BTreeSet, ffi::OsStr, net::IpAddr, time::Duration};
 fn invalid() -> BridgeError { BridgeError::new("EHOSTNETWORK", "Windows returned incomplete host network settings.") }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="PascalCase", deny_unknown_fields)]
-pub struct Interface {
-    pub address_family: u32, pub dhcp: u32, pub router_discovery: u32,
-    pub automatic_metric: u32, pub interface_metric: u32, pub nl_mtu: u32,
-    pub forwarding: u32, pub weak_host_send: u32, pub weak_host_receive: u32,
-    pub advertising: u32, pub advertise_default_route: u32,
+pub struct Interface<T = u32> {
+    pub address_family: u32, pub dhcp: T, pub router_discovery: T,
+    pub automatic_metric: T, pub interface_metric: T, pub nl_mtu: T,
+    pub forwarding: T, pub weak_host_send: T, pub weak_host_receive: T,
+    pub advertising: T, pub advertise_default_route: T,
+}
+impl Interface {
+    pub fn sparse(&self) -> Interface<Option<u32>> {
+        Interface { address_family:self.address_family, dhcp:Some(self.dhcp),router_discovery:Some(self.router_discovery),
+            automatic_metric:Some(self.automatic_metric),interface_metric:Some(self.interface_metric),nl_mtu:Some(self.nl_mtu),
+            forwarding:Some(self.forwarding),weak_host_send:Some(self.weak_host_send),weak_host_receive:Some(self.weak_host_receive),
+            advertising:Some(self.advertising),advertise_default_route:Some(self.advertise_default_route) }
+    }
+}
+impl Interface<Option<u32>> {
+    fn validate(&self)->Result<(),BridgeError>{
+        // PersistentStore omits options that Windows has not explicitly saved.
+        // Keep those nulls: active values include defaults and RA-derived MTU.
+        if self.nl_mtu.is_some_and(|v|v < if self.address_family==2 {68}else{1280} || v>65535)
+            || self.dhcp.is_some_and(|v|v>1) || self.automatic_metric.is_some_and(|v|v>1)
+            || self.router_discovery.is_some_and(|v|v>2)
+            || [self.forwarding,self.weak_host_send,self.weak_host_receive,self.advertising,self.advertise_default_route]
+                .into_iter().flatten().any(|v|v>1) {return Err(invalid());}
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all="PascalCase", deny_unknown_fields)]
@@ -55,12 +75,16 @@ pub struct Legacy {
     #[serde(rename="WINSPrimaryServer")] pub wins_primary_server: Option<String>,
     #[serde(rename="WINSSecondaryServer")] pub wins_secondary_server: Option<String>,
     #[serde(rename="WINSScopeID")] pub wins_scope_id: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub manual_servers: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 pub struct Snapshot {
     pub guid: String, pub instance_id: String, pub mac: String,
     pub interfaces: Vec<Interface>, pub addresses: Vec<Address>, pub routes: Vec<Route>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub persistent_interfaces: Option<Vec<Interface<Option<u32>>>>,
     pub active_addresses: Vec<Address>, pub active_routes: Vec<Route>,
     pub dns: Vec<Dns>, pub dns_client: Vec<DnsClient>, pub manual_dns: Vec<ManualDns>,
     #[serde(default, skip_serializing_if="Option::is_none")]
@@ -107,12 +131,15 @@ impl Snapshot {
     pub fn normalize(&mut self) -> Result<(), BridgeError> {
         self.guid=windows_device::guid(&self.guid)?;
         if self.interfaces.len()!=2 || self.dns.len()!=2 || self.dns_client.len()!=1 || self.manual_dns.len()!=2 { return Err(invalid()); }
-        self.interfaces.sort_by_key(|i|i.address_family); self.dns.sort_by_key(|i|i.address_family);
-        if self.interfaces.iter().map(|i|i.address_family).collect::<Vec<_>>()!=[2,23]
-            || self.dns.iter().map(|i|i.address_family).collect::<Vec<_>>()!=[2,23] {return Err(invalid());}
-        for interface in &self.interfaces {
-            if interface.nl_mtu < if interface.address_family==2 {68} else {1280} || interface.nl_mtu>65535
-                || interface.dhcp>1 || interface.automatic_metric>1 || interface.router_discovery>2 {return Err(invalid());}
+        self.dns.sort_by_key(|i|i.address_family);
+        if self.dns.iter().map(|i|i.address_family).collect::<Vec<_>>()!=[2,23] {return Err(invalid());}
+        self.interfaces.sort_by_key(|i|i.address_family);
+        if self.interfaces.iter().map(|i|i.address_family).collect::<Vec<_>>()!=[2,23] {return Err(invalid());}
+        for row in &self.interfaces { row.sparse().validate()?; }
+        if let Some(rows)=&mut self.persistent_interfaces {
+            rows.sort_by_key(|i|i.address_family);
+            if rows.iter().map(|i|i.address_family).collect::<Vec<_>>()!=[2,23] {return Err(invalid());}
+            for row in rows { row.validate()?; }
         }
         for addresses in [&mut self.addresses,&mut self.active_addresses] {
             for address in addresses.iter_mut() {
@@ -155,13 +182,18 @@ impl Snapshot {
                     }
                 }
             }
+            if let Some(servers)=&mut legacy.manual_servers {
+                for value in servers {
+                    let address=ip(value)?;if !address.is_ipv4(){return Err(invalid());}*value=address.to_string();
+                }
+            }
         }
         Ok(())
     }
     /// Older QA snapshots remain readable for historical comparisons, but
     /// must never authorize migration without restoration metadata.
     pub fn require_restorable(&self) -> Result<(), BridgeError> {
-        if self.legacy.is_none()
+        if self.legacy.as_ref().is_none_or(|legacy|legacy.manual_servers.is_none()) || self.persistent_interfaces.is_none()
             || self.addresses.iter().any(|value|value.valid_lifetime_ticks.is_none() || value.preferred_lifetime_ticks.is_none())
             || self.routes.iter().any(|value|value.valid_lifetime_ticks.is_none() || value.preferred_lifetime_ticks.is_none()) {
             return Err(invalid());
@@ -172,11 +204,21 @@ impl Snapshot {
     /// suffix. These comparisons remain meaningful after DHCP/SLAAC renewal.
     pub fn configuration_changes(&self, current: &Self) -> Vec<&'static str> {
         let mut changes=Vec::new();
-        if self.interfaces!=current.interfaces {changes.push("IP interface settings");}
+        // Windows calculates this metric from link speed when automatic mode
+        // is enabled. Preserve the mode; do not turn its runtime value into a
+        // manual metric when moving settings to a different interface.
+        let interfaces=|rows:&[Interface]|rows.iter().map(|row|{
+            let mut row=row.clone();if row.automatic_metric==1{row.interface_metric=0;}row
+        }).collect::<Vec<_>>();
+        if interfaces(&self.interfaces)!=interfaces(&current.interfaces) {changes.push("IP interface settings");}
+        if self.persistent_interfaces!=current.persistent_interfaces {changes.push("persistent IP interface settings");}
         if self.addresses!=current.addresses {changes.push("static addresses");}
         if self.routes!=current.routes {changes.push("persistent routes");}
         if self.manual_dns!=current.manual_dns {changes.push("configured DNS servers or domain");}
-        if self.legacy!=current.legacy {changes.push("NetBIOS or WINS settings");}
+        let legacy=|value:&Option<Legacy>|value.as_ref().map(|value|{
+            let mut value=value.clone();value.wins_primary_server=None;value.wins_secondary_server=None;value
+        });
+        if legacy(&self.legacy)!=legacy(&current.legacy) {changes.push("NetBIOS or WINS settings");}
         if self.dns_client.len()!=1 || current.dns_client.len()!=1
             || self.dns_client[0].register_this_connections_address!=current.dns_client[0].register_this_connections_address
             || self.dns_client[0].use_suffix_when_registering!=current.dns_client[0].use_suffix_when_registering {changes.push("DNS registration");}
@@ -211,6 +253,8 @@ impl Snapshot {
         let dns=|snapshot:&Self| snapshot.dns.iter().flat_map(|dns|dns.server_addresses.iter().cloned()).collect::<BTreeSet<_>>();
         if dns(self)!=dns(current) {changes.push("active DNS servers");}
         if self.dns_client!=current.dns_client {changes.push("active DNS suffix or registration");}
+        let wins=|value:&Option<Legacy>|value.as_ref().map(|value|(value.wins_primary_server.clone(),value.wins_secondary_server.clone()));
+        if wins(&self.legacy)!=wins(&current.legacy) {changes.push("active WINS servers");}
         if self.mac!=current.mac {changes.push("link hardware address");}
         Ok(changes)
     }
@@ -257,7 +301,8 @@ mod tests {
         let mut original=fixture();
         assert!(original.require_restorable().is_err());
         original.legacy=Some(Legacy {tcpip_netbios_options:Some(0),wins_enable_lm_hosts_lookup:Some(true),
-            wins_primary_server:None,wins_secondary_server:None,wins_scope_id:Some(String::new())});
+            wins_primary_server:None,wins_secondary_server:None,wins_scope_id:Some(String::new()),manual_servers:Some(Vec::new())});
+        original.persistent_interfaces=Some(original.interfaces.iter().map(Interface::sparse).collect());
         for address in &mut original.addresses {
             address.valid_lifetime_ticks=Some(i64::MAX as u64);address.preferred_lifetime_ticks=Some(i64::MAX as u64);
         }
@@ -266,13 +311,40 @@ mod tests {
         }
         original.require_restorable().unwrap();original.normalize().unwrap();
         let mut changed=original.clone();
-        changed.legacy.as_mut().unwrap().wins_primary_server=Some("192.0.2.53".into());
+        changed.legacy.as_mut().unwrap().manual_servers=Some(vec!["192.0.2.53".into()]);
         assert_eq!(original.configuration_changes(&changed),vec!["NetBIOS or WINS settings"]);
+        changed=original.clone();changed.legacy.as_mut().unwrap().wins_primary_server=Some("192.0.2.53".into());
+        assert!(original.configuration_changes(&changed).is_empty());
+        assert_eq!(original.runtime_changes(&changed).unwrap(),vec!["active WINS servers"]);
         changed.legacy.as_mut().unwrap().tcpip_netbios_options=Some(3);
         assert!(changed.normalize().is_err());
         for pair in [(Some(1),Some(2)),(Some(u64::MAX),Some(0)),(None,Some(0)),(Some(0),None)] {
             assert!(lifetimes(pair.0,pair.1).is_err());
         }
+    }
+    #[test]
+    fn automatic_metrics_are_not_frozen_and_persistent_interfaces_remain_distinct(){
+        let original=fixture();let mut current=original.clone();
+        current.interfaces[0].interface_metric+=10;
+        assert!(original.configuration_changes(&current).is_empty());
+        current.interfaces[0].automatic_metric=0;
+        assert_eq!(original.configuration_changes(&current),vec!["IP interface settings"]);
+        let mut original=original;original.persistent_interfaces=Some(original.interfaces.iter().map(Interface::sparse).collect());
+        let mut current=original.clone();current.persistent_interfaces.as_mut().unwrap()[0].dhcp=Some(0);
+        assert_eq!(original.configuration_changes(&current),vec!["persistent IP interface settings"]);
+    }
+    #[test]
+    fn persistent_defaults_are_distinct_from_explicit_active_values() {
+        let mut snapshot=fixture();
+        let rows:Vec<Interface<Option<u32>>>=serde_json::from_value(serde_json::json!([
+            {"AddressFamily":2,"Dhcp":null,"RouterDiscovery":null,"AutomaticMetric":null,"InterfaceMetric":null,"NlMtu":null,"Forwarding":null,"WeakHostSend":null,"WeakHostReceive":null,"Advertising":null,"AdvertiseDefaultRoute":null},
+            {"AddressFamily":23,"Dhcp":null,"RouterDiscovery":null,"AutomaticMetric":null,"InterfaceMetric":null,"NlMtu":null,"Forwarding":null,"WeakHostSend":null,"WeakHostReceive":null,"Advertising":null,"AdvertiseDefaultRoute":null}
+        ])).unwrap();
+        snapshot.persistent_interfaces=Some(rows);snapshot.normalize().unwrap();
+        let mut explicit=snapshot.clone();explicit.persistent_interfaces.as_mut().unwrap()[0].dhcp=Some(1);
+        assert_eq!(snapshot.configuration_changes(&explicit),vec!["persistent IP interface settings"]);
+        explicit.persistent_interfaces.as_mut().unwrap()[1].nl_mtu=Some(1000);
+        assert!(explicit.normalize().is_err());
     }
     #[test]
     fn duplicate_or_tentative_addresses_do_not_satisfy_runtime_verification() {
