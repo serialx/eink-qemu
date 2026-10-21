@@ -29,3 +29,6 @@ pub mod linux_network_manager;
 #[cfg(target_os = "linux")]
 #[path = "platform/linux/authorization.rs"]
 pub mod linux_authorization;
+#[cfg(target_os = "linux")]
+#[path = "platform/linux/helper.rs"]
+pub mod linux_helper;

@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
                 ('# Generated grants\nallow 1001 other\nallow 1000 br-test\n', '1000', 'br-test', True),
                 ('allow br-test\n', '1000', 'br-test', False),
                 ('allow 1000 all\n', '1000', 'br-test', False),
+                ('allow 1000 all\nallow 1000 br-test\n', '1000', 'br-test', False),
                 ('include /tmp/allow-all\n', '1000', 'br-test', False),
                 ('allow 1000 br-test\ninvalid\n', '1000', 'br-test', False),
                 ('allow 1000 br-test extra\n', '1000', 'br-test', False),

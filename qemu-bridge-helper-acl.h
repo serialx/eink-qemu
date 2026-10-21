@@ -44,7 +44,8 @@ static inline bool eink_bridge_acl_allowed(FILE *file, uid_t uid,
             continue;
         }
         if (sscanf(line, "%15s %31s %15s %c", command, user, name, &extra) != 3 ||
-            strcmp(command, "allow") != 0 || !isdigit((unsigned char)user[0])) {
+            strcmp(command, "allow") != 0 || strcmp(name, "all") == 0 ||
+            !isdigit((unsigned char)user[0])) {
             return false;
         }
         errno = 0;

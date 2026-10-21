@@ -47,6 +47,9 @@ else:
     before = json.loads(run('ip','-j','address','show','dev','enp0s1'))
     try:
         acl.parent.mkdir(parents=True, exist_ok=True)
+        helper.chmod(0o4755)
+        if '--policy-gate' in sys.argv:
+            subprocess.run(['/home/ubuntu/eink-bridge-tests/target/debug/examples/linux-policy-gate'], check=True)
         acl.write_text('allow 1000 '+bridge+'\n')
         acl.chmod(0o644)
         helper.chmod(0o4755)
