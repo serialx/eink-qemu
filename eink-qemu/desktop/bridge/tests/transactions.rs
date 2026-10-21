@@ -7,8 +7,8 @@ struct Snapshot { value: i32 }
 #[derive(Clone, Serialize, Deserialize)]
 enum Mutation { Change(i32), Fail }
 #[derive(Clone)]
-struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool, resumes: Arc<Mutex<usize>>, apply_delay: u64 }
-impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false, resumes: Arc::new(Mutex::new(0)), apply_delay: 0 } } }
+struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool, resumes: Arc<Mutex<usize>>, apply_delay: u64, apply_started: Option<std::sync::mpsc::Sender<()>>, apply_resume: Option<Arc<Mutex<std::sync::mpsc::Receiver<()>>>> }
+impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false, resumes: Arc::new(Mutex::new(0)), apply_delay: 0, apply_started: None, apply_resume: None } } }
 impl PlatformOps for Host {
     type Snapshot = Snapshot;
     type Mutation = Mutation;
@@ -23,6 +23,8 @@ impl PlatformOps for Host {
     }
     fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok(self.fingerprint.lock().unwrap().clone()) }
     fn apply(&mut self, mutation: &Mutation) -> Result<(), BridgeError> {
+        if let Some(started) = &self.apply_started { started.send(()).unwrap(); }
+        if let Some(resume) = &self.apply_resume { resume.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap(); }
         std::thread::sleep(std::time::Duration::from_secs(self.apply_delay));
         match mutation { Mutation::Change(value) => { *self.value.lock().unwrap() = *value; Ok(()) }, Mutation::Fail => Err(BridgeError::new("EAPPLY", "Failed mutation")) }
     }
@@ -72,6 +74,32 @@ fn polling_is_read_only_and_hides_another_users_operation() {
     assert_eq!(other.operation().unwrap(), None);
     assert_eq!(*host.value.lock().unwrap(), 20, "polling must not roll back a pending operation");
     assert_eq!(owner.operation().unwrap(), Some(operation));
+}
+
+#[test]
+fn progress_remains_readable_while_native_mutation_holds_the_lock() {
+    let root = tempfile::tempdir().unwrap(); let mut host = Host::new();
+    let (started, entered) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    host.apply_started = Some(started); host.apply_resume = Some(Arc::new(Mutex::new(resume)));
+    let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap(); let id = plan.id.clone();
+    let mut observer = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    let stranger = Coordinator::open(root.path(), "other", host).unwrap();
+    let worker = std::thread::spawn(move || owner.apply(&id, 101));
+    entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let progress = observer.operation();
+    let hidden = stranger.operation();
+    let competing = observer.apply(&plan.id, 101);
+    release.send(()).unwrap();
+    let completed = worker.join().unwrap().unwrap();
+    let progress = progress.unwrap().unwrap();
+    assert_eq!(progress.state, OperationState::Applying);
+    assert_eq!(progress.id, plan.id);
+    assert_eq!(hidden.unwrap(), None);
+    assert_eq!(competing.unwrap_err().code, "EBUSY");
+    assert!(completed.revision > progress.revision);
+    assert_eq!(completed.state, OperationState::Verifying);
 }
 
 #[test]

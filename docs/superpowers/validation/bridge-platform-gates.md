@@ -486,6 +486,31 @@ restart. Startup recovery and the watchdog do not continue host-network changes.
 Native coordinator tests passed, and the desktop guard permits that continuation
 while still rejecting repeated Apply requests during ordinary setup.
 
-The Windows service dispatcher, UAC launcher, complete network lifecycle, and
-packaged desktop acceptance are still pending. The successful component tests
-do not establish a working Windows setup wizard.
+The desktop now launches the fixed installed approval helper through UAC. It
+pins protected installation paths and the executable against replacement,
+rejects reparse points and hard links, and distinguishes cancelled approval.
+Three native tests passed for path validation, pinning, and cancellation/token
+validation. The actual UAC prompt and service round trip remain untested.
+
+The production bridge-address operation also passed its native test: stale
+state was rejected, the physical MAC was preserved, replay made no extra
+change, and conflicting state was rejected. The complete before/during/after
+network comparison and adapter cleanup passed.
+
+An additional probe created the bridge from two owned TAPs before attaching
+Ethernet. It retained bridge identity through temporary removal and cancellation,
+but failed network preservation: IPv6 addresses/routes disappeared during setup,
+and Ethernet received an IPv4 link-local address while detached. Final recovery
+restored the original network and removed both TAPs. This sequence is not ready
+for the product. A revised sequence is being tested with MAC preservation after
+Ethernet attachment and explicit management of the bridge's host IP bindings.
+
+Four native ownership tests passed for the one-, two-, and three-member
+intermediate states. Runtime verification now requires usable address states;
+tentative or duplicate addresses cannot satisfy readiness. Four native profile
+regressions passed, including privacy-address rotation alongside deprecated
+addresses. Earlier recorded profile probes did not capture address state.
+
+The Windows service dispatcher, complete network lifecycle, and packaged desktop
+acceptance are still pending. These component tests do not establish a working
+Windows setup wizard.

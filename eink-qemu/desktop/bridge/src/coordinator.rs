@@ -135,7 +135,10 @@ impl<P: PlatformOps> Coordinator<P> {
     /// Polling never performs recovery or reveals another user's operation.
     /// Only the service-owned watchdog invokes recovery across principals.
     pub fn operation(&self) -> Result<Option<Operation>, BridgeError> {
-        let _lock = self.journal.lock()?;
+        // Journal replacement is atomic. Read the last complete status while
+        // a native operation owns the mutation lock, so progress remains
+        // available during slow driver/network calls. Mutating decisions still
+        // acquire the lock and revalidate their protected record.
         Ok(self.record()?.filter(|record| record.owner == self.owner).map(|record| record.operation))
     }
     /// Bind native approval to the exact protected review and operation
