@@ -69,6 +69,8 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
   if (dialogOpen()) return;
   let state = initialBridgeState();
   let disposed = false, busy = false, finishing = false;
+  let applying = false, cancelling = false;
+  let cancelId: string | null = null;
   let unwatch: (() => void) | undefined;
   const dialog = document.createElement('dialog');
   dialog.className = 'ask bridge-dialog';
@@ -94,7 +96,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     render();
   };
   const run = async (action: () => Promise<void>) => {
-    if (busy || disposed) return;
+    if (busy || disposed || cancelId) return;
     busy = true; render();
     try { await action(); }
     catch (error) { send({ type: 'failed', error: nativeError(error) }); }
@@ -115,9 +117,43 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     finally { finishing = false; }
   };
   const receive = (operation: BridgeOperation) => {
+    if (cancelId === operation.id && (['cancelled', 'ready'].includes(operation.state)
+      || (operation.state === 'failed' && ['EROLLBACK', 'ECLEANUP'].includes(operation.error?.code ?? '')))) cancelId = null;
     const previous = state;
     send({ type: 'operation', operation });
     if (state !== previous && state.step === 'saving') void finish();
+  };
+  const attemptCancel = async () => {
+    if (!cancelId || cancelling || disposed) return;
+    const id = cancelId;
+    cancelling = true;
+    try {
+      const operation = await backend.cancel(id);
+      if (disposed || cancelId !== id) return;
+      cancelId = null;
+      receive(operation);
+    } catch (error) {
+      if (disposed || cancelId !== id) return;
+      const failure = nativeError(error);
+      // The helper holds its journal lock during a native step. Keep the
+      // user's cancellation request and retry after that bounded work ends.
+      if (failure.code !== 'EBUSY') { cancelId = null; send({ type: 'failed', error: failure }); }
+    } finally { cancelling = false; if (!disposed) render(); }
+  };
+  const cancel = (id: string) => {
+    if (cancelId || disposed || (busy && !applying) || !bridgeView(state).canCancel
+      || id !== (state.operation?.id ?? state.plan?.id)) return;
+    cancelId = id; render(); void attemptCancel();
+  };
+  const apply = async (id: string) => {
+    applying = true;
+    send({ type: 'applying' });
+    try { receive(await backend.apply(id)); }
+    catch (error) {
+      // A cancellation during the OS prompt invalidates the approval. Its late
+      // rejection must not replace the already-confirmed cancelled state.
+      if (state.operation?.id !== id || state.operation.state !== 'cancelled') throw error;
+    } finally { applying = false; }
   };
   const plan = (request: BridgePlanRequest) => run(async () => {
     send({ type: 'planned', plan: await backend.plan(request) });
@@ -126,11 +162,11 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     send({ type: 'inspected', inspection: await backend.inspect() });
     if (state.step === 'saving') await finish();
   });
-  const button = (label: string, action: () => void, enabled = true, primary = false) => {
+  const button = (label: string, action: () => void, enabled = true, primary = false, duringApply = false) => {
     const element = document.createElement('button');
     element.type = 'button';
     element.textContent = label;
-    element.disabled = busy || !enabled;
+    element.disabled = (busy && !(duringApply && applying)) || cancelId !== null || !enabled;
     if (primary) element.className = 'primary';
     element.addEventListener('click', action);
     actions.append(element);
@@ -143,6 +179,9 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     const view = bridgeView(state);
     heading.textContent = view.title;
     message.textContent = view.message;
+    if (cancelId && state.step === 'progress' && state.operation?.state !== 'rollingBack') {
+      message.textContent = 'Cancellation requested. Waiting for the current step to finish…';
+    }
     body.replaceChildren(); actions.replaceChildren();
     if (state.step === 'support') {
       if (!emulatorIdle()) { const note = document.createElement('p'); note.textContent = 'Stop the emulator to install bridge support.'; body.append(note); }
@@ -209,14 +248,13 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
       button(state.plan?.request.kind === 'remove' ? 'Remove setup' : 'Apply setup', () => void run(async () => {
         if (!canApply(state, now(), emulatorIdle())) return;
         const id = state.plan!.id;
-        send({ type: 'applying' });
-        receive(await backend.apply(id));
+        await apply(id);
       }), canApply(state, now(), emulatorIdle()), true);
     } else if (state.step === 'progress') {
       if (view.canCancel) {
         const id = state.operation?.id ?? state.plan?.id;
         if (id) button(state.operation?.confirmationDeadline ? 'Restore previous connection' : 'Cancel setup',
-          () => void run(async () => receive(await backend.cancel(id))));
+          () => cancel(id), true, false, true);
       }
       if (state.operation?.confirmationDeadline) {
         button('Keep connection', () => void run(async () => {
@@ -241,8 +279,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         button('Cancel setup', () => void run(async () => receive(await backend.cancel(id))), emulatorIdle());
         button('Continue setup', () => void run(async () => {
           if (!canResume(state, emulatorIdle())) return;
-          send({ type: 'applying' });
-          receive(await backend.apply(id));
+          await apply(id);
         }), canResume(state, emulatorIdle()), true);
       }
     }
@@ -261,16 +298,16 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
       ? `Automatic restoration in ${Math.max(0, deadline - now())} seconds.` : '';
     countdown.hidden = !countdown.textContent;
     for (const b of actions.querySelectorAll<HTMLButtonElement>('button')) {
-      if (b.textContent === 'Keep connection') b.disabled = busy || !canKeep(state, now());
-      if (b.textContent === 'Continue setup') b.disabled = busy || !canResume(state, emulatorIdle());
-      if (state.step === 'review' && (b.textContent === 'Apply setup' || b.textContent === 'Remove setup')) b.disabled = busy || !canApply(state, now(), emulatorIdle());
+      if (b.textContent === 'Keep connection') b.disabled = busy || cancelId !== null || !canKeep(state, now());
+      if (b.textContent === 'Continue setup') b.disabled = busy || cancelId !== null || !canResume(state, emulatorIdle());
+      if (state.step === 'review' && (b.textContent === 'Apply setup' || b.textContent === 'Remove setup')) b.disabled = busy || cancelId !== null || !canApply(state, now(), emulatorIdle());
     }
   }
-  dialog.addEventListener('cancel', event => { if (!bridgeView(state).canClose || busy) event.preventDefault(); });
+  dialog.addEventListener('cancel', event => { if (!bridgeView(state).canClose || busy || cancelId) event.preventDefault(); });
   render();
   dialog.showModal();
   heading.focus();
-  const timer = window.setInterval(tick, 1000);
+  const timer = window.setInterval(() => { tick(); void attemptCancel(); }, 1000);
   const closed = new Promise<void>(resolve => dialog.addEventListener('close', () => {
     disposed = true; window.clearInterval(timer); unwatch?.(); unregister(); dialog.remove();
     if (trigger.isConnected) trigger.focus();

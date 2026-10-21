@@ -29,7 +29,7 @@ test('external override blocks setup with an explicit explanation', () => {
   assert.match(view.message,/X4NET/);
 });
 
-test('wizard submits Apply once, waits for saved verification, and restores focus', async (t) => {
+function installDom(t) {
   const oldDocument=globalThis.document, oldWindow=globalThis.window;
   class Element extends EventTarget {
     constructor(tag) { super(); this.tagName=tag.toUpperCase(); this.children=[]; this.dataset={}; this.attributes={}; this.disabled=false; }
@@ -49,12 +49,18 @@ test('wizard submits Apply once, waits for saved verification, and restores focu
   }
   const document={createElement:tag=>new Element(tag),body:new Element('body'),activeElement:null};
   globalThis.document=document;
-  globalThis.window={setInterval,clearInterval};
+  const ticks = new Set();
+  globalThis.window={setInterval:fn=>{ticks.add(fn);return fn;},clearInterval:fn=>ticks.delete(fn)};
   t.after(()=>{
     for (const dialog of document.body.querySelectorAll('dialog')) if (dialog.open) dialog.close();
     globalThis.document=oldDocument;globalThis.window=oldWindow;
   });
   const trigger=new Element('button'); document.body.append(trigger); trigger.focus();
+  return { document, trigger, tick:()=>{for(const fn of ticks) fn();} };
+}
+
+test('wizard submits Apply once, waits for saved verification, and restores focus', async (t) => {
+  const { document, trigger } = installDom(t);
   let handler, applyCount=0, unwatchCount=0, resolveApply;
   const inspection={support:'ready',platform:'linux',adapters:[{id:'eth0',name:'Ethernet',eligible:true,linkUp:true,fingerprint:'one',kind:'ethernet',reason:null}],capabilities:{create:true,existingBridge:true,reason:null},selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null};
   const backend={
@@ -92,4 +98,46 @@ test('confirmed cleanup cannot offer cancellation and cleanup failure offers a c
   const failed=bridgeView({...initialBridgeState(),step:'failed',operation:{...operation,state:'failed'},error:{code:'ECLEANUP',message:'Cleanup needs attention'}});
   assert.equal(failed.retryRecovery,'Retry cleanup');
   assert.equal(failed.retrySave,false);
+});
+
+
+for (const duringPrompt of [false, true]) test(duringPrompt
+  ? 'cancelling during authorization ignores a late Apply rejection'
+  : 'cancellation stays queued across a busy native operation and disables Keep', async (t) => {
+  const {document,trigger,tick}=installDom(t);
+  const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+  const inspection={support:'ready',platform:'windows',adapters:[{id:'ethernet',name:'Ethernet',eligible:true,linkUp:true,fingerprint:'one',kind:'ethernet',reason:null}],capabilities:{create:true,existingBridge:false,reason:null},selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null};
+  let handler, resolveApply, rejectApply, cancelCalls=0, locked=!duringPrompt;
+  const backend={
+    watch:async cb=>{handler=cb;return()=>{};}, inspect:async()=>inspection,
+    plan:async request=>({id:operation.id,request,fingerprint:'one',changes:['Create bridge'],mayDisconnect:true,requiresAuthorization:true,expiresAt:Math.floor(Date.now()/1000)+300}),
+    apply:()=>new Promise((resolve,reject)=>{resolveApply=resolve;rejectApply=reject;}),
+    cancel:async id=>{assert.equal(id,operation.id);cancelCalls++;if(locked)throw {code:'EBUSY',message:'Native step is running'};return {...operation,revision:4,state:'cancelled'};},
+    keep:async()=>{assert.fail('Keep must not run after requesting cancellation');},
+  };
+  const finished=openBridgeDialog(backend,trigger);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  await flush();
+  const dialog=document.body.querySelectorAll('dialog')[0];
+  const find=label=>dialog.querySelectorAll('button').find(e=>e.textContent===label);
+  const click=label=>{const b=find(label);assert.ok(b,label);assert.equal(b.disabled,false,label);b.dispatchEvent(new Event('click'));};
+  dialog.querySelectorAll('input')[0].dispatchEvent(new Event('change'));
+  click('Review setup');await flush();click('Apply setup');
+  if(!duringPrompt)handler({...operation,revision:1,state:'applying'});
+  click('Cancel setup');await flush();
+  assert.equal(cancelCalls,1);
+  if(duringPrompt){
+    rejectApply({code:'EAUTHDENIED',message:'The cancelled approval expired'});await flush();
+    assert.doesNotMatch(dialog.textContent,/could not finish|approval expired/);
+  }else{
+    assert.match(dialog.textContent,/Cancellation requested/);
+    assert.doesNotMatch(dialog.textContent,/could not finish/);
+    locked=false;
+    resolveApply({...operation,revision:2,state:'verifying',confirmationDeadline:Math.floor(Date.now()/1000)+120});await flush();
+    assert.equal(find('Keep connection').disabled,true);
+    tick();await flush();
+    assert.equal(cancelCalls,2);
+  }
+  assert.match(dialog.textContent,/Choose a connection/);
+  click('Close');await finished;
 });
