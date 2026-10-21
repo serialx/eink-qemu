@@ -2,7 +2,7 @@ use eink_bridge::{protocol::{HelperRequest, RequestKind}, transport};
 use std::io::Cursor;
 
 #[test]
-fn authorization_proofs_are_bounded_redacted_and_only_accepted_for_apply() {
+fn authorization_proofs_are_bounded_redacted_and_only_accepted_for_approval_or_apply() {
     use eink_bridge::authorization::AuthorizationProof;
     let secret = "ab".repeat(32);
     let proof: AuthorizationProof = serde_json::from_str(&format!("\"{secret}\"")).unwrap();
@@ -18,6 +18,26 @@ fn authorization_proofs_are_bounded_redacted_and_only_accepted_for_apply() {
         let operation = if kind == "keep" || kind == "cancel" { format!(r#", "operationId":"{id}""#) } else { String::new() };
         assert!(eink_bridge::protocol::decode_request(&format!(
             r#"{{"version":1,"kind":"{kind}"{operation},"authorization":"{secret}"}}"#)).is_err());
+    }
+}
+
+#[test]
+fn windows_approval_messages_have_distinct_strict_shapes() {
+    use eink_bridge::protocol::{decode_request, encode_frame, decode_frame};
+    let id = "12".repeat(16); let proof = "ab".repeat(32);
+    for json in [format!(r#"{{"version":1,"kind":"beginAuthorization","planId":"{id}"}}"#),
+        format!(r#"{{"version":1,"kind":"approveAuthorization","authorization":"{proof}"}}"#)] {
+        let request = decode_request(&json).unwrap();
+        decode_frame(&encode_frame(&request).unwrap()).unwrap();
+        assert!(!format!("{request:?}").contains(&proof));
+    }
+    for json in [format!(r#"{{"version":1,"kind":"beginAuthorization","planId":"{id}","authorization":"{proof}"}}"#),
+        format!(r#"{{"version":1,"kind":"approveAuthorization","planId":"{id}","authorization":"{proof}"}}"#),
+        format!(r#"{{"version":1,"kind":"approveAuthorization","owner":"sid:S-1-5-18","authorization":"{proof}"}}"#),
+        format!(r#"{{"version":1,"kind":"approveAuthorization","authorization":"{proof}","authorization":"{proof}"}}"#),
+        r#"{"version":1,"kind":"approveAuthorization","authorization":null}"#.into(),
+        r#"{"version":1,"kind":"approveAuthorization"}"#.into()] {
+        assert!(decode_request(&json).is_err());
     }
 }
 

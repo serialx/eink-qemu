@@ -45,6 +45,23 @@ impl PlatformOps for Host {
 fn request() -> PlanRequest { PlanRequest::Configure { adapter_id: AdapterId::new("adapter").unwrap() } }
 
 #[test]
+fn native_approval_uses_only_the_current_owners_unexpired_review() {
+    let root = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    let first = owner.plan(request(), 100).unwrap();
+    assert_eq!(owner.reviewed_plan(&first.id, 101).unwrap(), (first.clone(), 1));
+    let other = Coordinator::open(root.path(), "other", host).unwrap();
+    assert_eq!(other.reviewed_plan(&first.id, 101).unwrap_err().code, "EPERM");
+    assert_eq!(owner.reviewed_plan(&first.id, 400).unwrap_err().code, "ESTALE");
+    let next = owner.plan(request(), 401).unwrap();
+    assert_eq!(owner.reviewed_plan(&first.id, 402).unwrap_err().code, "ESTALE");
+    owner.apply(&next.id, 402).unwrap();
+    assert_eq!(owner.reviewed_plan(&next.id, 403).unwrap_err().code, "ESTALE");
+    owner.cancel(&next.id).unwrap();
+    assert_eq!(owner.reviewed_plan(&next.id, 404).unwrap_err().code, "ESTALE");
+}
+
+#[test]
 fn polling_is_read_only_and_hides_another_users_operation() {
     let dir = tempfile::tempdir().unwrap(); let host = Host::new();
     let mut owner = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();

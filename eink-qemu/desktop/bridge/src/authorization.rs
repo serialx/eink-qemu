@@ -31,6 +31,10 @@ impl<'de> Deserialize<'de> for AuthorizationProof {
     }
 }
 
+#[cfg(windows)]
+#[path = "platform/windows/authorization.rs"]
+pub mod windows;
+
 #[cfg(target_os = "macos")]
 pub mod macos {
     use super::AuthorizationProof;

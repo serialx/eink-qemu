@@ -45,6 +45,8 @@ impl Dispatcher {
                 Ok(ReplyKind::Verification { readiness: Readiness::Ready, selection: Some(selection) })
             },
             RequestKind::Acquire { .. } => Err(BridgeError::new("EPROTOCOL", "A transport lease requires descriptor transfer.")),
+            RequestKind::BeginAuthorization { .. } | RequestKind::ApproveAuthorization { .. } =>
+                Err(BridgeError::new("EPROTOCOL", "macOS authorization requires an Authorization Services credential.")),
         }
     }
     fn verified(&mut self, selection: &BridgeSelection) -> Result<(Resource<Snapshot>, ResourceLease), BridgeError> {

@@ -125,6 +125,8 @@ pub fn exchange(channel: &mut (impl Read + Write), request: &HelperRequest) -> R
         | (RequestKind::Keep { operation_id: id }, ReplyKind::Operation { operation: Some(operation) })
         | (RequestKind::Cancel { operation_id: id }, ReplyKind::Operation { operation: Some(operation) }) => operation.id == *id,
         (RequestKind::Recover, ReplyKind::Operation { .. }) => true,
+        (RequestKind::BeginAuthorization { .. }, ReplyKind::Authorization { .. }) => true,
+        (RequestKind::ApproveAuthorization { .. }, ReplyKind::Authorized) => true,
         (RequestKind::Acquire { selection: expected }, ReplyKind::Lease { selection, target }) => {
             expected == selection && matches!((selection.platform, target),
                 (Platform::Macos, LaunchTarget::MacSocket { .. }) | (Platform::Linux, LaunchTarget::LinuxBridge { .. })

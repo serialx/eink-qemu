@@ -42,6 +42,8 @@ impl Dispatcher {
                 Ok(ReplyKind::Verification { readiness: Readiness::Ready, selection: Some(selection) })
             },
             RequestKind::Acquire { .. } => Err(BridgeError::new("EPROTOCOL", "Acquiring a bridge requires descriptor transfer.")),
+            RequestKind::BeginAuthorization { .. } | RequestKind::ApproveAuthorization { .. } =>
+                Err(BridgeError::new("EPROTOCOL", "Linux authorization is verified directly with system policy.")),
         }
     }
     fn verified(&mut self, selection: &BridgeSelection) -> Result<(Resource<Snapshot>, ResourceLease), BridgeError> {

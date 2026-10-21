@@ -40,6 +40,8 @@ fn reboot_barrier_survives_watchdog_and_restart_without_touching_host_membership
  worker.health().unwrap();worker.stop().unwrap();
  assert!(*host.installed.lock().unwrap());assert_eq!(*host.mutations.lock().unwrap(),vec![0]);
  let mut c=Coordinator::open(root.path(),"owner",host.clone()).unwrap();
+ let (review,revision)=c.reviewed_plan(&id,1000).unwrap();
+ assert_eq!(review.id,id);assert_eq!(revision,c.operation().unwrap().unwrap().revision);
  assert_eq!(c.apply(&id,1000).unwrap_err().code,"EREBOOT");
  assert!(c.operation().unwrap().unwrap().reboot_required);
  let mut booted=host.clone();booted.booted=true;

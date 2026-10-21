@@ -138,6 +138,18 @@ impl<P: PlatformOps> Coordinator<P> {
         let _lock = self.journal.lock()?;
         Ok(self.record()?.filter(|record| record.owner == self.owner).map(|record| record.operation))
     }
+    /// Bind native approval to the exact protected review and operation
+    /// revision. This does not authorize Apply or bypass its live host checks.
+    pub fn reviewed_plan(&self, id: &OperationId, now: u64) -> Result<(BridgePlan, u64), BridgeError> {
+        let _lock = self.journal.lock()?;
+        let record = self.owned(id)?;
+        let resuming = record.operation.reboot_required && record.operation.state == OperationState::Applying
+            && record.undo_required && record.in_flight_mutation.is_none() && record.completed_mutations > 0;
+        if !resuming && (record.operation.state != OperationState::AwaitingAuthorization || now >= record.prepared.plan.expires_at) {
+            return Err(BridgeError::new("ESTALE", "Review the current bridge plan before approving it."));
+        }
+        Ok((record.prepared.plan, record.operation.revision))
+    }
     /// Verify while holding both the transaction lock and the transport lease.
     /// The returned lease prevents repair/removal until the native client exits.
     pub fn verify_resource(&mut self, id: &ResourceId) -> Result<(Resource<P::Snapshot>, ResourceLease), BridgeError> {

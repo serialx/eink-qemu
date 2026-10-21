@@ -9,6 +9,8 @@ pub const MAX_MESSAGE: usize = 1024 * 1024;
 pub enum RequestKind {
     Inspect,
     Plan { request: PlanRequest },
+    BeginAuthorization { #[serde(rename = "planId")] plan_id: OperationId },
+    ApproveAuthorization { authorization: crate::authorization::AuthorizationProof },
     Apply {
         #[serde(rename = "planId")] plan_id: OperationId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,6 +38,8 @@ impl HelperRequest {
 pub enum ReplyKind {
     Inspection { inspection: Inspection },
     Plan { plan: BridgePlan },
+    Authorization { authorization: crate::authorization::AuthorizationProof },
+    Authorized,
     Operation { operation: Option<Operation> },
     Verification { readiness: Readiness, selection: Option<BridgeSelection> },
     Lease { selection: BridgeSelection, target: LaunchTarget },
@@ -92,13 +96,15 @@ pub fn decode_request(json: &str) -> Result<HelperRequest, BridgeError> {
     if envelope.version != VERSION {
         return Err(BridgeError::new("EPROTOCOL", "Bridge helper version does not match the app."));
     }
-    if envelope.authorization.is_some() && envelope.kind != "apply" { return Err(invalid()); }
+    if envelope.authorization.is_some() && !matches!(envelope.kind.as_str(), "apply" | "approveAuthorization") { return Err(invalid()); }
     let present = (envelope.request.is_some(), envelope.plan_id.is_some(),
         envelope.selection.is_some(), envelope.operation_id.is_some());
     let request = match (envelope.kind.as_str(), present) {
         ("inspect", (false, false, false, false)) => RequestKind::Inspect,
         ("recover", (false, false, false, false)) => RequestKind::Recover,
         ("plan", (true, false, false, false)) => RequestKind::Plan { request: envelope.request.unwrap() },
+        ("beginAuthorization", (false, true, false, false)) => RequestKind::BeginAuthorization { plan_id: envelope.plan_id.unwrap() },
+        ("approveAuthorization", (false, false, false, false)) => RequestKind::ApproveAuthorization { authorization: envelope.authorization.ok_or_else(invalid)? },
         ("apply", (false, true, false, false)) => RequestKind::Apply { plan_id: envelope.plan_id.unwrap(), authorization: envelope.authorization },
         ("verify", (false, false, true, false)) => RequestKind::Verify { selection: envelope.selection.unwrap() },
         ("acquire", (false, false, true, false)) => RequestKind::Acquire { selection: envelope.selection.unwrap() },

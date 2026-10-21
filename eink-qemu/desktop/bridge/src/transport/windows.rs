@@ -137,16 +137,23 @@ impl Channel for Pipe {
 pub struct Peer { caller: Caller, process: OwnedHandle, pub pid: u32, pub creation_time: u64, pipe_admin: bool }
 impl Peer {
     pub fn caller(&self) -> &Caller { &self.caller }
+    fn current_token(&self) -> Result<OwnedHandle, BridgeError> {
+        let denied = || BridgeError::new("EPERM", "The bridge caller's process identity changed.");
+        if unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } != WAIT_TIMEOUT { return Err(denied()); }
+        let mut token = ptr::null_mut();
+        if unsafe { OpenProcessToken(self.process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 { return Err(denied()); }
+        let token = owned(token).map_err(error)?;
+        if format!("sid:{}", windows_security::token_sid(token.as_raw_handle())?) != self.caller.principal() { return Err(denied()); }
+        Ok(token)
+    }
+    pub fn revalidate(&self) -> Result<(), BridgeError> { self.current_token().map(|_| ()) }
     /// Used only by the authorization-grant request. The original owner still
     /// needs a one-use grant bound to the reviewed plan before applying it.
     pub fn require_elevated_admin(&self) -> Result<(), BridgeError> {
         let denied = || BridgeError::new("EAUTHDENIED", "Approve bridge setup through the Windows administrator prompt.");
-        if !self.pipe_admin || unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } != WAIT_TIMEOUT { return Err(denied()); }
-        let mut token = ptr::null_mut();
-        if unsafe { OpenProcessToken(self.process.as_raw_handle(), TOKEN_QUERY, &mut token) } == 0 { return Err(denied()); }
-        let token = owned(token).map_err(error)?;
-        if format!("sid:{}", windows_security::token_sid(token.as_raw_handle())?) != self.caller.principal()
-            || !windows_security::token_is_elevated_admin(token.as_raw_handle())? { return Err(denied()); }
+        if !self.pipe_admin { return Err(denied()); }
+        let token = self.current_token().map_err(|_| denied())?;
+        if !windows_security::token_is_elevated_admin(token.as_raw_handle())? { return Err(denied()); }
         Ok(())
     }
 }
