@@ -9,7 +9,7 @@ apt-get install -y -q --no-install-recommends \
     build-essential \
     ca-certificates \
     git \
-    libgcrypt-dev \
+    libgcrypt20-dev \
     libglib2.0-dev \
     libpixman-1-dev \
     libpng-dev \

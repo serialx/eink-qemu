@@ -8,3 +8,4 @@ src-tauri/resources
 src-tauri/gen/schemas
 src-tauri/qemu
 src-tauri/binaries
+src-tauri/linux

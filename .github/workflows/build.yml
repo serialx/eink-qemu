@@ -75,19 +75,18 @@ jobs:
         include:
           - platform: x86_64-linux-gnu
             runs_on: ubuntu-22.04
-            # eink-qemu: Debian 11's security archive is gone; Debian 12 (glibc 2.36)
-            container: debian:12
+            # Match the desktop package's oldest supported libc and libraries.
+            container: ubuntu:22.04
             shell: bash -e {0}
             run_prerequisites: "./.github/workflows/scripts/prerequisites-native.sh"
             run_configure: "./.github/workflows/scripts/configure-native.sh"
 
           - platform: aarch64-linux-gnu
-            runs_on: ubuntu-22.04
-            # eink-qemu: Debian 11's security archive is gone; Debian 12 (glibc 2.36)
-            container: debian:12
+            runs_on: ubuntu-22.04-arm
+            container: ubuntu:22.04
             shell: bash -e {0}
-            run_prerequisites: "./.github/workflows/scripts/prerequisites-cross-linux-arm64.sh"
-            run_configure: "./.github/workflows/scripts/configure-cross-linux-arm64.sh"
+            run_prerequisites: "./.github/workflows/scripts/prerequisites-native.sh"
+            run_configure: "./.github/workflows/scripts/configure-native.sh"
 
           - platform: x86_64-w64-mingw32
             runs_on: windows-2022
@@ -172,11 +171,8 @@ jobs:
             *-apple-darwin) backend=vmnet-bridged ;;
             *-w64-mingw32) bin="$bin.exe"; backend=tap ;;
           esac
-          # ARM64 Linux is cross-compiled on an x64 runner.
-          if [ "${{ matrix.platform }}" != aarch64-linux-gnu ]; then
-            install/qemu/bin/$bin -machine none -netdev help > netdev-backends.txt
-            tr -d '\r' < netdev-backends.txt | grep -Fx "$backend"
-          fi
+          install/qemu/bin/$bin -machine none -netdev help > netdev-backends.txt
+          tr -d '\r' < netdev-backends.txt | grep -Fx "$backend"
 
       - name: Install the heaptrace plugin (${{ matrix.target }} @ ${{ matrix.platform }})
         run: |
@@ -189,7 +185,7 @@ jobs:
           ls install/qemu/plugins/libheaptrace.*
 
       - name: Smoke test (${{ matrix.target }} @ ${{ matrix.platform }})
-        if : ${{ matrix.platform == 'x86_64-linux-gnu' }}
+        if: endsWith(matrix.platform, '-linux-gnu')
         run: |
           # eink-qemu: the board machines must come up (no firmware: blank flash spins in the ROM)
           head -c 16777216 /dev/zero > blank.bin
@@ -258,7 +254,7 @@ jobs:
           - platform: x86_64-unknown-linux-gnu
             runs_on: ubuntu-22.04
           - platform: aarch64-unknown-linux-gnu
-            runs_on: ubuntu-22.04
+            runs_on: ubuntu-22.04-arm
     runs-on: ${{ matrix.runs_on }}
     defaults:
       run:
@@ -269,12 +265,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform }}
-      - name: Install arm64 linker
-        if: matrix.platform == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build CLI
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --locked --release -p eink-qemu-cli --target ${{ matrix.platform }}
       - name: Package CLI
