@@ -24,6 +24,12 @@ pub mod windows_topology;
 #[path = "platform/windows/profile.rs"]
 pub mod windows_profile;
 #[cfg(windows)]
+#[path = "platform/windows/network_bridge.rs"]
+pub mod windows_network_bridge;
+#[cfg(windows)]
+#[path = "platform/windows/elevation.rs"]
+pub mod windows_elevation;
+#[cfg(windows)]
 #[path = "platform/windows/driver.rs"]
 pub mod windows_driver;
 #[cfg(windows)]

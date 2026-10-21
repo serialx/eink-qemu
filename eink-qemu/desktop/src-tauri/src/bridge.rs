@@ -124,7 +124,9 @@ pub(crate) async fn bridge_apply(window: WebviewWindow, app: State<'_, App>, pla
         let grant = eink_bridge::authorization::macos::Authorization::request()?;
         #[cfg(target_os = "macos")]
         let authorization = Some(grant.proof()?);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        let authorization = Some(eink_bridge::windows_elevation::request(plan_id.clone())?);
+        #[cfg(not(any(target_os = "macos", windows)))]
         let authorization = None;
         operation(helper(RequestKind::Apply { plan_id, authorization })?)
     }).await?;

@@ -2,6 +2,11 @@
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args == ["--version"] { println!("eink-bridge-helper {} protocol {}", env!("CARGO_PKG_VERSION"), eink_bridge::model::VERSION); return; }
+    #[cfg(windows)]
+    if args.len() == 2 && args[0] == "--approve" {
+        if let Err(error) = eink_bridge::windows_elevation::approve(&args[1]) { eprintln!("{}: {}", error.code, error.message); std::process::exit(1); }
+        return;
+    }
     if !args.is_empty() && args != ["--serve"] { eprintln!("Expected --serve or --version"); std::process::exit(2); }
     #[cfg(target_os = "macos")]
     let result = bootstrap().and_then(|_| eink_bridge::macos_server::serve());
