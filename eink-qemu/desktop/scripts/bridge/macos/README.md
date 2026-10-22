@@ -34,6 +34,7 @@ declared minimum is lower than a dependency's minimum.
 
 The existing ad-hoc CI package configuration does not include managed macOS
 bridge installation. Signed bundle mechanics and a macOS 15+ development QA
-package have been checked, but release signing, the advertised 12.3 dependency
-baseline, support uninstallation, and complete UI acceptance remain open. See
-the [native validation record](../../../../../docs/superpowers/validation/bridge-platform-gates.md).
+package have been checked. Native update, authorized removal, reinstallation,
+and partial-removal recovery passed in the disposable ARM64 VM. Release signing,
+the advertised 12.3 dependency baseline, and complete UI acceptance remain open.
+See the [acceptance checklist](../../../../../docs/superpowers/validation/bridge-acceptance.md).

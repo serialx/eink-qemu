@@ -204,7 +204,7 @@ changes the mode only when you select it. The app does not silently fall back.
 
 Managed setup is still undergoing native acceptance. The current validation
 includes macOS C3/S3 LAN access and Linux ARM64/Windows x64 C3/S3 access on a shared
-VM network. macOS release packaging and native support-uninstall validation, the remaining
+VM network. macOS release packaging, the remaining
 firmware/platform tests, and unresolved VM test failures are tracked in the
 [native validation record](../../docs/superpowers/validation/bridge-platform-gates.md).
 Removing a bridge through **Manage bridge** does not uninstall the privileged helper.
@@ -212,8 +212,9 @@ Dragging the macOS app to Trash also leaves that helper installed. The new macOS
 **Uninstall bridge support** action requires administrator approval and removes
 app-managed bridges for all accounts before removing support. It preserves
 firmware and SD images and refuses cleanup while a bridge is in use or its
-configuration has changed outside the app. Native validation of this action
-is still pending.
+configuration has changed outside the app. Update, removal, reinstallation,
+and recovery from a partial removal have passed native tests in the disposable
+ARM64 macOS VM; release-platform coverage remains incomplete.
 
 For externally managed networking, `X4BR` selects a bridge interface in Bridged
 mode; `X4NET` replaces the selected mode's network arguments and takes precedence

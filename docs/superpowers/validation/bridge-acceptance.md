@@ -64,7 +64,22 @@ Removal refused a held resource lease and restarted the helper without
 interrupting that bridge. It also refused an altered helper plist without
 stopping the helper; the reversible fixture restored the original plist.
 Cancelling the real macOS removal prompt returned **Authorization cancelled**
-and preserved support. Successful authorized removal remains pending.
+and preserved support. Approved removal then completed through the real UI:
+the helper, packet service, sockets, and temporary maintenance job were absent;
+the durable result was successful; the resource journal was empty with no
+pending rollback or cleanup; and the saved selection was cleared. The firmware
+and SD image remained present with their previous sizes and modification times.
+Reopening setup offered installation again. Approved reinstallation installed
+the exact bundled helper, started its service and IPC socket, and reached
+**Choose a connection** without recreating the removed bridge. The old resource
+plist and socket remained absent.
+
+A separate native fault test made the helper plist temporarily immutable.
+Removal deleted the packet-service payload, then failed with `ECLEANUP` on the
+plist. Recovery restored the original payload bytes and restarted the helper;
+all three support files matched their pre-test hashes. The test removed the
+immutable flag, and the actual app reopened **Choose a connection** successfully.
+The VM is idle with bridge support installed and no configured bridge.
 
 The update exposed a dialog stall: an existing completed bridge operation
 entered **Saving setup** without starting verification. Both support-update
@@ -80,10 +95,6 @@ fixtures and do not replace native network lifecycle tests of the new packages.
 
 ## Remaining acceptance work
 
-- Native-test the newly implemented macOS **Uninstall bridge support** action,
-  including conflict and live-lease refusal. Test native helper upgrade.
-  Its unit/UI tests and independent code review pass; signed-VM validation
-  is still pending.
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
   dependencies, Developer ID signing, and notarization. Test Intel macOS.
 - Complete Linux x64 native coverage and Linux/Windows C3/S3 physical-LAN
