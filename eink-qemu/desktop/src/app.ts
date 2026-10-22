@@ -164,13 +164,15 @@ async function start() {
     // Observers (the acceptance tests) can inspect the exact bytes before the backend takes them.
     window.dispatchEvent(new CustomEvent('eink-qemu-flash-ready', { detail: { flash, machine, composed } }));
     readiness.restart();
-    pending = false;
     // The session events say how the start went; the result only adds
     // what an event may not have delivered yet.
+    // Keep Start disabled while the backend waits for bridge inspection,
+    // before a native session exists to report its starting state.
     onSession(await api.start(flash, {
       machine, panel: settings.panel, wifi: settings.wifi, wifiMode: settings.wifiMode, turbo: settings.turbo,
       ghosting: hasGhosting(machine) && settings.ghosting,
     }));
+    pending = false;
     paintControls();
   } catch (error) {
     pending = false;

@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import type { Backend, DropHandlers, Screen } from './backend';
+import { coordinateBridgeLaunch } from './bridge-launch';
 import type { HeapEvents } from './heap-log';
 import type { BridgeInspection, BridgeOperation, BridgePlan } from './bridge-types';
 import { Panel } from './panel';
@@ -114,7 +115,7 @@ function onDisplay(buffer: ArrayBuffer) {
   if (early.length < 1024) early.push(buffer);
 }
 
-export const tauri: Backend = {
+export const tauri: Backend = coordinateBridgeLaunch({
   bridge: {
     inspect: () => call<BridgeInspection>('bridge_inspect'),
     install: () => call<BridgeInspection>('bridge_install'),
@@ -236,7 +237,7 @@ export const tauri: Backend = {
   },
   // Project links open in the browser, not in the app's WebView.
   openUrl: (url) => openUrl(url),
-};
+});
 
 /** The commands the heap window uses directly (heap-window.ts). */
 export const api = tauri;

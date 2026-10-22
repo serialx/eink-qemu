@@ -48,7 +48,7 @@ stream backend stopped reading and never resumed when space became available.
 The injection timer now flushes waiting network packets after freeing space,
 and a full receiver returns backpressure instead of dropping those packets.
 The regression verifies all 32 burst packets in order and a subsequent packet;
-all 19 Wi-Fi tests pass on macOS ARM64.
+all 19 Wi-Fi tests pass on macOS ARM64 and native Ubuntu 22.04 ARM64.
 
 With this fix, the unchanged C3 firmware completed Discover/Offer/Request/ACK
 through the managed bridge. Its transfer screen displayed a LAN address; the
@@ -63,6 +63,16 @@ journal recorded one retained resource after setup and none after removal.
 The test used a reversible persistent NetworkManager profile and a temporary,
 user-authorized polkit rule for the single bridge action. Cleanup removed that
 rule and restored the original Netplan profile and IPv6 configuration.
+
+The updated Ubuntu package also launched C3 firmware with an ordinary-user
+bridge lease. The reader obtained a DHCP address on UTM's shared virtual network;
+the host received HTTP 200, opened its Connected web interface, and resolved
+`crosspoint.local`. This establishes connectivity to a separate peer on that
+virtual network, not physical-LAN acceptance. Afterward, WebKitWebProcess crashed
+with SIGSEGV while QEMU continued serving HTTP. Closing the desktop stopped QEMU
+and released its lease. Relaunching the app and booting S3 succeeded, but the
+crash remains unexplained and S3 connectivity is not yet verified. Test cleanup
+removed the temporary polkit rule and bridge and restored the original profiles.
 
 The default Netplan-generated connection was correctly rejected before mutation.
 That path exposed a UI regression: a historical completed operation made a new
@@ -85,6 +95,16 @@ and the helper resumed running with automatic startup. Both installed QEMU
 binaries match the staged package hashes. The initial verification incorrectly
 expected the unstripped build hashes; packaging deliberately strips debug
 information, so the corrected check compares the packaged payloads.
+The subsequent package containing the Wi-Fi receive backpressure fix passed the
+same retained-resource, automatic-service, and installed-payload checks.
+
+The ordinary-user Windows package booted C3 through its retained TAP after an
+initial launch reported that another bridge operation was running. The journal
+remained Ready with no pending rollback. Startup inspection probes the native
+transport and can overlap launch; the desktop now serializes inspection and
+bridge launch, and keeps Start disabled while waiting. Four focused regression
+tests pass, including failed inspection and unaffected NAT launches. Native
+validation of the updated package and Windows firmware connectivity are pending.
 
 Signed macOS packaging now verifies matching app/helper team requirements,
 embedded dependency staging, notices, architecture, and each binary's deployment
