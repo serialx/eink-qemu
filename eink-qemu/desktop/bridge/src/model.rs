@@ -14,6 +14,23 @@ impl BridgeError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self { code: code.into(), message: message.into(), detail: None }
     }
+    /// Preserve the native cause when a lifecycle error wraps this error.
+    /// Display stays concise for callers that only need the user-facing text.
+    pub(crate) fn diagnostic(&self) -> String {
+        let summary = format!("{}: {}", self.code, self.message);
+        match self.detail.as_deref().filter(|detail| !detail.is_empty()) {
+            Some(detail) => format!("{summary}\n{detail}"),
+            None => summary,
+        }
+    }
+    #[cfg(windows)]
+    pub(crate) fn context(mut self, stage: &str) -> Self {
+        self.detail = Some(match self.detail.as_deref().filter(|detail| !detail.is_empty()) {
+            Some(detail) => format!("{stage}\n{detail}"),
+            None => stage.into(),
+        });
+        self
+    }
 }
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.message) }

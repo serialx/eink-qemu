@@ -378,7 +378,7 @@ impl<P: PlatformOps> Coordinator<P> {
             record.operation.state = OperationState::Failed;
             record.operation.error = Some(BridgeError { code: "ECLEANUP".into(),
                 message: "The confirmed network changes are saved, but bridge cleanup needs attention. Retry recovery to finish removal.".into(),
-                detail: Some(error.to_string()) });
+                detail: Some(error.diagnostic()) });
             return self.save(record);
         }
         self.commit_resource(record)?;
@@ -484,7 +484,7 @@ impl<P: PlatformOps> Coordinator<P> {
         match self.platform.rollback(&record.prepared.snapshot) {
             Ok(()) => { record.undo_required = false; record.operation.reboot_required = false; record.operation.state = if cause.is_some() { OperationState::Failed } else { OperationState::Cancelled }; record.operation.error = cause; },
             Err(error) => { record.operation.state = OperationState::Failed;
-                record.operation.error = Some(BridgeError { code: "EROLLBACK".into(), message: "Could not restore the previous connection. Repair is required.".into(), detail: Some(error.to_string()) }); },
+                record.operation.error = Some(BridgeError { code: "EROLLBACK".into(), message: "Could not restore the previous connection. Repair is required.".into(), detail: Some(error.diagnostic()) }); },
         }
         self.save(record)
     }

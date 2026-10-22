@@ -42,7 +42,8 @@ impl Topology {
     pub fn read() -> Result<Self, BridgeError> {
         let before = windows_device::enumerate()?;
         let arguments = ["-NoProfile", "-NonInteractive", "-Command", INSPECT].map(OsStr::new);
-        let output = windows_command::run(Tool::PowerShell, &arguments, Duration::from_secs(120))?.checked()?;
+        let output = windows_command::run(Tool::PowerShell, &arguments, Duration::from_secs(120))
+            .and_then(|output| output.checked()).map_err(|error| error.context("Read Windows bridge membership"))?;
         let after = windows_device::enumerate()?;
         if before != after { return Err(conflict()); }
         Self::parse(after, &output.stdout)

@@ -28,7 +28,7 @@ impl PlatformOps for Host {
     fn needs_committed_cleanup(&self, snapshot: &Snapshot) -> bool { snapshot.remove }
     fn cleanup_committed(&mut self, _: &Snapshot) -> Result<(), BridgeError> {
         *self.cleanups.lock().unwrap() += 1;
-        if self.fail { return Err(BridgeError::new("ECONFLICT", "Device was edited by its administrator")); }
+        if self.fail { return Err(BridgeError { code: "ECONFLICT".into(), message: "Device was edited by its administrator".into(), detail: Some("Bridge membership no longer matches".into()) }); }
         *self.device.lock().unwrap() = false;
         assert!(!self.crash, "process stopped after irreversible device deletion");
         Ok(())
@@ -82,7 +82,9 @@ fn cleanup_conflicts_are_retained_until_an_explicit_owner_retry() {
     coordinator.apply(&plan.id, 104).unwrap();
     let failed = coordinator.keep(&plan.id, 105).unwrap();
     assert_eq!(failed.state, OperationState::Failed);
-    assert_eq!(failed.error.unwrap().code, "ECLEANUP");
+    let error = failed.error.unwrap();
+    assert_eq!(error.code, "ECLEANUP");
+    assert_eq!(error.detail.as_deref(), Some("ECONFLICT: Device was edited by its administrator\nBridge membership no longer matches"));
     coordinator.recover(999).unwrap(); coordinator.recover_startup().unwrap();
     assert_eq!(*host.cleanups.lock().unwrap(), 1, "watchdog and restart must preserve a known conflict");
     let service = Coordinator::open(root.path(), "service", host.clone()).unwrap();

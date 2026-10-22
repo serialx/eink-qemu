@@ -124,7 +124,8 @@ impl Snapshot {
         // never become executable PowerShell source.
         let script=format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);\n{}\n[Console]::Out.Write((Read-EinkNetwork '{}' | ConvertTo-Json -Depth 8 -Compress))",include_str!("ip_snapshot.ps1"),id);
         let arguments=["-NoProfile","-NonInteractive","-Command",&script].map(OsStr::new);
-        let output=windows_command::run(Tool::PowerShell,&arguments,Duration::from_secs(120))?.checked()?;
+        let output=windows_command::run(Tool::PowerShell,&arguments,Duration::from_secs(120))
+            .and_then(|output|output.checked()).map_err(|error|error.context("Read Windows connection settings"))?;
         let mut snapshot: Self=serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
         snapshot.normalize()?;
         if snapshot.active_addresses.iter().any(|address| address.address_state.is_none()) { return Err(invalid()); }

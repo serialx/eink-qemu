@@ -56,7 +56,8 @@ impl Saved {
         if windows_device::enumerate()?.get(&guid)!=Some(expected){return Err(invalid());}
         let script=format!("$ErrorActionPreference='Stop';[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);$guid='{guid}';\n{}",include_str!("ip_saved.ps1"));
         let args=["-NoProfile","-NonInteractive","-Command",&script].map(OsStr::new);
-        let output=windows_command::run(Tool::PowerShell,&args,Duration::from_secs(120))?.checked()?;
+        let output=windows_command::run(Tool::PowerShell,&args,Duration::from_secs(120))
+            .and_then(|output|output.checked()).map_err(|error|error.context("Read saved Windows connection settings"))?;
         let mut saved:Self=serde_json::from_slice(&output.stdout).map_err(|_|invalid())?;
         saved.guid=windows_device::guid(&saved.guid)?;saved.instance_id=saved.instance_id.to_ascii_uppercase();
         if saved.guid!=guid || !saved.instance_id.eq_ignore_ascii_case(&expected.instance_id) || saved.netbios>2{return Err(invalid());}

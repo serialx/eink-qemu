@@ -30,7 +30,7 @@ impl PlatformOps for Host {
     fn apply(&mut self, _: &()) -> Result<(), BridgeError> { self.mutations.fetch_add(1, Ordering::SeqCst); Ok(()) }
     fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
     fn commit(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
-    fn rollback(&mut self, _: &Snapshot) -> Result<(), BridgeError> { self.restored.send(()).unwrap(); if self.fail_restore.load(Ordering::SeqCst) { Err(BridgeError::new("EIO", "Host refused restoration")) } else { Ok(()) } }
+    fn rollback(&mut self, _: &Snapshot) -> Result<(), BridgeError> { self.restored.send(()).unwrap(); if self.fail_restore.load(Ordering::SeqCst) { Err(BridgeError { code: "EIO".into(), message: "Host refused restoration".into(), detail: Some("Read bridge settings: native error 123".into()) }) } else { Ok(()) } }
 }
 
 #[test]
@@ -86,7 +86,9 @@ fn failed_restoration_stops_the_watchdog_without_repeating_mutations() {
     restored.recv_timeout(Duration::from_secs(3)).unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while worker.health().is_ok() && std::time::Instant::now() < deadline { std::thread::yield_now(); }
-    assert_eq!(worker.health().unwrap_err().code, "EROLLBACK");
+    let error = worker.health().unwrap_err();
+    assert_eq!(error.code, "EROLLBACK");
+    assert_eq!(error.detail.as_deref(), Some("EIO: Host refused restoration\nRead bridge settings: native error 123"));
     assert_eq!(worker.stop().unwrap_err().code, "EROLLBACK");
     assert!(restored.try_recv().is_err());
     let restarted = RecoveryWorker::start(Coordinator::open(dir.path(), "service", host.clone()).unwrap(), Duration::from_secs(1), || 223);
