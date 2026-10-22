@@ -116,7 +116,16 @@ byte 24 to byte 28. Both control fields now use 16-bit storage, with compile-tim
 assertions for their sizes and the body offset. The corrected layout passes
 Clang checks for macOS, Linux, and Windows targets and the native Windows GCC
 compiler; both Windows QEMU targets rebuild successfully. All 19 packet tests
-pass on macOS. Rebuilt Windows firmware validation is still pending.
+pass on macOS and Ubuntu ARM64. The rebuilt Windows package installs with its
+retained bridge intact, and the C3 scan now finds all three emulated networks,
+including PICSimLabWifi. Before that successful scan, the firmware experienced
+one interrupt-watchdog reset during menu navigation; its console and SD crash
+report were preserved. The retry reached File Transfer and completed discovery.
+The reader then obtained `192.168.64.20`; a host HTTP request returned 200, the
+browser displayed Connected with the same address, and `crosspoint.local`
+resolved to that address. This validates the Windows bridge on UTM's shared
+network, not physical-LAN acceptance. S3 remains pending. These UI checks use
+the existing 800 × 600 Windows display at the user's request.
 
 Helper IPC now requires the desktop's exact package version as well as the
 protocol version before dispatching an operation, and checks the helper's version
