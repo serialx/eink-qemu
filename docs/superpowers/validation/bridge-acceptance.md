@@ -23,17 +23,17 @@ do not establish a standard Linux desktop's password-prompt behavior.
 
 ## Current packages and regression results
 
-The Windows package contains source through `de22c7be03`. The Ubuntu package
-also includes the later macOS maintenance UI changes and the NetworkManager
-startup fix described below. Both include the review fixes for durable cancellation during Apply, Linux checkpoint timing,
+The current Windows and Ubuntu packages include the later macOS maintenance
+UI changes, package-repair instructions, and the NetworkManager startup fix
+described below. Both include the review fixes for durable cancellation during Apply, Linux checkpoint timing,
 dynamic connectivity verification, and Linux's explicit **In use** state.
 
 | Package | SHA-256 | Result |
 | --- | --- | --- |
-| Ubuntu ARM64 Debian package | `4df42577ccf3dd0b2575b10cd9f228b596a32374d8442ae42ae3d05d57124e15` | Archive checks and update passed; actual wizard Apply and installed-service cold-boot recovery passed |
-| Windows x64 NSIS installer | `4793caeb92673c9c7e0957bbb782f95379ef8cccc8bad380e618ff3355a7c61f` | Update passed; retained resource unchanged; automatic helper running; installed desktop, helper, and both QEMU payload hashes matched |
+| Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
+| Windows x64 NSIS installer | `ff3fd96c0b47ccdcac1047e91ec3f8bf9ad7cc10fa3ae8a1ca77c7089bbc27a7` | Idle update passed; automatic helper running; installed desktop matches the embedded NSIS payload, helper and both QEMU hashes matched; native UI retest pending |
 
-The installed Windows build also completed the **Manage bridge → Bridge ready**
+The preceding Windows package also completed the **Manage bridge → Bridge ready**
 check after its update and launched the saved X4 Pro firmware. The reader reached
 Home in 183.06 seconds after emulator startup. Native bridge inspection before
 startup took several minutes in the emulated x64 VM. The S3 scan found three
@@ -42,7 +42,7 @@ networks; joining PICSimLabWifi assigned `192.168.64.20`. The host received HTTP
 1.6.5-ko.0. mDNS resolved `crosspoint.local` to the same address on interface 41.
 These results establish shared-network connectivity, not physical-LAN access.
 
-The latest Windows package also removed the retained bridge successfully. The
+The preceding Windows package also removed the retained bridge successfully. The
 uninstaller removed its service, desktop, and helper, cleared the resource
 journal, and preserved the user's SD image. Reinstall passed with matching
 desktop, helper, and QEMU payload hashes and an automatic running service.
@@ -83,6 +83,25 @@ and IPv6 fixtures and removed its temporary policy and timer. UTM's warm reboot
 stalls before Linux starts, so this establishes cold-boot recovery, not an
 unattended warm-reboot pass.
 
+The installed Windows service also recovered after the desktop was forcibly
+terminated during **Keep connection**. It restored the original Ethernet
+adapter, removed the temporary bridge, and preserved the unrelated TAP adapter.
+The same service process remained running; the journal ended cancelled without
+an error, owned resources, pending rollback, or pending cleanup. The observer
+recorded completion 170 seconds after the confirmation deadline in the emulated
+x64 VM. This establishes recovery, not a short disruption bound.
+
+Native Linux version-mismatch testing exposed an unusable **Update support**
+action: the backend requires package maintenance on Linux and Windows. The UI
+now explains how to repair or update the platform package and offers **Check
+again**. macOS retains its native install/update action. Four regression tests
+failed before the fix and passed afterward; independent review found no
+blockers. The rebuilt Debian package displayed the corrected update screen
+against a temporary older helper and returned to connection selection after
+restoring the installed helper. A separate stopped-service test verified the
+missing-support screen and recovery in light theme. Both fixtures were restored,
+their backup timers stopped, and no network configuration was changed.
+
 The current macOS QA app includes support removal and is development signed
 for macOS 15 or newer; it is not the release artifact. Its native helper update
 installed the exact bundled payload and preserved the retained bridge service.
@@ -115,7 +134,7 @@ updated QA app reaches **Bridge ready** when reopening the retained setup.
 
 Current-source regression results: 254 macOS workspace tests passed, with four
 existing tests ignored; 80 Ubuntu ARM64 bridge tests and 35 Windows x64
-transaction/reboot-pause/cleanup tests passed. All 31 bridge UI tests,
+transaction/reboot-pause/cleanup tests passed. All 35 bridge UI tests,
 TypeScript checking, the frontend build, and 18 packaging/probe tests passed. These suites use temporary
 fixtures and do not replace native network lifecycle tests of the new packages.
 
@@ -129,7 +148,8 @@ fixtures and do not replace native network lifecycle tests of the new packages.
   acceptance. Their shared-network results do not satisfy that requirement.
 - Retest the latest recovery changes through installed services and the actual
   wizard, including interrupted setup and reboot. Ubuntu desktop-crash recovery
-  during confirmation and cold-boot recovery now pass. Windows package removal with a retained
+  during confirmation and cold-boot recovery now pass. Windows desktop-crash recovery
+  during confirmation also passes. Windows package removal with a retained
   bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
   and version-mismatch flows. Windows testing remains at the user's requested

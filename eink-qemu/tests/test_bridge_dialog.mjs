@@ -257,3 +257,24 @@ for (const fromUninstall of [false, true]) test(
     assert.match(dialog.textContent,/Bridge ready/);
     click('Done');await finished;
   });
+
+for (const platform of ['linux','windows']) for (const support of ['missing','needsUpdate']) test(
+  `${platform} ${support} support directs package repair and rechecks without a failing install action`, async (t) => {
+    const {document,trigger}=installDom(t);
+    const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+    let currentSupport=support;
+    const inspection=()=>({support:currentSupport,platform,adapters:[],capabilities:{create:true,existingBridge:true,reason:null},
+      selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null});
+    const finished=openBridgeDialog({inspect:async()=>inspection(),watch:async()=>()=>{},
+      install:async()=>assert.fail('package-managed support must not call the unsupported install command')},trigger);
+    const flush=()=>new Promise(resolve=>setImmediate(resolve));await flush();
+    const dialog=document.body.querySelectorAll('dialog')[0];
+    assert.match(dialog.textContent,platform==='linux'?/Debian \(\.deb\) package/:/Windows installer/);
+    assert.doesNotMatch(dialog.textContent,/will request administrator authorization/);
+    const buttons=()=>dialog.querySelectorAll('button');
+    assert.equal(buttons().some(b=>['Install support','Update support'].includes(b.textContent)),false);
+    currentSupport='ready';
+    buttons().find(b=>b.textContent==='Check again').dispatchEvent(new Event('click'));await flush();
+    assert.match(dialog.textContent,/Choose a connection/);
+    buttons().find(b=>b.textContent==='Close').dispatchEvent(new Event('click'));await finished;
+  });

@@ -5,6 +5,7 @@ import { dialogOpen, registerDialog } from './dialog.ts';
 
 export function bridgeView(state: BridgeUiState) {
   const view = { title: 'Choose a connection', message: 'Choose the host connection that should carry the emulated device’s network traffic.',
+    canInstallSupport: state.inspection?.platform === 'macos',
     canClose: !['progress', 'saving', 'uninstalling'].includes(state.step), retrySave: false,
     canCancel: state.step === 'progress' && !['rollingBack', 'finalizing'].includes(state.operation?.state ?? ''),
     retryRecovery: null as string | null };
@@ -23,7 +24,11 @@ export function bridgeView(state: BridgeUiState) {
       break;
     case 'support':
       view.title = state.inspection?.support === 'needsUpdate' ? 'Update bridge support' : 'Install bridge support';
-      view.message = 'Install the networking support used to create, check and restore bridge connections. Your operating system will request administrator authorization.';
+      view.message = view.canInstallSupport
+        ? 'Install the networking support used to create, check and restore bridge connections. Your operating system will request administrator authorization.'
+        : state.inspection?.platform === 'linux'
+          ? 'Bridge support is included in the eink-qemu Debian (.deb) package. Reinstall or update that package using your software installer, then choose Check again.'
+          : 'Bridge support is included in the eink-qemu Windows installer. Run the installer again to repair or update the app, then choose Check again.';
       break;
     case 'choose':
       if (state.inspection?.readiness === 'inUse') view.message = 'This bridge is in use. Stop its emulator before checking or changing the connection. Its current network configuration has not been reverified.';
@@ -200,13 +205,15 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     }
     body.replaceChildren(); actions.replaceChildren();
     if (state.step === 'support') {
-      if (!emulatorIdle()) { const note = document.createElement('p'); note.textContent = 'Stop the emulator to install bridge support.'; body.append(note); }
-      button(state.inspection?.support === 'needsUpdate' ? 'Update support' : 'Install support', () => void run(async () => {
-        const inspection = await backend.install();
-        if (inspection.support !== 'ready') throw { code: 'EINSTALL', message: 'Bridge support is not available yet. Check the system authorization prompt and try again.' };
-        await inspectResult(inspection);
-      }), emulatorIdle(), true);
-      button('Check again', () => void refresh());
+      if (view.canInstallSupport) {
+        if (!emulatorIdle()) { const note = document.createElement('p'); note.textContent = 'Stop the emulator to install bridge support.'; body.append(note); }
+        button(state.inspection?.support === 'needsUpdate' ? 'Update support' : 'Install support', () => void run(async () => {
+          const inspection = await backend.install();
+          if (inspection.support !== 'ready') throw { code: 'EINSTALL', message: 'Bridge support is not available yet. Check the system authorization prompt and try again.' };
+          await inspectResult(inspection);
+        }), emulatorIdle(), true);
+      }
+      button('Check again', () => void refresh(), true, !view.canInstallSupport);
     } else if (state.step === 'choose') {
       if (!state.inspection) {
         const loading = document.createElement('p'); loading.textContent = 'Inspecting host connections…'; body.append(loading);

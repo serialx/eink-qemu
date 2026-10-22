@@ -907,3 +907,32 @@ Evidence: native test log `/tmp/eink-nm-startup-green-v14.log`; guest recovery
 result `/var/tmp/eink-linux-ui-boot-v14-result.json`, service journal
 `/var/tmp/eink-linux-ui-boot-v14-journal.log`, and cleanup log
 `/var/tmp/eink-linux-ui-boot-v14-cleanup.log` (exit 0).
+
+## 2026-10-22: packaged support repair and Windows desktop-crash recovery
+
+Windows installed V11 operation `846673f6854eddf494866c21362bb62d` reached
+Verifying through the actual wizard and UAC approval. The guarded observer
+killed only the desktop process 120 seconds before its confirmation deadline.
+The unchanged helper process restored Ethernet and reached Cancelled revision
+32 with no error, resources, undo, or cleanup pending. The unrelated TAP was
+preserved. Observation was 170 seconds after the deadline in x64 emulation.
+Evidence: `/tmp/eink-windows-ui-crash-v15-result.json` and the guest
+`C:\eink-driver-native-gate\ui-crash-v15` record.
+
+Linux installed protocol checks accepted the matching client and closed the
+connection for an older helper version, unsupported protocol, and missing
+version field without changing the journal. Actual UI testing with helper
+0.8.0 exposed a package-only Update action that returned EINSTALL. The UI now
+uses Debian/Windows installer instructions and Check again on those platforms,
+retaining native installation on macOS. Four regression cases reproduced the
+defect; all 35 UI tests and the frontend build passed after the fix. Independent
+review found no blockers.
+
+V16 Debian SHA `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de`
+passed package checks and update. Actual keyboard navigation displayed the
+corrected mismatch screen, retained it on retry, then reached the chooser after
+restoring helper 0.8.1. A stopped-service fixture tested missing support and
+recovery in light theme. Helpers were restored, backup timers stopped, and
+network state remained unchanged. Screenshots: `/tmp/eink-linux-package-repair-v16.jpg`,
+`/tmp/eink-linux-package-repair-restored-v16.jpg`, and
+`/tmp/eink-linux-missing-light-v17.jpg`.
