@@ -3,7 +3,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use eink_bridge::{model::*, protocol::*, transport::HelperClient};
     let args = std::env::args().collect::<Vec<_>>();
-    if args.len() != 3 || args[2] != "eink-bridge-test" || unsafe { libc::geteuid() } != 1000
+    if args.len() != 3 || !matches!(args[2].as_str(), "eink-bridge-test" | "eink-bridge-noble-x64") || unsafe { libc::geteuid() } != 1000
         || std::fs::read_to_string("/etc/hostname")?.trim() != args[2] { return Err("requires the ordinary disposable VM account".into()); }
     let request = |request| HelperClient::connect()?.request(HelperRequest { version: VERSION, request });
     let ReplyKind::Inspection { inspection } = request(RequestKind::Inspect)?.reply else { panic!("missing inspection"); };

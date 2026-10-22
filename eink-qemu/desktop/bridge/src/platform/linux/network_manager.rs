@@ -28,9 +28,28 @@ mod storage_tests {
         for flags in [1, 2, 4, 8, 16] { assert!(durable_profile(persistent, flags, false).is_err()); }
         assert!(durable_profile(persistent, 0, true).is_err());
     }
+    #[test]
+    fn netplan_storage_requires_the_exact_network_manager_uuid() {
+        let id = "397b4cc3-a34a-4b35-9d18-7be4da59141f";
+        let filename = format!("/run/NetworkManager/system-connections/netplan-NM-{id}.nmconnection");
+        assert_eq!(netplan_source(&filename, id), Some(std::path::PathBuf::from(format!("/etc/netplan/90-NM-{id}.yaml"))));
+        for invalid in ["", "../90-NM-other", "397b4cc3-a34a-4b35-9d18-7be4da591410"] {
+            assert!(netplan_source(&filename, invalid).is_none());
+        }
+        for invalid in ["/run/NetworkManager/system-connections/netplan-eth0.nmconnection",
+            "/etc/NetworkManager/system-connections/netplan-NM-397b4cc3-a34a-4b35-9d18-7be4da59141f.nmconnection"] {
+            assert!(netplan_source(invalid, id).is_none());
+        }
+    }
 }
 pub struct ActiveProfile { pub device: OwnedObjectPath, pub path: OwnedObjectPath, pub profile: Profile }
 pub struct NetworkManager { connection: Connection }
+fn bounded_connection(builder: Builder<'_>) -> Result<Connection, BridgeError> {
+    // NetworkManager's Netplan backend persists and regenerates YAML before
+    // replying. Native boot recovery exceeded 15 seconds even though Update
+    // succeeded. Wait for that single reply; never retry an uncertain mutation.
+    builder.method_timeout(Duration::from_secs(60)).build().map_err(error)
+}
 
 #[cfg(test)]
 mod startup_tests {
@@ -59,6 +78,29 @@ mod startup_tests {
         let connection = Builder::address(address.trim()).unwrap()
             .method_timeout(Duration::from_secs(1)).build().unwrap();
         (bus, service, NetworkManager { connection }, starting)
+    }
+    struct SlowProfile;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+    impl SlowProfile {
+        fn get_settings(&self) -> Settings {
+            // Ubuntu's Netplan backend can keep NetworkManager busy for more
+            // than 15 seconds while persisting a profile during boot recovery.
+            std::thread::sleep(Duration::from_secs(16));
+            Settings::new()
+        }
+    }
+    #[test]
+    fn netplan_persistence_delay_does_not_abort_recovery_calls() {
+        let mut bus = Bus(Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(Stdio::piped()).spawn().unwrap());
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap()).read_line(&mut address).unwrap();
+        let path = OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Settings/1").unwrap();
+        let _service = Builder::address(address.trim()).unwrap().name(SERVICE).unwrap()
+            .serve_at(path.clone(), SlowProfile).unwrap().build().unwrap();
+        let nm = NetworkManager { connection: bounded_connection(Builder::address(address.trim()).unwrap()).unwrap() };
+        assert!(nm.read_profile(&path).is_ok(), "a delayed NetworkManager reply must remain within the recovery call budget");
     }
     #[test]
     fn recovery_waits_until_network_manager_finishes_startup() {
@@ -95,6 +137,22 @@ fn durable_profile(filename: &str, flags: u32, unsaved: bool) -> Result<(), Brid
     }
     Ok(())
 }
+fn netplan_source(filename: &str, id: &str) -> Option<std::path::PathBuf> {
+    if id.len() != 36 || !id.bytes().enumerate().all(|(i, c)|
+        if [8, 13, 18, 23].contains(&i) { c == b'-' } else { c.is_ascii_hexdigit() }) {
+        return None;
+    }
+    (filename == format!("/run/NetworkManager/system-connections/netplan-NM-{id}.nmconnection"))
+        .then(|| std::path::PathBuf::from(format!("/etc/netplan/90-NM-{id}.yaml")))
+}
+fn protected_netplan_source(path: &std::path::Path) -> bool {
+    use std::{fs::OpenOptions, os::unix::fs::{MetadataExt, OpenOptionsExt}};
+    if crate::transport::unix::validate_system_directory(path.parent().unwrap()).is_err() { return false; }
+    let Ok(file) = OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK).open(path) else { return false; };
+    file.metadata().is_ok_and(|meta| meta.is_file() && meta.uid() == 0 && meta.nlink() == 1
+        && meta.mode() & 0o022 == 0 && meta.len() > 0)
+}
 impl NetworkManager {
     /// Acquiring the bus name makes NetworkManager's systemd unit active before
     /// its devices and profiles are loaded. Recovery must not interpret that
@@ -114,7 +172,7 @@ impl NetworkManager {
         }
     }
     pub fn connect() -> Result<Self, BridgeError> {
-        let manager = Self { connection: Builder::system().map_err(error)?.method_timeout(Duration::from_secs(15)).build().map_err(error)? };
+        let manager = Self { connection: bounded_connection(Builder::system().map_err(error)?)? };
         manager.wait_initialized(Duration::from_secs(60))?;
         Ok(manager)
     }
@@ -123,12 +181,30 @@ impl NetworkManager {
     }
     fn manager(&self) -> Result<Proxy<'_>, BridgeError> { self.proxy(ROOT, SERVICE) }
     fn profile_proxy(&self, path: &OwnedObjectPath) -> Result<Proxy<'_>, BridgeError> { self.proxy(path.as_str(), "org.freedesktop.NetworkManager.Settings.Connection") }
-    /// Generated /run profiles can be recreated at boot, undoing our saved
-    /// autoconnect change. Only accept persistent, native keyfile profiles.
+    /// Generic generated profiles can overwrite our saved autoconnect change
+    /// at boot. Ubuntu's NetworkManager Netplan backend is different: it saves
+    /// updates to a UUID-specific YAML source before generating its /run file.
+    /// Accept only that exact mapping with a protected persistent source.
     pub fn require_durable_profile(&self, path: &OwnedObjectPath) -> Result<(), BridgeError> {
         let proxy = self.profile_proxy(path)?;
-        durable_profile(&proxy.get_property::<String>("Filename").map_err(error)?,
-            proxy.get_property("Flags").map_err(error)?, proxy.get_property("Unsaved").map_err(error)?)
+        let filename = proxy.get_property::<String>("Filename").map_err(error)?;
+        let flags = proxy.get_property("Flags").map_err(error)?;
+        let unsaved = proxy.get_property("Unsaved").map_err(error)?;
+        let native = durable_profile(&filename, flags, unsaved);
+        if native.is_ok() || flags != 0 || unsaved { return native; }
+        let profile = self.read_profile(path)?;
+        if netplan_source(&filename, uuid(&profile)?).is_some_and(|source| protected_netplan_source(&source)) {
+            // Netplan 1.1.2 drops an explicit route metric when serializing a
+            // link-local profile. Do not start a migration that cannot retain
+            // its saved configuration. Broaden this set only after native
+            // round-trip and recovery checks for each additional IP method.
+            if ["ipv4", "ipv6"].iter().any(|family| !matches!(profile.get(*family)
+                .and_then(|settings| settings.get("method")).and_then(|value| <&str>::try_from(value).ok()),
+                Some("auto" | "disabled"))) {
+                return Err(BridgeError::new("EUNSUPPORTED", "Automatic setup for this Netplan connection requires automatic or disabled IP configuration. Select an existing bridge for other IP settings."));
+            }
+            Ok(())
+        } else { native }
     }
     pub fn device_path(&self, interface: &str) -> Result<OwnedObjectPath, BridgeError> {
         self.manager()?.call("GetDeviceByIpIface", &(interface,)).map_err(error)
@@ -232,20 +308,20 @@ impl NetworkManager {
     pub fn add_profile(&self, profile: &Profile) -> Result<OwnedObjectPath, BridgeError> {
         root()?;
         if self.find_profile(uuid(profile)?)?.is_some() { return Err(conflict()); }
-        self.proxy(SETTINGS, "org.freedesktop.NetworkManager.Settings")?.call("AddConnection", &(&profile.0,)).map_err(error)
+        self.proxy(SETTINGS, "org.freedesktop.NetworkManager.Settings")?.call("AddConnection", &(&profile.0,)).map_err(|value| error(format!("Add saved connection: {value}")))
     }
     pub fn update_profile(&self, expected: &Profile, replacement: &Profile) -> Result<(), BridgeError> {
         root()?;
         if uuid(expected)? != uuid(replacement)? { return Err(conflict()); }
         let (path, current) = self.find_profile(uuid(expected)?)?.ok_or_else(conflict)?;
         if !same_configuration(expected, &current) { return Err(conflict()); }
-        self.profile_proxy(&path)?.call("Update", &(&replacement.0,)).map_err(error)
+        self.profile_proxy(&path)?.call("Update", &(&replacement.0,)).map_err(|value| error(format!("Update saved connection: {value}")))
     }
     pub fn delete_profile(&self, expected: &Profile) -> Result<(), BridgeError> {
         root()?;
         let Some((path, current)) = self.find_profile(uuid(expected)?)? else { return Ok(()); };
         if !same_configuration(expected, &current) { return Err(conflict()); }
-        self.profile_proxy(&path)?.call("Delete", &()).map_err(error)
+        self.profile_proxy(&path)?.call("Delete", &()).map_err(|value| error(format!("Delete saved connection: {value}")))
     }
     pub fn checkpoint(&self, device: &OwnedObjectPath, seconds: u32) -> Result<OwnedObjectPath, BridgeError> {
         self.checkpoint_in_epoch(&self.epoch()?, device, seconds)

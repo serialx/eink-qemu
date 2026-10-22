@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use eink_bridge::{linux_network_manager::NetworkManager, linux_profiles::Profile, linux_transaction::{Checkpoint, ProfileChange}, linux_verify::HostSnapshot};
     use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
     let args = std::env::args().collect::<Vec<_>>();
-    if args.len() != 3 || args[2] != "eink-bridge-test" || unsafe { libc::geteuid() } != 0
+    if args.len() != 3 || !matches!(args[2].as_str(), "eink-bridge-test" | "eink-bridge-noble-x64") || unsafe { libc::geteuid() } != 0
         || std::fs::read_to_string("/etc/hostname")?.trim() != args[2] { return Err("requires exact disposable hostname and root".into()); }
     let path = "/var/tmp/eink-managed-ipv6-fixture.json";
     let nm = NetworkManager::connect()?;
@@ -17,13 +17,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut fixture = original.clone();
         let ipv6 = fixture.get_mut("ipv6").ok_or("missing IPv6 fixture")?;
         if <&str>::try_from(&ipv6["method"])? != "ignore" { return Err("expected original unmanaged IPv6 fixture".into()); }
-        ipv6.insert("method".into(), zbus::zvariant::Str::from("link-local").into());
+        // Ubuntu 24.04's Netplan backend loses an explicit link-local route
+        // metric. Exercise its normal automatic-IP profile instead; retain
+        // the original profile in the same guarded restoration record.
+        let method = if args[2] == "eink-bridge-noble-x64" { "auto" } else { "link-local" };
+        ipv6.insert("method".into(), zbus::zvariant::Str::from(method).into());
         // NM-managed link-local routes use a different metric than the
         // preexisting kernel-managed fixture. This QA baseline deliberately
         // changes IPv6 policy; it must preserve IPv4 connectivity and restore
         // the complete original IPv6 state at the end of the lifecycle tests.
         ipv6.insert("route-metric".into(), 1024i64.into());
-        ipv6.insert("may-fail".into(), false.into());
+        // Shared UTM networking may provide IPv4 without advertising an IPv6
+        // prefix. The Noble fixture tests automatic IPv6 as optional, while
+        // retaining the same strict IPv4 and complete-profile restoration.
+        if args[2] == "eink-bridge-noble-x64" {
+            // NetworkManager omits the default true value in GetSettings.
+            ipv6.remove("may-fail");
+        } else {
+            ipv6.insert("may-fail".into(), false.into());
+        }
         let mut record = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
         serde_json::to_writer(&mut record, &serde_json::json!({"original": original, "fixture": fixture, "before": before}))?;
         record.sync_all()?;
@@ -56,7 +68,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if args[1] == "--restore" {
         let record: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
         let original: Profile = serde_json::from_value(record["original"].clone())?;
-        let fixture: Profile = serde_json::from_value(record["fixture"].clone())?;
+        let mut fixture: Profile = serde_json::from_value(record["fixture"].clone())?;
+        // The first Noble QA record explicitly wrote the default true value;
+        // GetSettings omits it. Canonicalize only that known fixture default,
+        // retaining all other expected fields and the original durable record.
+        if args[2] == "eink-bridge-noble-x64" {
+            let ipv6 = fixture.get_mut("ipv6").ok_or("missing IPv6 fixture")?;
+            if ipv6.get("may-fail").and_then(|v| bool::try_from(v).ok()) == Some(true) {
+                ipv6.remove("may-fail");
+            }
+        }
         let before: HostSnapshot = serde_json::from_value(record["before"].clone())?;
         ProfileChange::new(Some(fixture), Some(original))?.apply(&nm)?;
         let current = nm.active_profile("enp0s1")?;

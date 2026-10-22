@@ -1,6 +1,6 @@
 # Managed bridge acceptance
 
-Status on 2026-10-22: implementation and native acceptance are still in progress.
+Status on 2026-10-23: implementation and native acceptance are still in progress.
 The feature is not ready for release. This is the current checklist; the
 [platform gate record](bridge-platform-gates.md) contains the detailed evidence
 and earlier failed attempts.
@@ -16,7 +16,7 @@ reconfigured. Host readiness and firmware connectivity are separate results:
 | macOS 26.5.2 ARM64, VirtualBuddy, bridged Ethernet | Ordinary-user wizard setup and system authorization; native removal, reboot recovery, and lease protection | C3 and S3 acquired LAN addresses; a separate peer opened their HTTP services and resolved mDNS |
 | Ubuntu 22.04 ARM64, UTM shared network | Packaged wizard configuration and confirmed removal; package update, leased-removal refusal, cleanup, and reinstall with reversible network fixtures | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
 | Windows 11 Pro x64 build 26300, UTM shared network | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
-| Ubuntu 24.04.5 x64, UTM shared network | Ordinary-user native bridge regression suite: 80 passed; desktop boot verified; packaged wizard and lifecycle tests pending | Pending |
+| Ubuntu 24.04.5 x64, UTM shared network | 82 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V30 actual wizard retry and cold-boot recovery passed | Pending |
 
 The Linux tests used an explicitly authorized temporary polkit rule for the
 single bridge action. Each lifecycle fixture removed it afterward. These runs
@@ -32,7 +32,8 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | Package | SHA-256 | Result |
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
-| Windows x64 NSIS installer | `ff3fd96c0b47ccdcac1047e91ec3f8bf9ad7cc10fa3ae8a1ca77c7089bbc27a7` | Idle update passed; automatic helper running; installed desktop matches the embedded NSIS payload, helper and both QEMU hashes matched; missing-support UI and recovery passed |
+| Windows x64 NSIS installer V23 | `2f5da96919a97540488ce220c0dd94797138c32fc98f790f7fc893b62e0f2391` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; actual cold-boot recovery remains failed |
+| Ubuntu x64 Debian package V30 | `ad0d254cf906e32ed5fb2a9ac556fa18bba14005b3096b4e384074f01d1c8068` | Ubuntu 22.04 build and archive checks passed; update passed payload, service and permission checks and preserved the failed operation byte-for-byte; actual UI restoration and fresh cold-boot recovery passed. Preceding V26 passed configure, lease protection and removal |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
 check after its update and launched the saved X4 Pro firmware. The reader reached
@@ -48,7 +49,7 @@ uninstaller removed its service, desktop, and helper, cleared the resource
 journal, and preserved the user's SD image. Reinstall passed with matching
 desktop, helper, and QEMU payload hashes and an automatic running service.
 
-The latest Ubuntu wizard completed connection selection, review, Apply, Keep,
+The Ubuntu ARM64 wizard completed connection selection, review, Apply, Keep,
 and **Bridge ready** using keyboard navigation. A separate attempt against the
 original generated Netplan connection was correctly refused before mutation.
 The successful run used the reversible persistent-profile fixture described
@@ -162,14 +163,96 @@ while another thread read status. The helper now retries transient replacement
 conflicts for up to one second while preserving the flushed candidate and the
 previous durable record. Five native Windows tests pass, including concurrent
 reads, a briefly conflicting reader, persistent-conflict preservation,
-transaction exclusion, and lease transfer. The updated package and actual
-wizard reboot test remain pending; the precise cause of the earlier UI
-rollbacks has not been proven from those attempts' logs.
+transaction exclusion, and lease transfer. The precise cause of those earlier
+UI rollbacks has not been proven from their logs.
+
+With V22 installed, the actual wizard reached eight completed mutations before
+the guarded power cut. On reboot, recovery failed with a Windows command timeout;
+the durable record still requires restoration. This is a failed cold-boot test.
+Subsequent read-only inspections completed bridge membership, saved settings,
+live bridge settings and bridge address checks, taking up to 60 seconds per
+inspection on the emulated x64 VM. They do not identify the command that timed
+out during startup. Reading the bridged physical adapter's IP profile failed
+because Windows had moved its IP interfaces onto the bridge, as expected in
+that intermediate state.
+
+Recovery errors were discarding the native cause's code and diagnostic detail.
+A regression test reproduced the loss. V23 preserves both, adds context to
+Windows membership/settings read errors, and passes all six recovery/cleanup
+tests. Its installer preserved the failed operation record exactly. The actual
+UI retry removed the owned bridge and adapters and restored the original saved
+settings and bindings, while preserving the unrelated TAP. Final readiness
+failed with a now-visible `ECONFLICT`: the physical adapter's active IPv6 MTU
+was 1500 instead of the recorded 1280. IPv4 was restored; IPv6 had only a
+link-local address and no default route. Router discovery remained enabled.
+The host's shared VM interface also marked that IPv6 prefix deprecated. This
+suggests a shared-network availability problem, but does not establish the
+cause of the original startup timeout. The failed record remains intact; no
+recovery pass or new cold-boot pass is claimed.
 
 The first Linux x64 package build was rejected by the compatibility check:
 its QEMU binaries required newer glibc than the advertised Ubuntu 22.04 baseline.
-The replacement build uses Ubuntu 22.04. The successful native regression run
-on Ubuntu 24.04 does not establish compatibility of that unfinished package.
+The replacement build on Ubuntu 22.04 passed the archive checks and was installed
+on Ubuntu 24.04. Package verification, helper permissions and ordinary-user
+inspection passed; the installed UI launched and rendered.
+
+The Ubuntu 24.04 lifecycle fixture then failed at planning, before any app bridge
+mutation or temporary polkit authorization. NetworkManager migrated its native
+keyfile to a persistent Netplan YAML file and a generated runtime profile, which
+the preceding helper rejected. Netplan also dropped the fixture's explicit IPv6
+link-local route metric, so strict fixture cleanup refused to overwrite the
+changed profile. A guarded QA cleanup archived the generated files, restored the
+original Netplan source, and verified the original connection UUID, IPv6 policy,
+IPv4 address and gateway. The original connection was restored before the next test. This storage behavior
+is documented by [Netplan's NetworkManager integration guide](https://netplan.readthedocs.io/en/latest/netplan-everywhere/).
+
+V26 recognizes only NetworkManager's canonical UUID-specific Netplan profile
+with a protected, root-owned persistent YAML source. Generic generated and
+unsaved profiles remain unsupported. Netplan support is limited to automatic
+or disabled IP configuration: an inactive native probe proved that its
+link-local serialization loses an explicit route metric. The probe was removed
+without activating its interface or changing the live connection.
+
+All 81 bridge regressions passed as an ordinary user in the Ubuntu 22.04 build
+container. The installed V26 package then passed ordinary-user inspection,
+unauthorized Apply rejection, configure/Keep, verification, transferred lease
+protection, and confirmed removal on Ubuntu 24.04. The resource journal was
+empty afterward. The separate QA fixture initially refused cleanup because
+NetworkManager omitted its explicitly recorded default `ipv6.may-fail=true`.
+Correcting that fixture comparison restored the complete original profile and
+runtime. Its subsequent storage cleanup exceeded the client command's default
+ten-second deletion timeout after the deletion had actually completed; a guarded continuation verified the original Netplan source, connection UUID,
+IPv6 policy, IPv4 address and gateway, then restarted the helper and stopped
+the backup timer. The temporary polkit rule was absent. These fixture failures
+are not counted as a fully clean end-to-end run.
+
+A subsequent Ubuntu 24.04 test used the installed wizard to select Ethernet,
+review the changes and apply setup. The app reached **Keep connection** before
+a guarded shutdown and cold start. Recovery restored the original Ethernet
+address, but stopped with `EROLLBACK` and a NetworkManager timeout, leaving
+cleanup pending in the durable operation record. The independent fixture backup
+had not run. NetworkManager's journal showed the original profile update
+completing roughly 20 seconds after recovery began, beyond the helper's
+15-second call limit.
+
+The helper now allows up to 60 seconds for a single NetworkManager reply;
+it does not retry an uncertain mutation. Update, add and delete errors also
+identify the failed operation. A private-bus regression with a 16-second reply
+failed under the old limit and passes with the change. All 82 bridge tests
+passed as an ordinary user. The updated package passes archive, architecture, libc-baseline and permission
+checks. The installed update preserved the failed operation byte-for-byte. The actual
+**Retry restoration** action then passed: the app returned to connection
+selection, the original Ethernet UUID was active, no temporary bridge remained,
+and the journal was cancelled without an error, owned resources or pending
+restoration. The independent backup had not run. A fresh installed-wizard test then reached **Keep connection** and shut down
+with 87 seconds remaining. On the next boot, the installed service automatically
+cancelled that same operation without an error. The original Ethernet connection
+was active; both owned saved profiles and the temporary bridge interface were
+absent; no resource, rollback or cleanup remained pending. The independent
+backup had not run. This establishes Ubuntu 24.04 x64 cold-boot recovery with
+the updated timeout. Final fixture cleanup also passed: the original Netplan source, connection UUID,
+IPv6 policy, IPv4 address and gateway were restored; temporary authorization and
+the backup service/timer were removed; the helper and login manager were active.
 
 ## Remaining acceptance work
 
@@ -180,8 +263,9 @@ on Ubuntu 24.04 does not establish compatibility of that unfinished package.
 - Complete Linux x64 native coverage and Linux/Windows C3/S3 physical-LAN
   acceptance. Their shared-network results do not satisfy that requirement.
 - Retest the latest recovery changes through installed services and the actual
-  wizard, including interrupted setup and reboot. Ubuntu desktop-crash recovery
-  during confirmation and cold-boot recovery now pass. Windows desktop-crash recovery
+  wizard, including interrupted setup and reboot. Ubuntu ARM64 desktop-crash recovery
+  during confirmation and cold-boot recovery pass; Ubuntu 24.04 x64 cold-boot
+  recovery also passes after the Netplan timeout fix. Windows desktop-crash recovery
   during confirmation also passes. Windows package removal with a retained
   bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
