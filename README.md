@@ -163,8 +163,14 @@ eink-qemu/cli run .pio/build/default --put book.epub \
   ready press:confirm wait-screen press:confirm 'wait-log:Page render' \
   shot:page1 heap:page1                    # CrossPoint: open a book
 eink-qemu/cli compare base/.pio/build/default pr/.pio/build/default \
-  --put book.epub --script reading.txt
+  --sleep off --put book.epub --script reading.txt
 ```
+
+The CLI defaults to `--sleep off`, skipping idle host waits while preserving
+device timing. Leave `--turbo` off for firmware benchmarks. Older CLIs without
+`--sleep` accept `--qemu-arg=-icount --qemu-arg=sleep=off`. Compare guest or
+firmware timings; host elapsed time depends on pacing. Pass `--sleep on`
+for interactive CLI sessions, including `start`/`do` and `--gui`.
 
 `ready` waits for a quiet screen (for CrossPoint, its Home and memory
 report). `compare` runs two builds side by side and writes a table for a

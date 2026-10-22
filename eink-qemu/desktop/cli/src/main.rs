@@ -61,6 +61,11 @@ fn rtc(text: &str) -> Result<String, String> {
 }
 
 const AFTER_HELP: &str = "\
+The CLI defaults to --sleep off: idle host waits are skipped while device
+timing is preserved. Use --sleep on for interactive sessions, including
+start/do and --gui. Leave --turbo off when measuring firmware performance.
+On older CLIs without --sleep, use --qemu-arg=-icount --qemu-arg=sleep=off.
+
 Steps run in order; `eink-qemu steps` lists them. Any ESP-IDF firmware:
 
   eink-qemu run build/ ready shot:boot press:down wait-screen shot:next heap:next
@@ -101,6 +106,7 @@ enum Command {
         run: RunArgs,
     },
     /// Run the same steps on two firmwares side by side and compare timings, heaps and screenshots.
+    #[command(after_help = AFTER_HELP)]
     Compare {
         /// The baseline firmware (or build directory).
         base: PathBuf,
@@ -243,6 +249,10 @@ pub struct RunArgs {
     /// the CPU idle for this many guest ms: firmware busy with background work can miss a short press. 0 turns it off.
     #[arg(long, default_value_t = 200, value_name = "MS", value_parser = millis)]
     pub input_quiet: u64,
+    /// Idle clock pacing: off skips idle host waits for benchmarks while preserving device timing;
+    /// on paces idle time for interactive use. Measure guest time; host time depends on pacing.
+    #[arg(long, default_value = "off", value_name = "on|off", value_parser = ["on", "off"])]
+    pub sleep: String,
     /// Fast peripherals (SD, panel, SPI): quicker runs without real device timing. Not for timing comparisons.
     #[arg(long)]
     pub turbo: bool,
@@ -381,6 +391,40 @@ fn main() -> ExitCode {
     // Sessions end with the runtime; do not wait for stray tasks.
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     ExitCode::from(code)
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+
+    #[test]
+    fn launch_commands_default_to_unpaced_with_an_interactive_override() {
+        for command in ["run", "compare", "start"] {
+            let mut argv = vec!["eink-qemu", command, "firmware.bin"];
+            if command == "compare" {
+                argv.push("candidate.bin");
+            }
+            for (flags, expected, turbo) in [
+                (vec![], "off", false),
+                (vec!["--sleep", "off"], "off", false),
+                (vec!["--sleep", "on"], "on", false),
+                (vec!["--turbo"], "off", true),
+                (vec!["--sleep", "off", "--turbo"], "off", true),
+                (vec!["--sleep", "on", "--turbo"], "on", true),
+                (vec!["--gui"], "off", false),
+                (vec!["--gui", "--sleep", "on"], "on", false),
+            ] {
+                let cli = Cli::try_parse_from(argv.iter().copied().chain(flags)).unwrap();
+                let run = match cli.command {
+                    Command::Run { run, .. } | Command::Compare { run, .. } | Command::Start { run, .. } => run,
+                    _ => unreachable!(),
+                };
+                assert_eq!(run.sleep, expected);
+                assert_eq!(run.turbo, turbo);
+            }
+            assert!(Cli::try_parse_from(argv.iter().copied().chain(["--sleep", "typo"])).is_err());
+        }
+    }
 }
 
 #[cfg(test)]

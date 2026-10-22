@@ -759,10 +759,11 @@ impl Session {
             "-machine".into(),
             if machine == "x4pro" { format!("x4pro,panel={}", options.panel) } else { machine.to_string() },
             "-icount".into(),
-            // Idle time always passes in real time (sleep=on): with native
+            // Idle time defaults to real time (sleep=on): with native
             // speed, sleep=off would run a resting device through minutes of
             // guest time per second, into its auto-sleep, at a full core.
             // Turbo's speed-up comes from the peripheral overrides below.
+            // The CLI defaults to --sleep off through options.extra below.
             format!("shift={},sleep=on", if machine == "picco" { 2 } else { 0 }),
         ]);
         if options.turbo {

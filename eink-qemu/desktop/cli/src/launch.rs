@@ -390,6 +390,10 @@ pub fn prepare(args: &RunArgs, firmware: &Path, dir: PathBuf) -> Result<Prepared
     if let Some(port) = args.gdb {
         extra.extend(["-gdb".into(), format!("tcp:127.0.0.1:{port}")]);
     }
+    if args.sleep == "off" {
+        // QEMU merges repeated -icount options; retain the board's shift.
+        extra.extend(["-icount".into(), "sleep=off".into()]);
+    }
     extra.extend(args.qemu_arg.iter().cloned());
     let options = StartOptions {
         machine: flash.machine.clone(),
