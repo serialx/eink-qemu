@@ -16,6 +16,7 @@ reconfigured. Host readiness and firmware connectivity are separate results:
 | macOS 26.5.2 ARM64, VirtualBuddy, bridged Ethernet | Ordinary-user wizard setup and system authorization; native removal, reboot recovery, and lease protection | C3 and S3 acquired LAN addresses; a separate peer opened their HTTP services and resolved mDNS |
 | Ubuntu 22.04 ARM64, UTM shared network | Packaged wizard configuration and confirmed removal; package update, leased-removal refusal, cleanup, and reinstall with reversible network fixtures | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
 | Windows 11 Pro x64 build 26300, UTM shared network | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
+| Ubuntu 24.04.5 x64, UTM shared network | Ordinary-user native bridge regression suite: 80 passed; desktop boot verified; packaged wizard and lifecycle tests pending | Pending |
 
 The Linux tests used an explicitly authorized temporary polkit rule for the
 single bridge action. Each lifecycle fixture removed it afterward. These runs
@@ -31,7 +32,7 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | Package | SHA-256 | Result |
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
-| Windows x64 NSIS installer | `ff3fd96c0b47ccdcac1047e91ec3f8bf9ad7cc10fa3ae8a1ca77c7089bbc27a7` | Idle update passed; automatic helper running; installed desktop matches the embedded NSIS payload, helper and both QEMU hashes matched; native UI retest pending |
+| Windows x64 NSIS installer | `ff3fd96c0b47ccdcac1047e91ec3f8bf9ad7cc10fa3ae8a1ca77c7089bbc27a7` | Idle update passed; automatic helper running; installed desktop matches the embedded NSIS payload, helper and both QEMU hashes matched; missing-support UI and recovery passed |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
 check after its update and launched the saved X4 Pro firmware. The reader reached
@@ -102,6 +103,19 @@ restoring the installed helper. A separate stopped-service test verified the
 missing-support screen and recovery in light theme. Both fixtures were restored,
 their backup timers stopped, and no network configuration was changed.
 
+The current Windows package also passed the stopped-service test in light theme
+at 800 × 600. It displayed the Windows installer repair instructions with
+**Check again**, then returned to **Choose a connection** after the service was
+restored. The fixture stopped its backup process and verified the unchanged,
+empty resource journal.
+
+The Ubuntu ARM64 wizard also passed an adapter-disconnection check. After the
+test took Ethernet offline, **Refresh** showed **Disconnected**, disabled its
+selection, and kept **Review setup** unavailable. Keyboard navigation skipped
+the disabled adapter. Restoring the original connection and refreshing showed
+**Connected** again. The resource journal was unchanged and the restoration
+timer was stopped. This covers chooser behavior, not disconnection during Apply.
+
 The current macOS QA app includes support removal and is development signed
 for macOS 15 or newer; it is not the release artifact. Its native helper update
 installed the exact bundled payload and preserved the retained bridge service.
@@ -137,6 +151,25 @@ existing tests ignored; 80 Ubuntu ARM64 bridge tests and 35 Windows x64
 transaction/reboot-pause/cleanup tests passed. All 35 bridge UI tests,
 TypeScript checking, the frontend build, and 18 packaging/probe tests passed. These suites use temporary
 fixtures and do not replace native network lifecycle tests of the new packages.
+
+## Latest validation findings
+
+Two Windows reboot-test attempts rolled back during Apply before the planned
+power cut. Neither attempt establishes reboot recovery. Both restored the
+connection and left no bridge resources or pending cleanup. A native regression
+then reproduced journal replacement failing with Windows “Access is denied”
+while another thread read status. The helper now retries transient replacement
+conflicts for up to one second while preserving the flushed candidate and the
+previous durable record. Five native Windows tests pass, including concurrent
+reads, a briefly conflicting reader, persistent-conflict preservation,
+transaction exclusion, and lease transfer. The updated package and actual
+wizard reboot test remain pending; the precise cause of the earlier UI
+rollbacks has not been proven from those attempts' logs.
+
+The first Linux x64 package build was rejected by the compatibility check:
+its QEMU binaries required newer glibc than the advertised Ubuntu 22.04 baseline.
+The replacement build uses Ubuntu 22.04. The successful native regression run
+on Ubuntu 24.04 does not establish compatibility of that unfinished package.
 
 ## Remaining acceptance work
 

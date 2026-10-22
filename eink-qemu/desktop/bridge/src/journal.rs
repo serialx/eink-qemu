@@ -142,6 +142,25 @@ impl Journal {
         crate::windows_security::validate_private_handle(temp.as_file(), &self.principal)?;
         serde_json::to_writer(&mut temp, value).map_err(io)?;
         temp.flush().map_err(io)?; temp.as_file().sync_all().map_err(io)?;
+        #[cfg(windows)] {
+            // Native status readers can briefly prevent replacement even when
+            // their handles permit delete sharing. Keep the flushed candidate
+            // intact and retry only transient Windows access/sharing errors;
+            // never truncate the current durable recovery record.
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            loop {
+                match temp.persist(self.root.join(name)) {
+                    Ok(_) => break,
+                    Err(error) if matches!(error.error.raw_os_error(), Some(5 | 32 | 33))
+                        && std::time::Instant::now() < until => {
+                        temp = error.file;
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(io(error)),
+                }
+            }
+        }
+        #[cfg(not(windows))]
         temp.persist(self.root.join(name)).map_err(io)?;
         #[cfg(unix)] File::open(&self.root).and_then(|f| f.sync_all()).map_err(io)?;
         Ok(())
@@ -152,6 +171,77 @@ impl Journal {
 mod windows_tests {
     use super::*;
     use std::{io::{BufRead, BufReader}, process::{Command, Stdio}, time::Duration};
+
+    #[test]
+    fn transaction_lock_excludes_other_handles_in_the_same_process() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        let held = journal.lock().unwrap();
+        let other = Journal::open(root.path()).unwrap();
+        assert_eq!(other.lock().unwrap_err().code, "EBUSY");
+        std::thread::scope(|scope| {
+            scope.spawn(|| assert_eq!(other.lock().unwrap_err().code, "EBUSY")).join().unwrap();
+        });
+        drop(held);
+        assert!(other.lock().is_ok());
+    }
+
+    #[test]
+    fn concurrent_status_reads_do_not_interrupt_atomic_publication() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let root = tempfile::tempdir().unwrap();
+        let writer = Journal::open(root.path()).unwrap();
+        writer.write(&0u64).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            let finished = done.clone();
+            let reader = Journal::open(root.path()).unwrap();
+            let reads = scope.spawn(move || {
+                while !finished.load(Ordering::Acquire) {
+                    assert!(reader.read::<u64>().unwrap().unwrap() <= 100);
+                }
+            });
+            let writes = (1..=100u64).try_for_each(|value| writer.write(&value));
+            done.store(true, Ordering::Release);
+            reads.join().unwrap();
+            writes.unwrap();
+        });
+        assert_eq!(writer.read::<u64>().unwrap(), Some(100));
+    }
+
+    #[test]
+    fn publication_retries_until_a_conflicting_reader_closes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        journal.write(&1u64).unwrap();
+        let held = OpenOptions::new().read(true).share_mode(1)
+            .open(root.path().join("operation.json")).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                drop(held);
+            });
+            journal.write(&2u64).unwrap();
+        });
+        assert_eq!(journal.read::<u64>().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn persistent_publication_conflict_preserves_the_recovery_record() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        journal.write_cancellation(&1u64).unwrap();
+        let held = OpenOptions::new().read(true).share_mode(1)
+            .open(root.path().join("cancellation.json")).unwrap();
+        assert_eq!(journal.write_cancellation(&2u64).unwrap_err().code, "EJOURNAL");
+        assert_eq!(journal.read_cancellation::<u64>().unwrap(), Some(1));
+        drop(held);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1, "failed candidate was not removed");
+        journal.write_cancellation(&3u64).unwrap();
+        assert_eq!(journal.read_cancellation::<u64>().unwrap(), Some(3));
+    }
 
     #[test]
     fn lease_survives_handle_transfer_and_releases_after_last_process() {
