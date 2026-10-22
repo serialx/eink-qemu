@@ -23,13 +23,14 @@ do not establish a standard Linux desktop's password-prompt behavior.
 
 ## Current packages and regression results
 
-The following packages contain source through `de22c7be03`. They include the
-review fixes for durable cancellation during Apply, Linux checkpoint timing,
+The Windows package contains source through `de22c7be03`. The Ubuntu package
+also includes the later macOS maintenance UI changes and the NetworkManager
+startup fix described below. Both include the review fixes for durable cancellation during Apply, Linux checkpoint timing,
 dynamic connectivity verification, and Linux's explicit **In use** state.
 
 | Package | SHA-256 | Result |
 | --- | --- | --- |
-| Ubuntu ARM64 Debian package | `b369e88bae1087efa058e7f6b5eaad1050f3c168339e392a510c724b3efed6be` | Archive checks and update passed; installed helper active; app and connection chooser opened |
+| Ubuntu ARM64 Debian package | `4df42577ccf3dd0b2575b10cd9f228b596a32374d8442ae42ae3d05d57124e15` | Archive checks and update passed; actual wizard Apply and installed-service cold-boot recovery passed |
 | Windows x64 NSIS installer | `4793caeb92673c9c7e0957bbb782f95379ef8cccc8bad380e618ff3355a7c61f` | Update passed; retained resource unchanged; automatic helper running; installed desktop, helper, and both QEMU payload hashes matched |
 
 The installed Windows build also completed the **Manage bridge → Bridge ready**
@@ -68,6 +69,20 @@ showed the connected Ethernet adapter. The test then restored the original
 Netplan and IPv6 fixtures, removed the temporary polkit rule, and stopped its
 backup timer.
 
+A subsequent Linux boot test exposed a startup race: systemd considered
+NetworkManager active before its profiles and devices were loaded. Recovery
+failed with `EROLLBACK`; an explicit ordinary-user Cancel after startup restored
+the connection. The helper now waits for NetworkManager's startup to finish
+before accessing managed profiles. Three private-D-Bus regression tests failed
+without the wait and passed with it. The rebuilt Debian package then passed an
+actual wizard Apply followed by shutdown while confirmation was pending and a
+cold start. On the new boot, the installed helper restored Ethernet and deleted
+the temporary bridge, leaving no resource, rollback, or cleanup pending. The
+independent backup timer had not run. The test restored the original Netplan
+and IPv6 fixtures and removed its temporary policy and timer. UTM's warm reboot
+stalls before Linux starts, so this establishes cold-boot recovery, not an
+unattended warm-reboot pass.
+
 The current macOS QA app includes support removal and is development signed
 for macOS 15 or newer; it is not the release artifact. Its native helper update
 installed the exact bundled payload and preserved the retained bridge service.
@@ -99,7 +114,7 @@ tests reproduced the missing call before the fix and pass afterward; the
 updated QA app reaches **Bridge ready** when reopening the retained setup.
 
 Current-source regression results: 254 macOS workspace tests passed, with four
-existing tests ignored; 77 Ubuntu ARM64 bridge tests and 35 Windows x64
+existing tests ignored; 80 Ubuntu ARM64 bridge tests and 35 Windows x64
 transaction/reboot-pause/cleanup tests passed. All 31 bridge UI tests,
 TypeScript checking, the frontend build, and 18 packaging/probe tests passed. These suites use temporary
 fixtures and do not replace native network lifecycle tests of the new packages.
@@ -114,7 +129,7 @@ fixtures and do not replace native network lifecycle tests of the new packages.
   acceptance. Their shared-network results do not satisfy that requirement.
 - Retest the latest recovery changes through installed services and the actual
   wizard, including interrupted setup and reboot. Ubuntu desktop-crash recovery
-  during confirmation now passes. Windows package removal with a retained
+  during confirmation and cold-boot recovery now pass. Windows package removal with a retained
   bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
   and version-mismatch flows. Windows testing remains at the user's requested

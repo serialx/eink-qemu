@@ -31,6 +31,61 @@ mod storage_tests {
 }
 pub struct ActiveProfile { pub device: OwnedObjectPath, pub path: OwnedObjectPath, pub profile: Profile }
 pub struct NetworkManager { connection: Connection }
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use std::{io::{BufRead, BufReader}, process::{Child, Command, Stdio},
+        sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc}, time::Instant};
+
+    struct Bus(Child);
+    impl Drop for Bus { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+    struct Starting(Arc<AtomicBool>);
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl Starting {
+        #[zbus(property)]
+        fn startup(&self) -> bool { self.0.load(Ordering::Acquire) }
+    }
+    fn fixture() -> (Bus, Connection, NetworkManager, Arc<AtomicBool>) {
+        // Private bus only: no test changes the host's NetworkManager.
+        let mut bus = Bus(Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(Stdio::piped()).spawn().unwrap());
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap()).read_line(&mut address).unwrap();
+        let starting = Arc::new(AtomicBool::new(true));
+        let service = Builder::address(address.trim()).unwrap().name(SERVICE).unwrap()
+            .serve_at(ROOT, Starting(starting.clone())).unwrap().build().unwrap();
+        let connection = Builder::address(address.trim()).unwrap()
+            .method_timeout(Duration::from_secs(1)).build().unwrap();
+        (bus, service, NetworkManager { connection }, starting)
+    }
+    #[test]
+    fn recovery_waits_until_network_manager_finishes_startup() {
+        let (_bus, _service, nm, starting) = fixture();
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || send.send(nm.wait_initialized(Duration::from_secs(2))).unwrap());
+        assert!(matches!(receive.recv_timeout(Duration::from_millis(150)), Err(mpsc::RecvTimeoutError::Timeout)),
+            "recovery must not begin while devices and profiles are still loading");
+        starting.store(false, Ordering::Release);
+        receive.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        worker.join().unwrap();
+    }
+    #[test]
+    fn network_manager_startup_wait_is_bounded() {
+        let (_bus, _service, nm, _starting) = fixture();
+        let start = Instant::now();
+        assert_eq!(nm.wait_initialized(Duration::from_millis(150)).unwrap_err().code, "ENETWORKMANAGER");
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn missing_network_manager_does_not_allow_recovery() {
+        let (_bus, service, nm, _starting) = fixture();
+        service.release_name(SERVICE).unwrap();
+        assert_eq!(nm.wait_initialized(Duration::from_millis(150)).unwrap_err().code, "ENETWORKMANAGER");
+    }
+}
+
 fn durable_profile(filename: &str, flags: u32, unsaved: bool) -> Result<(), BridgeError> {
     let path = std::path::Path::new(filename);
     if flags != 0 || unsaved || path.parent() != Some(std::path::Path::new("/etc/NetworkManager/system-connections"))
@@ -41,8 +96,27 @@ fn durable_profile(filename: &str, flags: u32, unsaved: bool) -> Result<(), Brid
     Ok(())
 }
 impl NetworkManager {
+    /// Acquiring the bus name makes NetworkManager's systemd unit active before
+    /// its devices and profiles are loaded. Recovery must not interpret that
+    /// transient absence as a permanent rollback conflict. Existing unmanaged
+    /// bridges never open this connection and do not need NetworkManager.
+    pub fn wait_initialized(&self, timeout: Duration) -> Result<(), BridgeError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // Use a fresh proxy so every attempt reads current startup state.
+            let result = self.manager().and_then(|proxy| proxy.get_property::<bool>("Startup").map_err(error));
+            if matches!(result, Ok(false)) { return Ok(()); }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(result.err().unwrap_or_else(|| error("NetworkManager did not finish starting before bridge recovery.")));
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(100)));
+        }
+    }
     pub fn connect() -> Result<Self, BridgeError> {
-        Ok(Self { connection: Builder::system().map_err(error)?.method_timeout(Duration::from_secs(15)).build().map_err(error)? })
+        let manager = Self { connection: Builder::system().map_err(error)?.method_timeout(Duration::from_secs(15)).build().map_err(error)? };
+        manager.wait_initialized(Duration::from_secs(60))?;
+        Ok(manager)
     }
     fn proxy(&self, path: &str, interface: &str) -> Result<Proxy<'_>, BridgeError> {
         Proxy::new(&self.connection, SERVICE, path.to_owned(), interface.to_owned()).map_err(error)

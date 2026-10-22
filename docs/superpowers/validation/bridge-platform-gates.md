@@ -873,3 +873,37 @@ hooks, including exclusive service locking and conflict-aware cleanup across
 recorded owners. A separate package update test preserved a disabled, stopped
 service and replaced the helper process when the service was enabled. Desktop
 package acceptance and native x64 validation remain pending.
+
+### Linux installed-service startup recovery, 2026-10-22
+
+The V13 actual-wizard boot test failed with `EROLLBACK`. NetworkManager
+acquired its D-Bus name at 12:07:59.929 UTC, the bridge service started at
+12:07:59.940, and NetworkManager loaded its profiles and devices after
+12:08:00.014. An explicit ordinary-user Cancel after startup restored the
+connection. The fixture and its temporary authorization were then removed.
+
+`NetworkManager::connect` now waits for the `Startup` property to become false
+before accessing managed profiles. Existing unmanaged bridges still bypass
+NetworkManager. Three isolated D-Bus tests cover delayed readiness, bounded
+startup failure, and a missing service. All three fail against a no-wait
+implementation; the native Ubuntu ARM64 bridge suite passes all 80 tests.
+Independent review found no blocking issue.
+
+The rebuilt V14 Debian package has SHA-256
+`4df42577ccf3dd0b2575b10cd9f228b596a32374d8442ae42ae3d05d57124e15`.
+Archive verification and guarded update passed. The installed wizard reached
+confirmation for operation `750daa070be75ee255354a93bf549a82`, then the guest
+shut down before the confirmation deadline. After cold start, the boot ID
+changed and the installed helper recovered the operation to Cancelled with no
+error, resource, rollback, or cleanup pending. The new boot journal records
+NetworkManager finishing startup before restoration, then Ethernet activation
+and deletion of both temporary bridge profiles. The backup cleanup timer had
+not run. Subsequent fixture cleanup restored the original Netplan and IPv6
+configuration, removed the single-action polkit rule and timer, and left the
+helper active. UTM warm reboot stalls before Linux starts; this test therefore
+establishes cold-boot recovery only.
+
+Evidence: native test log `/tmp/eink-nm-startup-green-v14.log`; guest recovery
+result `/var/tmp/eink-linux-ui-boot-v14-result.json`, service journal
+`/var/tmp/eink-linux-ui-boot-v14-journal.log`, and cleanup log
+`/var/tmp/eink-linux-ui-boot-v14-cleanup.log` (exit 0).
