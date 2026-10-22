@@ -1,7 +1,7 @@
 import type { BridgeError, BridgeInspection, BridgeOperation, BridgePlan } from './bridge-types.ts';
 
 export interface BridgeUiState {
-  step: 'support' | 'choose' | 'review' | 'progress' | 'saving' | 'ready' | 'reboot' | 'failed';
+  step: 'support' | 'choose' | 'review' | 'progress' | 'saving' | 'ready' | 'reboot' | 'failed' | 'reviewUninstall' | 'uninstalling' | 'uninstalled';
   inspection: BridgeInspection | null;
   adapterId: string | null;
   plan: BridgePlan | null;
@@ -18,14 +18,26 @@ export type BridgeAction =
   | { type: 'saved' }
   | { type: 'retrySave' }
   | { type: 'back' }
+  | { type: 'reviewUninstall' }
+  | { type: 'uninstalling' }
+  | { type: 'uninstalled' }
   | { type: 'failed'; error: BridgeError };
 export function initialBridgeState(): BridgeUiState {
   return { step: 'choose', inspection: null, adapterId: null, plan: null, operation: null, error: null, saveFailed: false };
 }
-const active = (state: BridgeUiState) => ['progress', 'saving', 'reboot'].includes(state.step);
+const active = (state: BridgeUiState) => ['progress', 'saving', 'reboot', 'uninstalling'].includes(state.step);
 
 export function reduceBridge(state: BridgeUiState, action: BridgeAction): BridgeUiState {
+  if (['reviewUninstall', 'uninstalling', 'uninstalled'].includes(state.step)
+    && (action.type === 'operation' || action.type === 'inspected')) return state;
   switch (action.type) {
+    case 'reviewUninstall':
+      return active(state) || state.inspection?.platform !== 'macos' || state.inspection.support !== 'ready'
+        ? state : { ...state, step: 'reviewUninstall', error: null };
+    case 'uninstalling':
+      return state.step === 'reviewUninstall' ? { ...state, step: 'uninstalling' } : state;
+    case 'uninstalled':
+      return state.step === 'uninstalling' ? { ...initialBridgeState(), step: 'uninstalled' } : state;
     case 'inspected': {
       const next = { ...state, inspection: action.inspection };
       const operation = action.inspection.activeOperation;

@@ -1116,6 +1116,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bridge::bridge_inspect,
             bridge::bridge_install,
+            bridge::bridge_uninstall_support,
             bridge::bridge_plan,
             bridge::bridge_apply,
             bridge::bridge_keep,

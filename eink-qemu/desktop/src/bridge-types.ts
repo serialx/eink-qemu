@@ -29,6 +29,7 @@ export interface BridgeInspection {
 }
 export interface BridgeBackend {
   install(): Promise<BridgeInspection>;
+  uninstall(): Promise<void>;
   inspect(): Promise<BridgeInspection>;
   plan(request: BridgePlanRequest): Promise<BridgePlan>;
   apply(planId: string): Promise<BridgeOperation>;

@@ -104,6 +104,21 @@ pub(crate) async fn bridge_install(window: WebviewWindow, app: State<'_, App>) -
     }).await
 }
 #[tauri::command]
+pub(crate) async fn bridge_uninstall_support(window: WebviewWindow, app: State<'_, App>) -> Result<(), BridgeError> {
+    check_window(window.label())?;
+    let _gate = app.bridge.gate.lock().await;
+    check_idle(app.session.info().state)?;
+    blocking(|| {
+        #[cfg(target_os = "macos")]
+        { eink_bridge::authorization::macos::authorize_uninstall() }
+        #[cfg(not(target_os = "macos"))]
+        { Err(BridgeError::new("EUNSUPPORTED", "Use your operating system's package manager to uninstall bridge support.")) }
+    }).await?;
+    app.update(|settings| { settings.bridge = None; Ok(()) })
+        .map(|_| ())
+        .map_err(|error| BridgeError::new(&error.code, "Bridge support was uninstalled, but the saved selection could not be cleared. Reopen setup before starting the emulator."))
+}
+#[tauri::command]
 pub(crate) async fn bridge_plan(window: WebviewWindow, app: State<'_, App>, request: PlanRequest) -> Result<BridgePlan, BridgeError> {
     check_window(window.label())?;
     let _gate = app.bridge.gate.lock().await;

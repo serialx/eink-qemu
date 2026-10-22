@@ -171,3 +171,62 @@ for (const duringPrompt of [false, true]) test(duringPrompt
   assert.match(dialog.textContent,/Choose a connection/);
   click('Close');await finished;
 });
+
+test('macOS support uninstall is reviewed, waits for native success, and ignores old operation events', async (t) => {
+  const {document,trigger}=installDom(t);
+  const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+  const inspection={support:'ready',platform:'macos',adapters:[],capabilities:{create:true,existingBridge:false,reason:null},
+    selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null};
+  let calls=0, resolveUninstall, handler;
+  const backend={inspect:async()=>inspection,watch:async cb=>{handler=cb;return()=>{};},
+    uninstall:async()=>{calls++;return await new Promise(resolve=>resolveUninstall=resolve);}};
+  const finished=openBridgeDialog(backend,trigger);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  await flush();
+  const dialog=document.body.querySelectorAll('dialog')[0];
+  const click=label=>{const b=dialog.querySelectorAll('button').find(e=>e.textContent===label);assert.ok(b,label);assert.equal(b.disabled,false,label);b.dispatchEvent(new Event('click'));};
+  click('Uninstall bridge support');
+  assert.equal(calls,0);
+  assert.match(dialog.textContent,/all accounts/);
+  click('Uninstall support');
+  assert.equal(calls,1);
+  handler(operation);
+  assert.match(dialog.textContent,/Uninstalling bridge support/);
+  const cancel=new Event('cancel',{cancelable:true});dialog.dispatchEvent(cancel);assert.equal(cancel.defaultPrevented,true);
+  resolveUninstall();await flush();
+  assert.match(dialog.textContent,/Bridge support uninstalled/);
+  click('Done');await finished;
+});
+
+test('support uninstall is unavailable on other platforms and while an emulator is running', async (t) => {
+  const {document,trigger}=installDom(t);
+  const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+  const base={support:'ready',adapters:[],capabilities:{create:true,existingBridge:false,reason:null},
+    selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null};
+  for(const platform of ['linux','windows','macos']) {
+    const finished=openBridgeDialog({inspect:async()=>({...base,platform}),watch:async()=>()=>{},uninstall:async()=>{}},trigger,()=>false);
+    await new Promise(resolve=>setImmediate(resolve));
+    const dialog=document.body.querySelectorAll('dialog')[0];
+    const button=dialog.querySelectorAll('button').find(e=>e.textContent==='Uninstall bridge support');
+    if(platform==='macos') {assert.ok(button);assert.equal(button.disabled,true);} else assert.equal(button,undefined);
+    dialog.close();await finished;
+  }
+});
+
+test('denied support removal never reports success and allows inspection', async (t) => {
+  const {document,trigger}=installDom(t);
+  const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+  const inspection={support:'ready',platform:'macos',adapters:[],capabilities:{create:true,existingBridge:false,reason:null},
+    selection:null,readiness:'needsSetup',activeOperation:null,externalOverride:null};
+  const finished=openBridgeDialog({inspect:async()=>inspection,watch:async()=>()=>{},
+    uninstall:async()=>{throw {code:'EAUTHCANCELLED',message:'Administrator authorization was cancelled.'};}},trigger);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve)); await flush();
+  const dialog=document.body.querySelectorAll('dialog')[0];
+  const click=label=>dialog.querySelectorAll('button').find(e=>e.textContent===label).dispatchEvent(new Event('click'));
+  click('Uninstall bridge support');click('Uninstall support');await flush();
+  assert.match(dialog.textContent,/Authorization cancelled/);
+  assert.doesNotMatch(dialog.textContent,/Bridge support uninstalled/);
+  click('Inspect again');await flush();
+  assert.match(dialog.textContent,/Uninstall bridge support/);
+  click('Close');await finished;
+});

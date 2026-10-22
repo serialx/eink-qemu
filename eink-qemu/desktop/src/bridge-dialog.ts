@@ -5,10 +5,22 @@ import { dialogOpen, registerDialog } from './dialog.ts';
 
 export function bridgeView(state: BridgeUiState) {
   const view = { title: 'Choose a connection', message: 'Choose the host connection that should carry the emulated device’s network traffic.',
-    canClose: !['progress', 'saving'].includes(state.step), retrySave: false,
+    canClose: !['progress', 'saving', 'uninstalling'].includes(state.step), retrySave: false,
     canCancel: state.step === 'progress' && !['rollingBack', 'finalizing'].includes(state.operation?.state ?? ''),
     retryRecovery: null as string | null };
   switch (state.step) {
+    case 'reviewUninstall':
+      view.title = 'Uninstall bridge support?';
+      view.message = 'This removes the app’s bridge connections for all accounts and uninstalls its privileged helper. Stop every emulator first. Changed connections are preserved if cleanup cannot finish. Your firmware and SD cards remain available. macOS will request administrator authorization.';
+      break;
+    case 'uninstalling':
+      view.title = 'Uninstalling bridge support';
+      view.message = 'Approve the macOS authorization prompt. The helper checks for running emulators and restores recorded connections before removing support.';
+      break;
+    case 'uninstalled':
+      view.title = 'Bridge support uninstalled';
+      view.message = 'The bridge connections and privileged helper have been removed. You can install support again from bridge setup. The protected recovery record is retained.';
+      break;
     case 'support':
       view.title = state.inspection?.support === 'needsUpdate' ? 'Update bridge support' : 'Install bridge support';
       view.message = 'Install the networking support used to create, check and restore bridge connections. Your operating system will request administrator authorization.';
@@ -228,11 +240,22 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
           button('Repair', () => void plan({ kind: 'repair', resourceId: resource }), emulatorIdle() && state.inspection.readiness !== 'inUse' && !state.inspection.externalOverride);
           button('Remove setup', () => void plan({ kind: 'remove', resourceId: resource }), emulatorIdle() && state.inspection.readiness !== 'inUse');
         }
+        if (state.inspection.platform === 'macos' && state.inspection.support === 'ready') {
+          button('Uninstall bridge support', () => send({ type: 'reviewUninstall' }), emulatorIdle() && state.inspection.readiness !== 'inUse');
+        }
       }
       button('Refresh', () => void refresh());
       const selected = state.inspection?.adapters.find(a => a.id === state.adapterId);
       button('Review setup', () => { if (selected) void plan({ kind: 'configure', adapterId: selected.id }); },
         !!selected?.eligible && selected.linkUp && !state.inspection?.externalOverride && emulatorIdle(), true);
+    } else if (state.step === 'reviewUninstall') {
+      button('Back', () => send({ type: 'back' }));
+      button('Uninstall support', () => void run(async () => {
+        if (!emulatorIdle() || state.step !== 'reviewUninstall') return;
+        send({ type: 'uninstalling' });
+        await backend.uninstall();
+        send({ type: 'uninstalled' });
+      }), emulatorIdle(), true);
     } else if (state.step === 'review') {
       const list = document.createElement('ul');
       for (const change of state.plan?.changes ?? []) { const item = document.createElement('li'); item.textContent = change; list.append(item); }
@@ -263,6 +286,13 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         }), canKeep(state, now()), true);
       }
     } else if (state.step === 'failed') {
+      if (state.error?.code === 'EUPDATE' && state.inspection?.platform === 'macos') {
+        button('Update bridge support', () => void run(async () => {
+          const inspection = await backend.install();
+          send({ type: 'back' });
+          send({ type: 'inspected', inspection });
+        }), emulatorIdle(), true);
+      }
       if (view.retryRecovery && state.operation) {
         const id = state.operation.id;
         button(view.retryRecovery, () => void run(async () => receive(await backend.cancel(id))), emulatorIdle(), true);
@@ -284,7 +314,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         }), canResume(state, emulatorIdle()), true);
       }
     }
-    if (view.canClose) button(state.step === 'ready' ? 'Done' : 'Close', () => dialog.close());
+    if (view.canClose) button(['ready', 'uninstalled'].includes(state.step) ? 'Done' : 'Close', () => dialog.close());
     tick();
     if (focused && dialog.contains(focused)) return;
     const replacement = focusKey

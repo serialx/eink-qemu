@@ -83,6 +83,9 @@ pub mod macos_dispatch;
 #[cfg(target_os = "macos")]
 #[path = "platform/macos/server.rs"]
 pub mod macos_server;
+#[cfg(target_os = "macos")]
+#[path = "platform/macos/maintenance.rs"]
+pub mod macos_maintenance;
 #[cfg(target_os = "linux")]
 #[path = "platform/linux/profiles.rs"]
 pub mod linux_profiles;

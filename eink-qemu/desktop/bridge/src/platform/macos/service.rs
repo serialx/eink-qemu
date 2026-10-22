@@ -168,7 +168,7 @@ fn read_small(mut file: File) -> Result<Vec<u8>, BridgeError> {
 }
 /// Only fixed OS tools and arguments derived from validated native state call
 /// this private runner. Temporary output files prevent pipe-buffer deadlocks.
-fn command(program: &str, arguments: &[&str]) -> Result<(Option<i32>, String), BridgeError> {
+pub(crate) fn command(program: &str, arguments: &[&str]) -> Result<(Option<i32>, String), BridgeError> {
     let mut output = tempfile::tempfile().map_err(system_error)?;
     let mut child = Command::new(program).args(arguments).env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .stdin(Stdio::null()).stdout(output.try_clone().map_err(system_error)?).stderr(output.try_clone().map_err(system_error)?)
@@ -195,7 +195,7 @@ fn required(program: &str, args: &[&str]) -> Result<(), BridgeError> {
             detail: Some(format!("{program} {}: {detail}", args.first().copied().unwrap_or(""))) })
     }
 }
-fn loaded_status(status: Option<i32>, detail: String) -> Result<bool, BridgeError> {
+pub(crate) fn loaded_status(status: Option<i32>, detail: String) -> Result<bool, BridgeError> {
     match status {
         Some(0) => Ok(true),
         Some(113) => Ok(false), // launchctl: service not found in this domain

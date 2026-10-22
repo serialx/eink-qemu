@@ -119,6 +119,7 @@ export const tauri: Backend = coordinateBridgeLaunch({
   bridge: {
     inspect: () => call<BridgeInspection>('bridge_inspect'),
     install: () => call<BridgeInspection>('bridge_install'),
+    uninstall: () => call<void>('bridge_uninstall_support'),
     plan: (request) => call<BridgePlan>('bridge_plan', { request }),
     apply: (planId) => call<BridgeOperation>('bridge_apply', { planId }),
     keep: (operationId) => call<BridgeOperation>('bridge_keep', { operationId }),
