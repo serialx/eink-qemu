@@ -117,19 +117,28 @@ CLI (with `--wifi`) use NAT by default on every native platform. NAT provides
 outbound network access without host setup. The guest normally gets
 `10.0.2.15`; `run.sh` also forwards `localhost:8080` to its port 80.
 
-Bridge mode gives the firmware an address from your router, reachable directly
-on your LAN. Complete the host setup below before selecting it:
+Bridge mode gives the firmware an address on the network attached to the
+selected host connection. With physical Ethernet this is normally your LAN;
+inside a VM it may instead be a shared virtual network.
 
 - **Desktop:** Open the firmware card and select **Bridged** under **Wi-Fi
-  network mode**. The choice is saved and applies at Start when Wi-Fi is on.
-- **CLI:** Add `--wifi --wifi-mode bridge`. `--wifi` alone uses NAT.
+  network mode**. Packages with managed bridge support offer connection
+  selection, a review, system authorization, and verification. See the
+  [desktop setup and current validation limits](eink-qemu/desktop/README.md#behaviour).
+  The choice is saved and applies at Start when Wi-Fi is on.
+- **CLI:** Complete the manual setup below, then add `--wifi --wifi-mode bridge`.
+  `--wifi` alone uses NAT. The CLI does not use the desktop's saved bridge selection.
 - **Shell:** Run `X4WIFI_MODE=bridge eink-qemu/run.sh flash.bin sd.img`.
   `X4WIFI_MODE=nat` selects NAT explicitly. Setting `X4BR` alone also enables
   bridge mode in `run.sh`, for compatibility with earlier versions.
 
-`X4BR` selects the bridge interface; in the desktop app and CLI it only takes
-effect when bridge mode is selected. Launchers do not create host bridges,
-install drivers or fall back to NAT when bridging fails.
+The following defaults and instructions describe manual CLI, shell, and
+desktop override configuration. `X4BR` selects the bridge interface; in the
+desktop app and CLI it only takes effect when bridge mode is selected.
+Manual launchers do not create host bridges or install drivers. The desktop's
+managed setup uses its verified resource instead of these defaults, unless an
+inherited `X4BR` or `X4NET` override takes control. Bridging failures never
+silently switch to NAT.
 
 | Host | Bridge mode default | `X4BR` selects |
 | --- | --- | --- |

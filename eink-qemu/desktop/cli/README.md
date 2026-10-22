@@ -648,6 +648,8 @@ than calling it dead.
 macOS and Windows. Complete the
 [host network setup](../../../EINK-QEMU.md#native-wi-fi) first. `X4BR` selects
 another bridge, interface or TAP adapter when bridge mode is selected.
+The CLI does not install bridge support or read the desktop wizard's saved
+selection. Its platform defaults and environment overrides remain manual.
 For NAT with port forwarding, set
 `X4NET='-nic user,model=esp32_wifi,hostfwd=tcp::8080-:80'` to reach the
 device's port 80 at `localhost:8080`. `X4NET` replaces the selected mode's

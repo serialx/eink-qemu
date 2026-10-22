@@ -210,8 +210,10 @@ the Rust CLI (with `--wifi`) use NAT by default, without host setup.
 `run.sh` also forwards `localhost:8080` to the device's port 80.
 For a device address directly on your LAN, select **Bridged** in the desktop
 firmware card, add `--wifi --wifi-mode bridge` to the CLI, or set
-`X4WIFI_MODE=bridge` for `run.sh`. Bridge mode supports Linux, macOS and
-Windows and requires [host network setup](EINK-QEMU.md#native-wi-fi).
+`X4WIFI_MODE=bridge` for `run.sh`. Desktop packages with managed bridge support
+provide a setup wizard; cross-platform native acceptance is still in progress.
+The CLI and shell retain manual setup. See
+[host setup and validation limits](EINK-QEMU.md#native-wi-fi).
 
 **Ghosting** is off by default in native and Node runs, so screenshots compare
 pixel for pixel. Turn it on with `-global uc8179.ghosting=on` on the X4 Pro or

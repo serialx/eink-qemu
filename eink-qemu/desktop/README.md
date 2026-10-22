@@ -180,14 +180,39 @@ comparing two of them still shows what changed.
 
 Wi-Fi uses NAT by default on every native platform, without host setup.
 Open the firmware card to switch **Wi-Fi network mode** between **NAT** and
-**Bridged**. The app remembers the choice and applies it at Start when Wi-Fi
-is on. Bridge mode puts the reader directly on your LAN and requires
-[host network setup](../../EINK-QEMU.md#native-wi-fi): Linux bridge `br0`,
-macOS vmnet on `en0`, or Windows TAP adapter `eink-qemu`. The macOS instructions
-include a helper that lets the app run without root.
-`X4BR` selects another bridge interface; `X4NET` replaces the selected mode's
-network arguments. Set these variables in the environment that launches the
-app. Turning Wi-Fi off keeps the radio present without a host connection.
+**Bridged**. In a package with managed bridge support, select **Set up bridge**, choose an
+eligible host connection, review the proposed changes, and approve the system
+authorization prompt. Linux and Windows may temporarily interrupt that host
+connection; choose **Keep connection** after checking it, or let the countdown
+expire to restore the previous setup. The desktop and QEMU continue running as
+your ordinary user.
+
+**Bridge ready** confirms the host setup. Start the emulator with Wi-Fi on,
+then join **PICSimLabWifi** inside the firmware. The firmware obtains its own
+address from the network attached to the selected connection. A VM using a
+shared network gives the reader an address on that virtual network, rather
+than on the physical LAN.
+
+Use **Manage bridge** to inspect, repair, or remove the saved setup. Stop the emulator
+before making changes; another running emulator can also keep a connection
+in use. Closing the app or selecting NAT leaves the host setup installed.
+If bridge startup fails, **Open bridge setup** opens recovery, and **Use NAT**
+changes the mode only when you select it. The app does not silently fall back.
+
+Managed setup is still undergoing native acceptance. The current validation
+includes macOS C3/S3 LAN access and Linux ARM64/Windows x64 C3 access on a shared
+VM network. macOS release packaging and support uninstallation, the remaining
+firmware/platform tests, and unresolved VM test failures are tracked in the
+[native validation record](../../docs/superpowers/validation/bridge-platform-gates.md).
+Removing a bridge through **Manage bridge** does not uninstall the privileged helper.
+Dragging the macOS app to Trash also leaves that helper installed; its explicit
+support-uninstall action is not implemented yet.
+
+For externally managed networking, `X4BR` selects a bridge interface in Bridged
+mode; `X4NET` replaces the selected mode's network arguments and takes precedence
+over `X4BR`. These inherited overrides bypass managed setup, and the firmware
+card identifies them. See [manual host setup](../../EINK-QEMU.md#native-wi-fi).
+Turning Wi-Fi off keeps the radio present without a host connection.
 
 Turbo uses the overrides from `turbo-args.sh`, like the other launchers, but
 keeps idle time in real time (`-icount sleep=on`): native QEMU would otherwise
@@ -330,9 +355,12 @@ Installers are unsigned, so SmartScreen warns on first run.
 
 The bridge package passed fresh installation, concurrent-package refusal,
 update, removal, reinstallation, and standard-user isolation in the disposable
-Windows x64 VM. Those installer tests used an empty bridge journal. Complete
-setup UI acceptance and removal of a retained bridge through the installer
-remain open; see the [native validation record](../../docs/superpowers/validation/bridge-platform-gates.md).
+Windows x64 VM. Removal tests used an empty bridge journal. The packaged wizard
+subsequently passed authorization cancellation, setup, confirmation, and saving;
+package updates preserved a retained bridge. C3 reached its web interface on
+UTM's shared network. Removal of a retained bridge through the installer and
+the remaining acceptance checks are still open; see the
+[native validation record](../../docs/superpowers/validation/bridge-platform-gates.md).
 
 Earlier runtime validation used Windows QEMU under Wine 10 from
 `C:\Program Files`. That run connected to the app's loopback sockets, booted
