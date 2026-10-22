@@ -1,6 +1,7 @@
 # App-managed bridge setup
 
-Status: approved on 2026-10-20. Implementation has not started.
+Status: approved on 2026-10-20. Implementation and native acceptance are in progress;
+see the [current acceptance checklist](../validation/bridge-acceptance.md).
 
 ## Outcome and scope
 
