@@ -69,6 +69,13 @@ impl Journal {
         file.try_lock().map_err(|_| BridgeError::new("EBUSY", "Another bridge operation is running."))?;
         Ok(file)
     }
+    /// Only short journal reads/writes belong under this fence, never native
+    /// calls. Cancel releases it before attempting the main mutation lock.
+    pub fn cancellation_lock(&self) -> Result<File, BridgeError> {
+        let file = self.open_file("cancellation.lock", true)?;
+        file.lock().map_err(io)?;
+        Ok(file)
+    }
     pub fn resource_lock(&self, id: &crate::model::ResourceId, shared: bool) -> Result<File, BridgeError> {
         let name = format!("resource-{}.lock", id.as_str());
         #[cfg(windows)] {
@@ -107,23 +114,35 @@ impl Journal {
         }
     }
     pub fn read<T: DeserializeOwned>(&self) -> Result<Option<T>, BridgeError> {
-        match fs::symlink_metadata(self.root.join("operation.json")) {
+        self.read_named("operation.json")
+    }
+    pub fn read_cancellation<T: DeserializeOwned>(&self) -> Result<Option<T>, BridgeError> {
+        self.read_named("cancellation.json")
+    }
+    fn read_named<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, BridgeError> {
+        match fs::symlink_metadata(self.root.join(name)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io(e)),
             Ok(_) => (),
         }
-        let file = self.open_file("operation.json", false)?;
+        let file = self.open_file(name, false)?;
         if file.metadata().map_err(io)?.len() > 4 * 1024 * 1024 { return Err(io("Bridge journal is too large.")); }
         let mut text = String::new(); file.take(4 * 1024 * 1024 + 1).read_to_string(&mut text).map_err(io)?;
         Ok(Some(serde_json::from_str(&text).map_err(io)?))
     }
     pub fn write<T: Serialize>(&self, value: &T) -> Result<(), BridgeError> {
+        self.write_named("operation.json", value)
+    }
+    pub fn write_cancellation<T: Serialize>(&self, value: &T) -> Result<(), BridgeError> {
+        self.write_named("cancellation.json", value)
+    }
+    fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<(), BridgeError> {
         let mut temp = tempfile::NamedTempFile::new_in(&self.root).map_err(io)?;
         #[cfg(windows)]
         crate::windows_security::validate_private_handle(temp.as_file(), &self.principal)?;
         serde_json::to_writer(&mut temp, value).map_err(io)?;
         temp.flush().map_err(io)?; temp.as_file().sync_all().map_err(io)?;
-        temp.persist(self.root.join("operation.json")).map_err(io)?;
+        temp.persist(self.root.join(name)).map_err(io)?;
         #[cfg(unix)] File::open(&self.root).and_then(|f| f.sync_all()).map_err(io)?;
         Ok(())
     }

@@ -61,6 +61,7 @@ fn inspect(saved: Option<BridgeSelection>) -> Result<Inspection, BridgeError> {
                 Ok(ReplyKind::Verification { readiness, .. }) => readiness,
                 Ok(_) => return Err(protocol()),
                 Err(error) if error.code == "EDISCONNECTED" => Readiness::Disconnected,
+                Err(error) if error.code == "EINUSE" => Readiness::InUse,
                 Err(error) if error.code == "EBUSY" => Readiness::NeedsSetup,
                 Err(_) => Readiness::NeedsRepair,
             };

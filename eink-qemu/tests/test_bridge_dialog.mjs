@@ -102,6 +102,24 @@ test('wizard submits Apply once, waits for saved verification, and restores focu
   assert.equal(dialogOpen(),false);assert.equal(unwatchCount,1);assert.equal(document.activeElement,trigger);
 });
 
+test('a running transport shows In use without re-verifying, saving, or offering repair', async (t) => {
+  const {document,trigger}=installDom(t);
+  const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+  const inspection={support:'ready',platform:'linux',adapters:[],capabilities:{create:true,existingBridge:true,reason:null},
+    selection:{resourceId:operation.id,adapterId:'eth0',displayName:'Ethernet'},readiness:'inUse',activeOperation:operation,externalOverride:null};
+  let verifies=0;
+  const finished=openBridgeDialog({watch:async()=>()=>{},inspect:async()=>inspection,verify:async()=>{verifies++;return inspection;}},trigger);
+  await new Promise(resolve=>setImmediate(resolve));
+  const dialog=document.body.querySelectorAll('dialog')[0];
+  assert.equal(verifies,0);
+  assert.match(dialog.textContent,/bridge is in use/);
+  assert.match(dialog.textContent,/has not been reverified/);
+  assert.doesNotMatch(dialog.textContent,/Bridge ready|needs repair|could not finish/);
+  for(const label of ['Repair','Remove setup']) assert.equal(dialog.querySelectorAll('button').find(e=>e.textContent===label).disabled,true);
+  dialog.querySelectorAll('button').find(e=>e.textContent==='Close').dispatchEvent(new Event('click'));
+  await finished;
+});
+
 test('confirmed cleanup cannot offer cancellation and cleanup failure offers a completion retry', () => {
   const finalizing=bridgeView({...initialBridgeState(),step:'progress',operation:{...operation,state:'finalizing'}});
   assert.equal(finalizing.title,'Finishing bridge changes');

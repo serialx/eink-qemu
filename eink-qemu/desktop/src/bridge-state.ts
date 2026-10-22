@@ -29,6 +29,11 @@ export function reduceBridge(state: BridgeUiState, action: BridgeAction): Bridge
     case 'inspected': {
       const next = { ...state, inspection: action.inspection };
       const operation = action.inspection.activeOperation;
+      // A historical Ready record cannot trigger fresh verification/saving
+      // while another emulator owns the transport. Show its retained setup.
+      if (operation?.state === 'ready' && action.inspection.readiness === 'inUse' && !active(state)) {
+        return { ...next, operation, step: 'choose', error: null, saveFailed: false };
+      }
       if (operation && ((!state.operation && (!state.plan || state.plan.id === operation.id))
         || (state.operation?.id === operation.id && operation.revision > state.operation.revision))) {
         return operationState(next, operation);
@@ -90,6 +95,7 @@ function operationState(state: BridgeUiState, operation: BridgeOperation): Bridg
 export function canApply(state: BridgeUiState, now: number, emulatorIdle: boolean): boolean {
   const { plan, inspection } = state;
   if (!emulatorIdle || state.step !== 'review' || !plan || !inspection || inspection.support !== 'ready' || now >= plan.expiresAt) return false;
+  if (inspection.readiness === 'inUse' && plan.request.kind !== 'configure') return false;
   if (plan.request.kind === 'remove') return inspection.selection?.resourceId === plan.request.resourceId;
   if (inspection.externalOverride) return false;
   const adapterId = plan.request.kind === 'configure' ? plan.request.adapterId : inspection.selection?.adapterId;

@@ -14,6 +14,7 @@ export function bridgeView(state: BridgeUiState) {
       view.message = 'Install the networking support used to create, check and restore bridge connections. Your operating system will request administrator authorization.';
       break;
     case 'choose':
+      if (state.inspection?.readiness === 'inUse') view.message = 'This bridge is in use. Stop its emulator before checking or changing the connection. Its current network configuration has not been reverified.';
       if (state.inspection?.externalOverride) view.message = `${state.inspection.externalOverride} controls networking for this launch. Remove that environment override before configuring a connection here.`;
       break;
     case 'review':
@@ -224,8 +225,8 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         if (!emulatorIdle()) { const note = document.createElement('p'); note.textContent = 'Stop the emulator to change bridge setup.'; body.append(note); }
         const resource = state.inspection.selection?.resourceId;
         if (resource) {
-          button('Repair', () => void plan({ kind: 'repair', resourceId: resource }), emulatorIdle() && !state.inspection.externalOverride);
-          button('Remove setup', () => void plan({ kind: 'remove', resourceId: resource }), emulatorIdle());
+          button('Repair', () => void plan({ kind: 'repair', resourceId: resource }), emulatorIdle() && state.inspection.readiness !== 'inUse' && !state.inspection.externalOverride);
+          button('Remove setup', () => void plan({ kind: 'remove', resourceId: resource }), emulatorIdle() && state.inspection.readiness !== 'inUse');
         }
       }
       button('Refresh', () => void refresh());

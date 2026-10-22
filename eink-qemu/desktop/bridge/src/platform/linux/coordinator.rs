@@ -95,7 +95,6 @@ impl PlatformOps for LinuxPlatform {
                 Action::Remove(_) => mutations.extend(NetworkRemoval::steps().into_iter().map(Mutation::Remove)),
             }
             if !removing { mutations.push(Mutation::Access); }
-            mutations.push(Mutation::ConfirmWindow);
         } else { mutations.push(Mutation::Access); }
         let changes = if disruptive {
             if removing { vec!["Restore the original Ethernet profile and remove this app's bridge profiles.".into(), "Remove your account's access to this app-managed bridge.".into()] }
@@ -125,6 +124,9 @@ impl PlatformOps for LinuxPlatform {
     fn apply(&mut self, _: &Mutation) -> Result<(), BridgeError> { Err(BridgeError::new("EPROTOCOL", "Linux bridge mutations require a durable operation snapshot.")) }
     fn apply_recorded(&mut self, mutation: &Mutation, snapshot: &mut Snapshot) -> Result<(), BridgeError> {
         if matches!(mutation, Mutation::Access) { return linux_helper::apply(&snapshot.access); }
+        // Older journals may include this final mutation. The shared engine
+        // now arms confirmation only after native verification has finished.
+        if matches!(mutation, Mutation::ConfirmWindow) { return Ok(()); }
         let nm = NetworkManager::connect()?;
         match mutation {
             Mutation::Begin => snapshot.checkpoint = Some(match (&snapshot.network, &snapshot.action) {
@@ -136,8 +138,7 @@ impl PlatformOps for LinuxPlatform {
             Mutation::Configure(step) => match &snapshot.network { Network::Managed(setup) => setup.apply(&nm, *step)?, _ => return Err(conflict()) },
             Mutation::Repair(step) => match &snapshot.action { Action::Repair(Some(repair)) => repair.apply(&nm, *step)?, _ => return Err(conflict()) },
             Mutation::Remove(step) => match &snapshot.action { Action::Remove(Some(removal)) => removal.apply(&nm, *step)?, _ => return Err(conflict()) },
-            Mutation::ConfirmWindow => snapshot.checkpoint.as_ref().ok_or_else(conflict)?.confirm_window(&nm)?,
-            Mutation::Access => unreachable!(),
+            Mutation::Access | Mutation::ConfirmWindow => unreachable!(),
         }
         Ok(())
     }
@@ -152,7 +153,13 @@ impl PlatformOps for LinuxPlatform {
         if snapshot.removing() { linux_helper::verify_applied(&snapshot.access) }
         else { linux_helper::probe_as_user(&snapshot.grant) }
     }
+    fn requires_idle_transport(&self, snapshot: &Snapshot) -> bool { matches!(snapshot.network, Network::Managed(_)) }
     fn commit(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> { self.commit_recorded(&mut snapshot.clone()) }
+    fn begin_confirmation(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> {
+        if matches!(snapshot.network, Network::Existing(_)) { return Ok(()); }
+        snapshot.checkpoint.as_ref().ok_or_else(conflict)?.confirm_window(&NetworkManager::connect()?)
+    }
+    fn begin_keep(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> { self.begin_confirmation(snapshot) }
     fn resume(&mut self, snapshot: &Snapshot) -> Result<(), BridgeError> {
         if let Network::Managed(setup) = &snapshot.network { setup.resume(&NetworkManager::connect()?)?; }
         self.verify(snapshot)

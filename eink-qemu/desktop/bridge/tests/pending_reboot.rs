@@ -58,3 +58,13 @@ fn changed_network_refuses_resume_and_owner_can_cancel_the_driver_only_stage(){
  assert_eq!(c.apply(&id,1000).unwrap_err().code,"ESTALE");assert_eq!(*host.mutations.lock().unwrap(),vec![0]);
  let op=c.cancel(&id).unwrap();assert_eq!(op.state,OperationState::Cancelled);assert!(!op.reboot_required);assert!(!*host.installed.lock().unwrap());
 }
+#[test]
+fn queued_cancel_is_recovered_while_setup_is_paused_for_reboot(){
+ let root=tempfile::tempdir().unwrap();let host=Host::new();let(mut c,id)=begin(root.path(),host.clone());
+ let lock=std::fs::OpenOptions::new().read(true).write(true).open(root.path().join("operation.lock")).unwrap();
+ lock.lock().unwrap();assert_eq!(c.cancel(&id).unwrap_err().code,"EBUSY");drop(c);drop(lock);
+ let mut service=Coordinator::open(root.path(),"service",host.clone()).unwrap();
+ let op=service.recover(102).unwrap().unwrap();
+ assert_eq!(op.state,OperationState::Cancelled);assert!(!op.reboot_required);
+ assert!(!*host.installed.lock().unwrap());assert_eq!(*host.mutations.lock().unwrap(),vec![0]);
+}

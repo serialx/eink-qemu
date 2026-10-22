@@ -67,6 +67,7 @@ impl Dispatcher {
             if inspection.readiness == Readiness::NeedsSetup {
                 inspection.readiness = match self.coordinator.verify_resource(&resource.id) {
                     Ok(_) => Readiness::Ready,
+                    Err(error) if error.code == "EINUSE" => Readiness::InUse,
                     Err(error) if error.code == "EBUSY" => Readiness::NeedsSetup,
                     Err(_) => Readiness::NeedsRepair,
                 };

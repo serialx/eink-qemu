@@ -1,6 +1,6 @@
 /** Wire contract for native bridge setup. Kept in sync with eink-bridge/model.rs. */
 export type BridgePlatform = 'macos' | 'linux' | 'windows';
-export type BridgeReadiness = 'needsSetup' | 'ready' | 'disconnected' | 'needsRepair' | 'unsupported';
+export type BridgeReadiness = 'needsSetup' | 'ready' | 'inUse' | 'disconnected' | 'needsRepair' | 'unsupported';
 export interface BridgeError { code: string; message: string; detail?: string }
 export interface BridgeAdapter {
   id: string; name: string; kind: 'ethernet' | 'wifi' | 'bridge' | 'tap' | 'other';

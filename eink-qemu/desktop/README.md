@@ -195,7 +195,10 @@ than on the physical LAN.
 
 Use **Manage bridge** to inspect, repair, or remove the saved setup. Stop the emulator
 before making changes; another running emulator can also keep a connection
-in use. Closing the app or selecting NAT leaves the host setup installed.
+in use. An app-created Linux bridge currently supports one emulator at a time.
+While it is running, setup shows **In use** and requires you to stop it before
+checking, repairing, removing, or launching another emulator on that bridge.
+Closing the app or selecting NAT leaves the host setup installed.
 If bridge startup fails, **Open bridge setup** opens recovery, and **Use NAT**
 changes the mode only when you select it. The app does not silently fall back.
 

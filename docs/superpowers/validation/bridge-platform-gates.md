@@ -124,8 +124,33 @@ report were preserved. The retry reached File Transfer and completed discovery.
 The reader then obtained `192.168.64.20`; a host HTTP request returned 200, the
 browser displayed Connected with the same address, and `crosspoint.local`
 resolved to that address. This validates the Windows bridge on UTM's shared
-network, not physical-LAN acceptance. S3 remains pending. These UI checks use
+network, not physical-LAN acceptance. S3 reached Home in 110.95 seconds;
+its network connection remains pending. These UI checks use
 the existing 800 × 600 Windows display at the user's request.
+
+Review found three recovery problems and a misleading running-state report.
+Linux dynamic verification now preserves usable address scope and the presence
+of the original default route and DNS while allowing lease values to change.
+Cancellation is recorded independently of the mutation lock, so cancelling
+during Apply survives a busy response or client exit. Finalization closes that
+cancellation window explicitly. Linux refreshes its native checkpoint after
+initial verification and again when Keep is accepted before the visible
+deadline; an expired checkpoint cannot be revived.
+
+An app-created Linux bridge now reports **In use** while an emulator holds its
+lease. QEMU adds a temporary TAP that cannot yet be distinguished reliably from
+an unexpected interface. Verification therefore requires the bridge to be idle,
+rather than declaring it damaged or accepting unverified members. This currently
+limits each managed Linux bridge to one emulator. Repair and removal remain
+unavailable until the lease is released.
+
+The updated macOS workspace passed 244 tests, with four existing tests ignored;
+26 bridge UI tests, TypeScript checking, and the frontend build also passed.
+The Ubuntu ARM64 bridge suite passed 77 tests. The Windows x64 transaction,
+reboot-pause, and cleanup suites passed 35 tests. These regression suites use
+temporary fixtures; they do not establish native networking or packaged UI
+acceptance of these latest changes. Independent review found no remaining
+blocking issue in these fixes. Rebuilt-package lifecycle checks remain pending.
 
 Helper IPC now requires the desktop's exact package version as well as the
 protocol version before dispatching an operation, and checks the helper's version

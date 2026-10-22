@@ -73,7 +73,7 @@ pub struct BridgeSelection {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum Readiness { NeedsSetup, Ready, Disconnected, NeedsRepair, Unsupported }
+pub enum Readiness { NeedsSetup, Ready, InUse, Disconnected, NeedsRepair, Unsupported }
 
 /// This deliberately cannot return Ready: discovery has not opened the transport.
 pub fn selection_readiness(selection: &BridgeSelection, platform: Platform, adapters: &[Adapter]) -> Readiness {

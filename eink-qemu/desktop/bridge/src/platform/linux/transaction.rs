@@ -93,6 +93,9 @@ impl Checkpoint {
     }
     pub fn confirm_window(&self, nm: &NetworkManager) -> Result<(), BridgeError> {
         if !self.exists(nm)? { return Err(BridgeError::new("ESTALE", "NetworkManager restored or replaced this setup checkpoint.")); }
-        nm.extend_checkpoint_in_epoch(&self.epoch, &self.path()?, 130)
+        // The service enforces the visible 120-second deadline. The native
+        // timer is a longer fail-safe if the helper dies, leaving room for
+        // bounded D-Bus calls before an on-time Keep can refresh it again.
+        nm.extend_checkpoint_in_epoch(&self.epoch, &self.path()?, 300)
     }
 }

@@ -49,6 +49,7 @@ function paintBridgeStatus() {
   manage.textContent = selection ? 'Manage bridge' : 'Set up bridge';
   status.textContent = bridgeInspection?.externalOverride
     ? `${bridgeInspection.externalOverride} controls networking for this launch.`
+    : selection && bridgeInspection?.readiness === 'inUse' ? `Host connection: ${selection.displayName}. In use; stop its emulator before checking or changing setup.`
     : selection ? `Host connection: ${selection.displayName}. Join PICSimLabWifi in the firmware after Start.`
     : 'Choose a host connection, then join PICSimLabWifi in the firmware.';
 }

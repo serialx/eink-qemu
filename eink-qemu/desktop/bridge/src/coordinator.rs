@@ -7,6 +7,7 @@ use std::path::Path;
 const RECORD_VERSION: u32 = 1;
 const CLEANUP_RECORD_VERSION: u32 = 2;
 const REBOOT_RECORD_VERSION: u32 = 3;
+const CANCELLABLE_RECORD_VERSION: u32 = 4;
 
 pub trait PlatformOps {
     type Snapshot: Serialize + DeserializeOwned + Clone;
@@ -31,6 +32,17 @@ pub trait PlatformOps {
         Err(BridgeError::new("EREBOOT", "Restart the computer before continuing bridge setup."))
     }
     fn verify(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError>;
+    /// Some transports add temporary native topology while in use. Without a
+    /// reliable ownership tag for those members, verify only when idle rather
+    /// than treating them as damage or allowing arbitrary foreign interfaces.
+    fn requires_idle_transport(&self, _: &Self::Snapshot) -> bool { false }
+    /// Arm the native fail-safe after initial verification, immediately before
+    /// publishing the user's confirmation deadline. Never resurrect a checkpoint
+    /// the OS has already rolled back.
+    fn begin_confirmation(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
+    /// The owner chose Keep before the visible deadline. Give native verification
+    /// and commit their own bounded fail-safe window; retain durable undo state.
+    fn begin_keep(&mut self, _: &Self::Snapshot) -> Result<(), BridgeError> { Ok(()) }
     /// Restore volatile runtime state for an already committed resource at boot.
     /// Preserve changed persistent configuration; this is not automatic repair.
     fn resume(&mut self, snapshot: &Self::Snapshot) -> Result<(), BridgeError> { self.verify(snapshot) }
@@ -84,6 +96,9 @@ struct Record<S, M> {
     in_flight_mutation: Option<usize>,
     resources: Vec<Resource<S>>,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Cancellation { version: u32, owner: String, id: OperationId }
 pub struct Coordinator<P: PlatformOps> { journal: Journal, owner: String, platform: P }
 impl<P: PlatformOps> Coordinator<P> {
     /// owner must be the authenticated OS principal, never a request field.
@@ -93,8 +108,12 @@ impl<P: PlatformOps> Coordinator<P> {
     }
     fn record(&self) -> Result<Option<Record<P::Snapshot, P::Mutation>>, BridgeError> {
         let record: Option<Record<P::Snapshot, P::Mutation>> = self.journal.read()?;
-        if record.as_ref().is_some_and(|r| r.version != if r.cleanup_pending { CLEANUP_RECORD_VERSION }
-            else if r.operation.reboot_required { REBOOT_RECORD_VERSION } else { RECORD_VERSION }) { return Err(BridgeError::new("EPROTOCOL", "Bridge recovery record needs a compatible helper.")); }
+        if record.as_ref().is_some_and(|r| {
+            let legacy = if r.cleanup_pending { CLEANUP_RECORD_VERSION }
+                else if r.operation.reboot_required { REBOOT_RECORD_VERSION } else { RECORD_VERSION };
+            r.version != legacy && !(r.version == CANCELLABLE_RECORD_VERSION && !r.cleanup_pending
+                && (r.undo_required || r.operation.state == OperationState::AwaitingAuthorization))
+        }) { return Err(BridgeError::new("EPROTOCOL", "Bridge recovery record needs a compatible helper.")); }
         Ok(record)
     }
     fn owned(&self, id: &OperationId) -> Result<Record<P::Snapshot, P::Mutation>, BridgeError> {
@@ -104,9 +123,10 @@ impl<P: PlatformOps> Coordinator<P> {
         Ok(record)
     }
     fn save(&self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
-        // Older helpers reject v2 rather than resuming a resource while its
-        // irreversible cleanup is in progress. Completed records keep v1.
+        // Older helpers must not ignore a queued cancellation or resume an
+        // irreversible cleanup. Completed records keep their existing format.
         record.version = if record.cleanup_pending { CLEANUP_RECORD_VERSION }
+            else if record.undo_required || record.operation.state == OperationState::AwaitingAuthorization { CANCELLABLE_RECORD_VERSION }
             else if record.operation.reboot_required { REBOOT_RECORD_VERSION } else { RECORD_VERSION };
         record.operation.revision += 1; self.journal.write(record)?; Ok(record.operation.clone())
     }
@@ -197,6 +217,13 @@ impl<P: PlatformOps> Coordinator<P> {
         let record = self.record()?.ok_or_else(|| BridgeError::new("ENOENT", "Bridge setup no longer exists."))?;
         let resource = self.resource(&record.resources, id)?.clone();
         if record.undo_required || record.cleanup_pending { return Err(BridgeError::new("EBUSY", "Finish bridge setup before starting an emulator.")); }
+        if self.platform.requires_idle_transport(&resource.original) {
+            match self.journal.resource_lock(id, false) {
+                Ok(probe) => drop(probe),
+                Err(error) if error.code == "EBUSY" => return Err(BridgeError::new("EINUSE", "This bridge is in use. Stop its emulator before verifying it or starting another one.")),
+                Err(error) => return Err(error),
+            }
+        }
         let lease = ResourceLease { _file: self.journal.resource_lock(id, true)? };
         self.platform.verify(&resource.original)?;
         Ok((resource, lease))
@@ -238,7 +265,7 @@ impl<P: PlatformOps> Coordinator<P> {
         let prepared = self.platform.prepare(request, id.clone(), now, existing)?;
         if prepared.plan.id != id { return Err(BridgeError::new("EPROTOCOL", "Invalid platform bridge plan.")); }
         let plan = prepared.plan.clone();
-        let record = Record { version: RECORD_VERSION, owner: self.owner.clone(), prepared, undo_required: false, cleanup_pending: false, resources,
+        let record = Record { version: CANCELLABLE_RECORD_VERSION, owner: self.owner.clone(), prepared, undo_required: false, cleanup_pending: false, resources,
             completed_mutations: 0, in_flight_mutation: None,
             operation: Operation { id, revision: 1, state: OperationState::AwaitingAuthorization,
                 stage: "Review bridge setup".into(), confirmation_deadline: None, reboot_required: false, error: None } };
@@ -257,6 +284,7 @@ impl<P: PlatformOps> Coordinator<P> {
         let resuming = record.operation.reboot_required && record.operation.state == OperationState::Applying
             && record.undo_required && record.in_flight_mutation.is_none() && record.completed_mutations > 0;
         if !resuming && record.operation.state != OperationState::AwaitingAuthorization { return Err(BridgeError::new("EBUSY", "Bridge operation has already started.")); }
+        if self.cancellation_requested(&record)? { return self.cancel_record(&mut record); }
         if (!resuming && now >= record.prepared.plan.expires_at) || self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
             return Err(BridgeError::new("ESTALE", "The selected connection changed. Review setup again."));
         }
@@ -270,6 +298,7 @@ impl<P: PlatformOps> Coordinator<P> {
         // Persist restoration data before the first external side effect.
         self.save(&mut record)?;
         for index in record.completed_mutations..record.prepared.mutations.len() {
+            if self.cancellation_requested(&record)? { return self.rollback(&mut record, None); }
             record.in_flight_mutation = Some(index);
             record.operation.stage = self.platform.mutation_stage(&record.prepared.mutations[index]).into();
             self.save(&mut record)?;
@@ -279,6 +308,7 @@ impl<P: PlatformOps> Coordinator<P> {
             // an external action that may already have succeeded.
             record.completed_mutations = index + 1;
             record.in_flight_mutation = None;
+            if self.cancellation_requested(&record)? { return self.rollback(&mut record, None); }
             if self.platform.awaiting_reboot(&record.prepared.snapshot) {
                 record.operation.reboot_required = true;
                 record.operation.stage = "Restart the computer, then continue bridge setup".into();
@@ -289,7 +319,12 @@ impl<P: PlatformOps> Coordinator<P> {
         record.operation.state = OperationState::Verifying; record.operation.stage = "Check connection".into();
         self.save(&mut record)?;
         if let Err(error) = self.platform.verify(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
-        if record.prepared.plan.may_disconnect { record.operation.confirmation_deadline = Some(now.saturating_add(started.elapsed().as_secs()).saturating_add(120)); }
+        if self.cancellation_requested(&record)? { return self.rollback(&mut record, None); }
+        if record.prepared.plan.may_disconnect {
+            if let Err(error) = self.platform.begin_confirmation(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
+            if self.cancellation_requested(&record)? { return self.rollback(&mut record, None); }
+            record.operation.confirmation_deadline = Some(now.saturating_add(started.elapsed().as_secs()).saturating_add(120));
+        }
         else { return self.finish(&mut record); }
         self.save(&mut record)
     }
@@ -299,13 +334,25 @@ impl<P: PlatformOps> Coordinator<P> {
             return Err(BridgeError::new("ESTALE", "This bridge operation is not waiting for confirmation."));
         }
         if now >= record.operation.confirmation_deadline.unwrap() { return self.rollback(&mut record, None); }
+        if self.cancellation_requested(&record)? { return self.rollback(&mut record, None); }
+        if let Err(error) = self.platform.begin_keep(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
         if let Err(error) = self.platform.verify(&record.prepared.snapshot) { return self.rollback(&mut record, Some(error)); }
         self.finish(&mut record)
     }
     fn finish(&mut self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
-        record.operation.confirmation_deadline = None;
-        record.operation.stage = "Finalize bridge setup".into();
-        self.save(record)?;
+        {
+            // Linearize Cancel against the start of finalization. Native commit
+            // remains outside this fence so cancellation never blocks on it.
+            let fence = self.journal.cancellation_lock()?;
+            if self.cancellation_requested(record)? {
+                drop(fence);
+                return self.rollback(record, None);
+            }
+            record.operation.state = OperationState::Finalizing;
+            record.operation.confirmation_deadline = None;
+            record.operation.stage = "Finalize bridge setup".into();
+            self.save(record)?;
+        }
         if let Err(error) = self.platform.commit_recorded(&mut record.prepared.snapshot) {
             return self.rollback(record, Some(error));
         }
@@ -358,15 +405,41 @@ impl<P: PlatformOps> Coordinator<P> {
         Ok(())
     }
     pub fn cancel(&mut self, id: &OperationId) -> Result<Operation, BridgeError> {
+        {
+            let _fence = self.journal.cancellation_lock()?;
+            let record = self.owned(id)?;
+            if !record.cleanup_pending {
+                if matches!(record.operation.state, OperationState::Ready | OperationState::Finalizing) {
+                    return Err(BridgeError::new("ESTALE", "Bridge setup is already being finalized. Use Remove setup after it finishes."));
+                }
+                if record.operation.state == OperationState::Cancelled { return Ok(record.operation); }
+                // A separate atomic record lets the authenticated owner queue
+                // cancellation while Apply owns the mutation lock. EBUSY below
+                // means restoration is pending, not that this intent was lost.
+                self.journal.write_cancellation(&Cancellation { version: 1, owner: record.owner, id: id.clone() })?;
+            }
+        }
         let _lock = self.journal.lock()?; let mut record = self.owned(id)?;
         // The existing recovery action retries confirmed cleanup; it cannot
         // cancel changes whose irreversible phase has already started.
         if record.cleanup_pending { return self.finish_cleanup(&mut record); }
-        if !record.undo_required {
-            if record.operation.state == OperationState::Ready { return Err(BridgeError::new("ESTALE", "Use Remove setup for an installed bridge.")); }
-            record.operation.state = OperationState::Cancelled; return self.save(&mut record);
+        self.cancel_record(&mut record)
+    }
+    fn cancellation_requested(&self, record: &Record<P::Snapshot, P::Mutation>) -> Result<bool, BridgeError> {
+        let Some(intent): Option<Cancellation> = self.journal.read_cancellation()? else { return Ok(false); };
+        if intent.version != 1 { return Err(BridgeError::new("EPROTOCOL", "Bridge cancellation needs a compatible helper.")); }
+        Ok(intent.id == record.operation.id && intent.owner == record.owner)
+    }
+    fn cancel_record(&mut self, record: &mut Record<P::Snapshot, P::Mutation>) -> Result<Operation, BridgeError> {
+        if record.operation.state == OperationState::Ready {
+            return Err(BridgeError::new("ESTALE", "Use Remove setup for an installed bridge."));
         }
-        self.rollback(&mut record, None)
+        if record.operation.state == OperationState::Cancelled { return Ok(record.operation.clone()); }
+        if !record.undo_required {
+            record.operation.state = OperationState::Cancelled;
+            return self.save(record);
+        }
+        self.rollback(record, None)
     }
     /// Run once before the service accepts clients after starting or rebooting.
     /// An unconfirmed conversion cannot retain a deadline from an earlier
@@ -389,13 +462,15 @@ impl<P: PlatformOps> Coordinator<P> {
             }
             return self.finish_cleanup(&mut record).map(Some);
         }
-        if record.undo_required && record.operation.reboot_required && record.operation.state == OperationState::Applying {
-            return Ok(Some(record.operation));
-        }
         // A recorded conflict needs an explicit owner retry. Restarting the
         // service must not repeat a restoration the OS already refused.
         if record.undo_required && record.operation.state == OperationState::Failed
             && record.operation.error.as_ref().is_some_and(|error| error.code == "EROLLBACK") {
+            return Ok(Some(record.operation));
+        }
+        if (record.undo_required || record.operation.state == OperationState::AwaitingAuthorization)
+            && self.cancellation_requested(&record)? { return self.cancel_record(&mut record).map(Some); }
+        if record.undo_required && record.operation.reboot_required && record.operation.state == OperationState::Applying {
             return Ok(Some(record.operation));
         }
         let waiting = record.operation.state == OperationState::Verifying

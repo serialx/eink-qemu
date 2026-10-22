@@ -7,8 +7,18 @@ struct Snapshot { value: i32 }
 #[derive(Clone, Serialize, Deserialize)]
 enum Mutation { Change(i32), Fail }
 #[derive(Clone)]
-struct Host { value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool, resumes: Arc<Mutex<usize>>, apply_delay: u64, apply_started: Option<std::sync::mpsc::Sender<()>>, apply_resume: Option<Arc<Mutex<std::sync::mpsc::Receiver<()>>>> }
-impl Host { fn new() -> Self { Self { value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false, resumes: Arc::new(Mutex::new(0)), apply_delay: 0, apply_started: None, apply_resume: None } } }
+struct Host { idle_transport: bool, confirmation_events: Arc<Mutex<Vec<&'static str>>>, confirmation_failure: Option<&'static str>, pause_in_verify: bool, pause_in_commit: bool, may_disconnect: bool, value: Arc<Mutex<i32>>, fingerprint: Arc<Mutex<String>>, fail: bool, rollback_fails: bool, commits: Arc<Mutex<usize>>, commit_fails: bool, crash_commit: bool, resumes: Arc<Mutex<usize>>, apply_delay: u64, apply_started: Option<std::sync::mpsc::Sender<()>>, apply_resume: Option<Arc<Mutex<std::sync::mpsc::Receiver<()>>>> }
+impl Host { fn new() -> Self { Self { idle_transport: false, confirmation_events: Arc::new(Mutex::new(Vec::new())), confirmation_failure: None, pause_in_verify: false, pause_in_commit: false, may_disconnect: true, value: Arc::new(Mutex::new(10)), fingerprint: Arc::new(Mutex::new("original".into())), fail: false, rollback_fails: false, commits: Arc::new(Mutex::new(0)), commit_fails: false, crash_commit: false, resumes: Arc::new(Mutex::new(0)), apply_delay: 0, apply_started: None, apply_resume: None } } }
+impl Host {
+    fn confirmation(&self, stage: &'static str) -> Result<(), BridgeError> {
+        self.confirmation_events.lock().unwrap().push(stage);
+        if self.confirmation_failure == Some(stage) { Err(BridgeError::new("ESTALE", "Native checkpoint expired")) } else { Ok(()) }
+    }
+    fn pause(&self) {
+        if let Some(started) = &self.apply_started { started.send(()).unwrap(); }
+        if let Some(resume) = &self.apply_resume { resume.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap(); }
+    }
+}
 impl PlatformOps for Host {
     type Snapshot = Snapshot;
     type Mutation = Mutation;
@@ -19,18 +29,24 @@ impl PlatformOps for Host {
         } else { 20 };
         let mut mutations = vec![Mutation::Change(target)];
         if self.fail { mutations.push(Mutation::Fail); }
-        Ok(Prepared { plan: BridgePlan { id, request, fingerprint: self.fingerprint.lock().unwrap().clone(), changes: vec!["Change connection".into()], requires_authorization: true, may_disconnect: true, expires_at: now + 300 }, snapshot, mutations })
+        Ok(Prepared { plan: BridgePlan { id, request, fingerprint: self.fingerprint.lock().unwrap().clone(), changes: vec!["Change connection".into()], requires_authorization: true, may_disconnect: self.may_disconnect, expires_at: now + 300 }, snapshot, mutations })
     }
     fn fingerprint(&mut self, _: &PlanRequest, _: &Self::Snapshot) -> Result<String, BridgeError> { Ok(self.fingerprint.lock().unwrap().clone()) }
     fn apply(&mut self, mutation: &Mutation) -> Result<(), BridgeError> {
-        if let Some(started) = &self.apply_started { started.send(()).unwrap(); }
-        if let Some(resume) = &self.apply_resume { resume.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap(); }
+        if !self.pause_in_verify && !self.pause_in_commit { self.pause(); }
         std::thread::sleep(std::time::Duration::from_secs(self.apply_delay));
         match mutation { Mutation::Change(value) => { *self.value.lock().unwrap() = *value; Ok(()) }, Mutation::Fail => Err(BridgeError::new("EAPPLY", "Failed mutation")) }
     }
-    fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> { Ok(()) }
+    fn verify(&mut self, _: &Snapshot) -> Result<(), BridgeError> {
+        self.confirmation_events.lock().unwrap().push("verify");
+        if self.pause_in_verify { self.pause(); } Ok(())
+    }
+    fn requires_idle_transport(&self, _: &Snapshot) -> bool { self.idle_transport }
+    fn begin_confirmation(&mut self, _: &Snapshot) -> Result<(), BridgeError> { self.confirmation("confirm") }
+    fn begin_keep(&mut self, _: &Snapshot) -> Result<(), BridgeError> { self.confirmation("keep") }
     fn commit(&mut self, _: &Snapshot) -> Result<(), BridgeError> {
         *self.commits.lock().unwrap() += 1;
+        if self.pause_in_commit { self.pause(); }
         assert!(!self.crash_commit, "crash after native checkpoint commit");
         if self.commit_fails { Err(BridgeError::new("ECOMMIT", "Native checkpoint could not be committed")) } else { Ok(()) }
     }
@@ -107,6 +123,73 @@ fn progress_remains_readable_while_native_mutation_holds_the_lock() {
 }
 
 #[test]
+fn cancellation_during_native_apply_restores_before_automatic_commit() {
+    for disruptive in [false, true] {
+        let root = tempfile::tempdir().unwrap(); let mut host = Host::new();
+        host.may_disconnect = disruptive;
+        let (started, entered) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        host.apply_started = Some(started); host.apply_resume = Some(Arc::new(Mutex::new(resume)));
+        let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        let plan = owner.plan(request(), 100).unwrap(); let id = plan.id.clone();
+        let mut cancellation = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        let worker = std::thread::spawn(move || owner.apply(&id, 101));
+        entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let durable: serde_json::Value = serde_json::from_slice(&std::fs::read(root.path().join("operation.json")).unwrap()).unwrap();
+        assert_eq!(durable["version"], 4, "older helpers cannot ignore a queued cancellation");
+        let mut stranger = Coordinator::open(root.path(), "other", host.clone()).unwrap();
+        assert_eq!(stranger.cancel(&plan.id).unwrap_err().code, "EPERM");
+        assert!(!root.path().join("cancellation.json").exists());
+        let queued = cancellation.cancel(&plan.id);
+        // The client may disappear after queuing cancellation. No second
+        // Cancel request is needed to make the helper restore the snapshot.
+        drop(cancellation);
+        release.send(()).unwrap();
+        let completed = worker.join().unwrap().unwrap();
+        assert_eq!(queued.unwrap_err().code, "EBUSY");
+        assert_eq!(completed.state, OperationState::Cancelled);
+        assert_eq!(*host.value.lock().unwrap(), 10);
+        assert_eq!(*host.commits.lock().unwrap(), 0);
+        let mut reopened = Coordinator::open(root.path(), "owner", Host::new()).unwrap();
+        assert!(reopened.resources().unwrap().is_empty());
+        let next = reopened.plan(request(), 200).unwrap();
+        assert_eq!(reopened.apply(&next.id, 201).unwrap().state, OperationState::Verifying, "old cancellation cannot cancel a new plan");
+    }
+}
+
+#[test]
+fn cancellation_is_accepted_during_verification_but_not_after_finalization_starts() {
+    for finalizing in [false, true] {
+        let root = tempfile::tempdir().unwrap(); let mut host = Host::new();
+        host.may_disconnect = false;
+        host.pause_in_verify = !finalizing; host.pause_in_commit = finalizing;
+        let (started, entered) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        host.apply_started = Some(started); host.apply_resume = Some(Arc::new(Mutex::new(resume)));
+        let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        let plan = owner.plan(request(), 100).unwrap(); let id = plan.id.clone();
+        let mut cancellation = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        let worker = std::thread::spawn(move || owner.apply(&id, 101));
+        entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let progress = cancellation.operation().unwrap().unwrap();
+        let result = cancellation.cancel(&plan.id);
+        release.send(()).unwrap();
+        let completed = worker.join().unwrap().unwrap();
+        if finalizing {
+            assert_eq!(progress.state, OperationState::Finalizing);
+            assert_eq!(result.unwrap_err().code, "ESTALE");
+            assert_eq!(completed.state, OperationState::Ready);
+            assert!(!root.path().join("cancellation.json").exists());
+        } else {
+            assert_eq!(result.unwrap_err().code, "EBUSY");
+            assert_eq!(completed.state, OperationState::Cancelled);
+            assert_eq!(*host.value.lock().unwrap(), 10);
+            assert_eq!(*host.commits.lock().unwrap(), 0);
+        }
+    }
+}
+
+#[test]
 fn verified_resource_holds_a_lease_and_rejects_other_users() {
     let dir = tempfile::tempdir().unwrap(); let host = Host::new();
     let mut owner = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
@@ -120,6 +203,26 @@ fn verified_resource_holds_a_lease_and_rejects_other_users() {
     assert_eq!(owner.plan(PlanRequest::Remove { resource_id: id.clone() }, 103).unwrap_err().code, "EBUSY");
     drop(lease);
     owner.plan(PlanRequest::Remove { resource_id: id }, 104).unwrap();
+}
+
+#[test]
+fn transport_that_requires_idle_verification_reports_in_use_without_claiming_damage_or_readiness() {
+    let root = tempfile::tempdir().unwrap(); let mut host = Host::new(); host.idle_transport = true;
+    let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    owner.apply(&plan.id, 101).unwrap(); owner.keep(&plan.id, 102).unwrap();
+    let id = ResourceId::new(plan.id.as_str()).unwrap();
+    let (_, lease) = owner.verify_resource(&id).unwrap();
+    host.confirmation_events.lock().unwrap().clear();
+    let mut observer = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    assert!(matches!(observer.verify_resource(&id), Err(error) if error.code == "EINUSE"));
+    assert!(host.confirmation_events.lock().unwrap().is_empty(), "do not inspect temporary topology while a transport is live");
+    let mut stranger = Coordinator::open(root.path(), "other", host.clone()).unwrap();
+    assert!(matches!(stranger.verify_resource(&id), Err(error) if error.code == "EPERM"));
+    assert_eq!(owner.plan(PlanRequest::Remove { resource_id: id.clone() }, 103).unwrap_err().code, "EBUSY");
+    drop(lease);
+    assert!(observer.verify_resource(&id).is_ok());
+    assert_eq!(*host.confirmation_events.lock().unwrap(), ["verify"], "strict native checks resume when idle");
 }
 
 #[test]
@@ -174,6 +277,25 @@ fn helper_startup_restores_unconfirmed_changes_even_before_the_deadline() {
     drop(original);
     assert_eq!(restarted.recover_startup().unwrap().unwrap().state, OperationState::Ready);
     assert_eq!(*host.value.lock().unwrap(), 20);
+}
+
+#[test]
+fn queued_cancellation_survives_client_exit_and_is_consumed_before_the_keep_deadline() {
+    for restart in [false, true] {
+        let root = tempfile::tempdir().unwrap(); let host = Host::new();
+        let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        let plan = owner.plan(request(), 100).unwrap();
+        owner.apply(&plan.id, 101).unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).write(true).open(root.path().join("operation.lock")).unwrap();
+        lock.lock().unwrap();
+        assert_eq!(owner.cancel(&plan.id).unwrap_err().code, "EBUSY");
+        drop(owner); drop(lock);
+        let mut service = Coordinator::open(root.path(), "service", host.clone()).unwrap();
+        let operation = if restart { service.recover_startup() } else { service.recover(102) }.unwrap().unwrap();
+        assert_eq!(operation.state, OperationState::Cancelled);
+        assert_eq!(*host.value.lock().unwrap(), 10);
+        assert_eq!(*host.commits.lock().unwrap(), 0);
+    }
 }
 
 #[test]
@@ -399,6 +521,34 @@ fn confirmation_time_starts_after_slow_native_setup() {
     let plan = owner.plan(request(), 100).unwrap();
     let operation = owner.apply(&plan.id, 101).unwrap();
     assert!(operation.confirmation_deadline.unwrap() >= 222, "native setup must not consume the confirmation window");
+}
+
+#[test]
+fn native_confirmation_window_follows_verification_and_keep_rearms_before_verifying() {
+    let dir = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(dir.path(), "owner", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    owner.apply(&plan.id, 101).unwrap();
+    assert_eq!(*host.confirmation_events.lock().unwrap(), ["verify", "confirm"]);
+    owner.keep(&plan.id, 220).unwrap();
+    assert_eq!(*host.confirmation_events.lock().unwrap(), ["verify", "confirm", "keep", "verify"]);
+}
+
+#[test]
+fn expired_native_confirmation_rolls_back_and_late_keep_cannot_extend_it() {
+    for failure in [Some("confirm"), Some("keep"), None] {
+        let dir = tempfile::tempdir().unwrap(); let mut host = Host::new();
+        host.confirmation_failure = failure;
+        let mut owner = Coordinator::open(dir.path(), "owner", host.clone()).unwrap();
+        let plan = owner.plan(request(), 100).unwrap();
+        let applied = owner.apply(&plan.id, 101).unwrap();
+        let operation = if failure == Some("confirm") { applied }
+            else { owner.keep(&plan.id, if failure.is_some() { 220 } else { applied.confirmation_deadline.unwrap() }).unwrap() };
+        assert_eq!(operation.state, if failure.is_some() { OperationState::Failed } else { OperationState::Cancelled });
+        assert_eq!(*host.value.lock().unwrap(), 10);
+        assert_eq!(*host.commits.lock().unwrap(), 0);
+        if failure.is_none() { assert!(!host.confirmation_events.lock().unwrap().contains(&"keep")); }
+    }
 }
 
 #[test]
