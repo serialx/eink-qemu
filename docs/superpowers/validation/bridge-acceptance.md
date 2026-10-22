@@ -57,12 +57,24 @@ its connected reader page; mDNS resolved the same address. The emulator was
 closed and the fixture cleanup completed, restoring the original profiles and
 removing the temporary authorization.
 
-The current macOS QA package predates these review fixes. It is development
-signed and explicitly targets macOS 15 or newer; it is not the release artifact.
+The current macOS QA app includes support removal and is development signed
+for macOS 15 or newer; it is not the release artifact. Its native helper update
+installed the exact bundled payload and preserved the retained bridge service.
+Removal refused a held resource lease and restarted the helper without
+interrupting that bridge. It also refused an altered helper plist without
+stopping the helper; the reversible fixture restored the original plist.
+Cancelling the real macOS removal prompt returned **Authorization cancelled**
+and preserved support. Successful authorized removal remains pending.
+
+The update exposed a dialog stall: an existing completed bridge operation
+entered **Saving setup** without starting verification. Both support-update
+paths now invoke the same verification step used by inspection. Two regression
+tests reproduced the missing call before the fix and pass afterward; the
+updated QA app reaches **Bridge ready** when reopening the retained setup.
 
 Current-source regression results: 254 macOS workspace tests passed, with four
 existing tests ignored; 77 Ubuntu ARM64 bridge tests and 35 Windows x64
-transaction/reboot-pause/cleanup tests passed. All 29 bridge UI tests,
+transaction/reboot-pause/cleanup tests passed. All 31 bridge UI tests,
 TypeScript checking, the frontend build, and 18 packaging/probe tests passed. These suites use temporary
 fixtures and do not replace native network lifecycle tests of the new packages.
 

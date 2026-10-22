@@ -230,3 +230,30 @@ test('denied support removal never reports success and allows inspection', async
   assert.match(dialog.textContent,/Uninstall bridge support/);
   click('Close');await finished;
 });
+
+for (const fromUninstall of [false, true]) test(
+  'helper update verifies and saves a retained bridge' + (fromUninstall ? ' after uninstall requests an update' : ''),
+  async (t) => {
+    const {document,trigger}=installDom(t);
+    const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+    const retained={support:'ready',platform:'macos',adapters:[],capabilities:{create:true,existingBridge:false,reason:null},
+      selection:{resourceId:operation.id,adapterId:'en0',displayName:'Ethernet'},readiness:'ready',activeOperation:operation,externalOverride:null};
+    let verifies=0, resolveVerify;
+    const finished=openBridgeDialog({
+      inspect:async()=>({...retained,support:fromUninstall?'ready':'needsUpdate',activeOperation:null}),
+      watch:async()=>()=>{}, install:async()=>retained,
+      uninstall:async()=>{throw {code:'EUPDATE',message:'Update support first.'};},
+      verify:async()=>{verifies++;return await new Promise(resolve=>resolveVerify=resolve);},
+    },trigger);
+    const flush=()=>new Promise(resolve=>setImmediate(resolve)); await flush();
+    const dialog=document.body.querySelectorAll('dialog')[0];
+    const click=label=>{const b=dialog.querySelectorAll('button').find(e=>e.textContent===label);assert.ok(b,label);assert.equal(b.disabled,false);b.dispatchEvent(new Event('click'));};
+    if(fromUninstall) {click('Uninstall bridge support');click('Uninstall support');await flush();click('Update bridge support');}
+    else click('Update support');
+    await flush();
+    assert.equal(verifies,1,'a retained Ready operation must trigger verification after installing support');
+    assert.match(dialog.textContent,/Saving setup/);
+    resolveVerify(retained);await flush();
+    assert.match(dialog.textContent,/Bridge ready/);
+    click('Done');await finished;
+  });

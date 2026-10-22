@@ -1,4 +1,4 @@
-import type { BridgeBackend, BridgeError, BridgeOperation, BridgePlanRequest } from './bridge-types.ts';
+import type { BridgeBackend, BridgeError, BridgeInspection, BridgeOperation, BridgePlanRequest } from './bridge-types.ts';
 import { canApply, canKeep, canResume, initialBridgeState, reduceBridge, verifiedSelection } from './bridge-state.ts';
 import type { BridgeAction, BridgeUiState } from './bridge-state.ts';
 import { dialogOpen, registerDialog } from './dialog.ts';
@@ -11,11 +11,11 @@ export function bridgeView(state: BridgeUiState) {
   switch (state.step) {
     case 'reviewUninstall':
       view.title = 'Uninstall bridge support?';
-      view.message = 'This removes the app’s bridge connections for all accounts and uninstalls its privileged helper. Stop every emulator first. Changed connections are preserved if cleanup cannot finish. Your firmware and SD cards remain available. macOS will request administrator authorization.';
+      view.message = 'This removes the app’s bridge connections for all accounts and uninstalls its privileged helper. Stop every emulator first. Changed connections are preserved if cleanup cannot finish. Your firmware and SD cards remain available. macOS will request administrator authorization; its approval button may say “Add Helper.”';
       break;
     case 'uninstalling':
       view.title = 'Uninstalling bridge support';
-      view.message = 'Approve the macOS authorization prompt. The helper checks for running emulators and restores recorded connections before removing support.';
+      view.message = 'Approve the macOS prompt, which may say “Add Helper,” to authorize removal. The helper checks for running emulators and restores recorded connections before removing support.';
       break;
     case 'uninstalled':
       view.title = 'Bridge support uninstalled';
@@ -171,9 +171,12 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
   const plan = (request: BridgePlanRequest) => run(async () => {
     send({ type: 'planned', plan: await backend.plan(request) });
   });
-  const refresh = () => run(async () => {
-    send({ type: 'inspected', inspection: await backend.inspect() });
+  const inspectResult = async (inspection: BridgeInspection) => {
+    send({ type: 'inspected', inspection });
     if (state.step === 'saving') await finish();
+  };
+  const refresh = () => run(async () => {
+    await inspectResult(await backend.inspect());
   });
   const button = (label: string, action: () => void, enabled = true, primary = false, duringApply = false) => {
     const element = document.createElement('button');
@@ -201,7 +204,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
       button(state.inspection?.support === 'needsUpdate' ? 'Update support' : 'Install support', () => void run(async () => {
         const inspection = await backend.install();
         if (inspection.support !== 'ready') throw { code: 'EINSTALL', message: 'Bridge support is not available yet. Check the system authorization prompt and try again.' };
-        send({ type: 'inspected', inspection });
+        await inspectResult(inspection);
       }), emulatorIdle(), true);
       button('Check again', () => void refresh());
     } else if (state.step === 'choose') {
@@ -290,7 +293,7 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
         button('Update bridge support', () => void run(async () => {
           const inspection = await backend.install();
           send({ type: 'back' });
-          send({ type: 'inspected', inspection });
+          await inspectResult(inspection);
         }), emulatorIdle(), true);
       }
       if (view.retryRecovery && state.operation) {
