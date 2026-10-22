@@ -104,15 +104,38 @@ remained Ready with no pending rollback. Startup inspection probes the native
 transport and can overlap launch; the desktop now serializes inspection and
 bridge launch, and keeps Start disabled while waiting. Four focused regression
 tests pass, including failed inspection and unaffected NAT launches. Native
-validation of the updated package and Windows firmware connectivity are pending.
+validation of firmware connectivity remains pending. The updated package later
+booted C3 on its first launch after reboot, reaching Home in 104.27 seconds
+without the earlier busy error. The bridge service started automatically; its
+retained bridge was up and the journal had no pending rollback or cleanup.
+
+The subsequent Windows C3 Wi-Fi scan found no networks. A compile-only probe
+against the native MSYS2 GCC toolchain exposed an 802.11 wire-layout fault:
+packed unsigned bitfields occupied four bytes each, moving the frame body from
+byte 24 to byte 28. Both control fields now use 16-bit storage, with compile-time
+assertions for their sizes and the body offset. The corrected layout passes
+Clang checks for macOS, Linux, and Windows targets and the native Windows GCC
+compiler; both Windows QEMU targets rebuild successfully. All 19 packet tests
+pass on macOS. Rebuilt Windows firmware validation is still pending.
 
 Helper IPC now requires the desktop's exact package version as well as the
 protocol version before dispatching an operation, and checks the helper's version
 on replies. The saved selection and journal formats remain unchanged. Three
 regressions first reproduced absent version metadata and acceptance of legacy
 requests; the updated protocol tests and the macOS Rust workspace suite pass
-(237 tests, four existing tests ignored). Native package update validation of
-this compatibility check remains pending.
+(237 tests, four existing tests ignored). The six protocol tests also passed
+natively on Windows x64; all 13 protocol and authorization tests passed on
+Ubuntu 22.04 ARM64. The Windows test executable uses the static C runtime so it
+can run without a separately installed Visual C++ runtime.
+
+The Windows installer containing the matching desktop and helper completed an
+update with a retained bridge. Read-only verification confirmed that the bridge
+journal was preserved without pending rollback, the service was running with
+automatic startup, and installed desktop, helper, and both QEMU executables
+matched the installer payload. The desktop check compares against the packaged
+executable, whose bytes differ from the build output. The matching Linux ARM64
+package also passed archive verification and installation; the helper restarted successfully. Visible version-mismatch
+handling and a native macOS package update remain pending.
 
 Signed macOS packaging now verifies matching app/helper team requirements,
 embedded dependency staging, notices, architecture, and each binary's deployment

@@ -91,18 +91,20 @@ typedef uint8_t macaddr_t[6];
 
 typedef struct mac80211_frame {
     struct mac80211_frame_control {
-        unsigned    protocol_version    : 2;
-        unsigned    type            : 2;
-        unsigned    sub_type        : 4;
-        unsigned  flags:8;
+        /* Windows retains the declared bit-field storage width even when
+         * packed. Both control fields are 16-bit values on the wire. */
+        uint16_t protocol_version : 2;
+        uint16_t type : 2;
+        uint16_t sub_type : 4;
+        uint16_t flags : 8;
     } QEMU_PACKED frame_control;
     uint16_t  duration_id;
     macaddr_t destination_address;
     macaddr_t source_address;
     macaddr_t bssid_address;
     struct mac80211_sequence_control {
-        unsigned    fragment_number     : 4;
-        unsigned    sequence_number     : 12;
+        uint16_t fragment_number : 4;
+        uint16_t sequence_number : 12;
     } QEMU_PACKED sequence_control;
     // variable length, 2312 byte plus 4 byte frame-checksum
     union {
@@ -114,6 +116,14 @@ typedef struct mac80211_frame {
     int pos;
     struct mac80211_frame *next_frame;
 }  QEMU_PACKED mac80211_frame;
+
+/* These fields are copied directly to and from guest 802.11 packets. */
+_Static_assert(sizeof(struct mac80211_frame_control) == 2,
+               "802.11 frame control must occupy two bytes");
+_Static_assert(sizeof(struct mac80211_sequence_control) == 2,
+               "802.11 sequence control must occupy two bytes");
+_Static_assert(offsetof(mac80211_frame, data_and_fcs) == IEEE80211_HEADER_SIZE,
+               "802.11 frame body must begin at byte 24");
 
 /* The fields following the wire data are host-only bookkeeping. */
 #define IEEE80211_FRAME_CAPACITY offsetof(mac80211_frame, frame_length)
