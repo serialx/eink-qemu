@@ -106,6 +106,14 @@ bridge launch, and keeps Start disabled while waiting. Four focused regression
 tests pass, including failed inspection and unaffected NAT launches. Native
 validation of the updated package and Windows firmware connectivity are pending.
 
+Helper IPC now requires the desktop's exact package version as well as the
+protocol version before dispatching an operation, and checks the helper's version
+on replies. The saved selection and journal formats remain unchanged. Three
+regressions first reproduced absent version metadata and acceptance of legacy
+requests; the updated protocol tests and the macOS Rust workspace suite pass
+(237 tests, four existing tests ignored). Native package update validation of
+this compatibility check remains pending.
+
 Signed macOS packaging now verifies matching app/helper team requirements,
 embedded dependency staging, notices, architecture, and each binary's deployment
 floor. A package built against the development host's macOS 27 Homebrew libraries

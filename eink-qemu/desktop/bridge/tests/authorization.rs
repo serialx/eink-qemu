@@ -1,6 +1,11 @@
 use eink_bridge::{protocol::{HelperRequest, RequestKind}, transport};
 use std::io::Cursor;
 
+fn decode_current_request(json: &str) -> Result<HelperRequest, eink_bridge::model::BridgeError> {
+    let json = json.replacen('{', &format!(r#"{{"helperVersion":"{}","#, env!("CARGO_PKG_VERSION")), 1);
+    eink_bridge::protocol::decode_request(&json)
+}
+
 #[test]
 fn authorization_proofs_are_bounded_redacted_and_only_accepted_for_approval_or_apply() {
     use eink_bridge::authorization::AuthorizationProof;
@@ -11,23 +16,23 @@ fn authorization_proofs_are_bounded_redacted_and_only_accepted_for_approval_or_a
         assert!(serde_json::from_str::<AuthorizationProof>(&format!("\"{value}\"")).is_err());
     }
     let id = "a".repeat(32);
-    let request = eink_bridge::protocol::decode_request(&format!(
+    let request = decode_current_request(&format!(
         r#"{{"version":1,"kind":"apply","planId":"{id}","authorization":"{secret}"}}"#)).unwrap();
     assert!(!format!("{request:?}").contains(&secret));
     for kind in ["inspect", "recover", "keep", "cancel"] {
         let operation = if kind == "keep" || kind == "cancel" { format!(r#", "operationId":"{id}""#) } else { String::new() };
-        assert!(eink_bridge::protocol::decode_request(&format!(
+        assert!(decode_current_request(&format!(
             r#"{{"version":1,"kind":"{kind}"{operation},"authorization":"{secret}"}}"#)).is_err());
     }
 }
 
 #[test]
 fn windows_approval_messages_have_distinct_strict_shapes() {
-    use eink_bridge::protocol::{decode_request, encode_frame, decode_frame};
+    use eink_bridge::protocol::{encode_frame, decode_frame};
     let id = "12".repeat(16); let proof = "ab".repeat(32);
     for json in [format!(r#"{{"version":1,"kind":"beginAuthorization","planId":"{id}"}}"#),
         format!(r#"{{"version":1,"kind":"approveAuthorization","authorization":"{proof}"}}"#)] {
-        let request = decode_request(&json).unwrap();
+        let request = decode_current_request(&json).unwrap();
         decode_frame(&encode_frame(&request).unwrap()).unwrap();
         assert!(!format!("{request:?}").contains(&proof));
     }
@@ -37,7 +42,7 @@ fn windows_approval_messages_have_distinct_strict_shapes() {
         format!(r#"{{"version":1,"kind":"approveAuthorization","authorization":"{proof}","authorization":"{proof}"}}"#),
         r#"{"version":1,"kind":"approveAuthorization","authorization":null}"#.into(),
         r#"{"version":1,"kind":"approveAuthorization"}"#.into()] {
-        assert!(decode_request(&json).is_err());
+        assert!(decode_current_request(&json).is_err());
     }
 }
 
@@ -69,7 +74,7 @@ fn streaming_requests_reject_oversized_and_truncated_frames() {
     assert!(matches!(transport::read_request(&mut Cursor::new(&frame)).unwrap().request, RequestKind::Inspect));
     assert_eq!(transport::read_request(&mut Cursor::new([0, 16, 0, 1])).unwrap_err().code, "EPROTOCOL");
     assert_eq!(transport::read_request(&mut Cursor::new(&frame[..frame.len()-1])).unwrap_err().code, "EPROTOCOL");
-    assert!(eink_bridge::protocol::decode_request(r#"{"version":1,"kind":"inspect","uid":0}"#).is_err());
+    assert!(decode_current_request(r#"{"version":1,"kind":"inspect","uid":0}"#).is_err());
 }
 
 #[test]
