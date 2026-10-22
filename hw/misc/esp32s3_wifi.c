@@ -204,9 +204,16 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame,int length, int si
         pkt->damatch0=1;
     if(match_mac_address(frame->destination_address,(uint8_t *)s->mem+A_WIFI_MAC_ADDR_FST_1))
         pkt->damatch1=1;
-    if(match_mac_address(frame->bssid_address,(uint8_t *)s->mem+A_WIFI_MAC_ADDR_FST_0))
+    /* FromDS data carries its BSSID in address 2, not the Ethernet source
+     * in address 3. Management frames retain their address-3 BSSID. */
+    uint8_t *bssid = frame->bssid_address;
+    if (frame->frame_control.type == IEEE80211_TYPE_DATA &&
+        (frame->frame_control.flags & 3) == 2) {
+        bssid = frame->source_address;
+    }
+    if(match_mac_address(bssid,(uint8_t *)s->mem+A_WIFI_MAC_ADDR_FST_0))
         pkt->bssidmatch0=1;
-    if(match_mac_address(frame->bssid_address,(uint8_t *)s->mem+A_WIFI_MAC_ADDR_FST_1))
+    if(match_mac_address(bssid,(uint8_t *)s->mem+A_WIFI_MAC_ADDR_FST_1))
         pkt->bssidmatch1=1;
     //printf("...%x %x\n",header[3],frame->destination_address[0]);
 

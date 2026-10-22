@@ -168,7 +168,7 @@ sudo /opt/socket_vmnet/bin/socket_vmnet --vmnet-mode=bridged \
 Then launch the app from another terminal (quit any existing instance first):
 
 ```sh
-X4NET='-nic stream,server=off,addr.type=unix,addr.path=/var/run/eink-qemu-vmnet,model=esp32_wifi' \
+X4NET='-netdev stream,id=wifi,server=off,addr.type=unix,addr.path=/var/run/eink-qemu-vmnet -net nic,netdev=wifi,model=esp32_wifi' \
   /Applications/eink-qemu.app/Contents/MacOS/eink-qemu-desktop
 ```
 

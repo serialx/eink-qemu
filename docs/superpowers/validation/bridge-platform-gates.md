@@ -10,6 +10,37 @@ authorization, verification, and saving through the actual wizard. It displayed
 “Bridge ready”; the app-owned socket_vmnet process and private socket were
 present. This uses the development-signed macOS 15+ QA package described below.
 
+Launching C3 firmware from that package exposed a separate QEMU argument error:
+the legacy `-nic` parser cannot decode a stream backend's nested socket address.
+Managed macOS launches now use structured `-netdev` JSON and attach the board's
+Wi-Fi NIC to it. A regression test reproduced the failure with the actual
+packaged binary; after the fix both C3 and S3 binaries connected to a temporary
+Unix socket, including a path containing an apostrophe, comma, and space.
+The rebuilt signed QA package boots C3 firmware through the managed socket.
+
+The firmware connection test then exposed an existing Wi-Fi model bug: outgoing
+ToDS data used the simulated AP address as both Ethernet source and destination.
+A guest packet capture showed DHCP requests addressed to that AP instead of
+broadcast. The model now preserves the transmitting station and final Ethernet
+destination, including unicast ARP replies. Packet tests reproduced the wrong
+addresses on both C3 and S3. The unchanged firmware connected successfully in
+the NAT control run.
+
+The inbound path also replaced the original Ethernet sender and broadcast or
+multicast destination. FromDS frames now preserve these addresses while keeping
+the AP in address 2. Review identified the corresponding RX metadata dependency:
+BSSID matching must use address 2 for FromDS data. Regression tests reproduced
+both faults, then passed with the fixes. The associated-station tests check
+unicast, broadcast, multicast, AP identity, and both BSSID-match bits. All 17
+Wi-Fi DMA/packet tests passed on macOS ARM64 and native Ubuntu 22.04 ARM64;
+focused code review found no remaining actionable issues in these fixes.
+
+With the corrected signed package, DHCP broadcasts reach the macOS VM's uplink,
+but its outer Shared NAT network has not offered the emulated reader a lease.
+The same capture records successful DHCP replies to the macOS VM itself.
+Testing with a bridged VM attachment is pending approval; firmware LAN
+acceptance is not established.
+
 The installed Ubuntu 22.04 ARM64 package completed configuration and removal
 through the wizard, including each two-minute confirmation step. Its protected
 journal recorded one retained resource after setup and none after removal.
@@ -26,8 +57,11 @@ Ubuntu package visibly offers “Inspect again” for the unsupported connection
 
 The ordinary-user Windows package displayed the real UAC prompt. Declining it
 showed “Authorization cancelled” and left no resources or completed mutations.
-The approved setup transaction is still under validation. These checks do not
-establish firmware LAN connectivity or complete platform acceptance.
+Approving a new plan then completed native setup, timed Keep confirmation,
+ordinary-user TAP access verification, and saved selection. The wizard displayed
+“Bridge ready”, and the journal retained one resource with no pending rollback.
+The emulated x64 VM took several minutes for native connection queries. These
+checks do not establish firmware LAN connectivity or complete platform acceptance.
 
 Signed macOS packaging now verifies matching app/helper team requirements,
 embedded dependency staging, notices, architecture, and each binary's deployment

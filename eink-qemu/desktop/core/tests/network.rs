@@ -1,5 +1,46 @@
 use eink_core::{network::{self, NetworkOverrides, NetworkTarget}, session::WifiMode};
 
+#[cfg(unix)]
+#[test]
+#[ignore = "requires EINK_TEST_QEMU_RISCV32, EINK_TEST_QEMU_XTENSA and EINK_TEST_QEMU_SHARE; opens only a temporary Unix socket"]
+fn packaged_qemu_connects_managed_socket_for_both_boards() {
+    use std::{io::Read, os::unix::net::UnixListener, process::{Child, Command, Stdio}, time::{Duration, Instant}};
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("reader's bridge,1.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let args = network::args(WifiMode::Bridge, Some(&NetworkTarget::MacSocket { path: socket }),
+        &NetworkOverrides::default()).unwrap().unwrap();
+    for (variable, machine) in [("EINK_TEST_QEMU_RISCV32", "x3"), ("EINK_TEST_QEMU_XTENSA", "x4pro")] {
+        let mut child = Running(Command::new(std::env::var_os(variable).expect(variable))
+            .args(["-machine", machine, "-S", "-display", "none", "-serial", "null", "-monitor", "none", "-L"])
+            .arg(std::env::var_os("EINK_TEST_QEMU_SHARE").expect("EINK_TEST_QEMU_SHARE"))
+            .args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let peer = loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                let mut error = String::new();
+                child.0.stderr.take().unwrap().read_to_string(&mut error).unwrap();
+                panic!("{machine} exited before connecting: {status}: {error}");
+            }
+            match listener.accept() {
+                Ok((peer, _)) => break peer,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+                Err(error) => panic!("{error}"),
+            }
+            assert!(Instant::now() < deadline, "{machine} did not connect to its managed socket");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(child.0.try_wait().unwrap().is_none());
+        drop(child);
+        drop(peer);
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_child_retains_read_only_lease_after_stdin_eof_and_parent_drop() {
@@ -66,9 +107,6 @@ fn the_emulator_inherits_the_lease_without_making_parent_descriptors_inheritable
 fn managed_targets_preserve_qemu_argument_boundaries() {
     let overrides = NetworkOverrides::default();
     let targets = [
-        #[cfg(unix)]
-        (NetworkTarget::MacSocket { path: "/var/run/reader's bridge,1/socket".into() },
-         "stream,server=off,addr.type=unix,addr.path=/var/run/reader's bridge,,1/socket,model=esp32_wifi"),
         (NetworkTarget::WindowsTap { name: "Reader LAN,2".into() }, "tap,ifname=Reader LAN,,2,model=esp32_wifi"),
         (NetworkTarget::WindowsTap { name: "guid:{12345678-1234-5678-9abc-1234567890ab}".into() },
          "tap,ifname=guid:{12345678-1234-5678-9abc-1234567890ab},model=esp32_wifi"),
@@ -79,6 +117,20 @@ fn managed_targets_preserve_qemu_argument_boundaries() {
     for (target, expected) in targets {
         assert_eq!(network::args(WifiMode::Bridge, Some(&target), &overrides).unwrap(), Some(vec!["-nic".into(), expected.into()]));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_socket_uses_structured_netdev_and_the_board_nic() {
+    let path = "/var/run/reader's \"bridge\",1/socket";
+    let args = network::args(WifiMode::Bridge, Some(&NetworkTarget::MacSocket { path: path.into() }),
+        &NetworkOverrides::default()).unwrap().unwrap();
+    assert_eq!(args.len(), 4);
+    assert_eq!(args[0], "-netdev");
+    let backend: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+    assert_eq!(backend, serde_json::json!({"type":"stream", "id":"eink-managed-wifi", "server":false,
+        "addr":{"type":"unix", "path":path}}));
+    assert_eq!(&args[2..], ["-net", "nic,netdev=eink-managed-wifi,model=esp32_wifi"]);
 }
 
 #[test]

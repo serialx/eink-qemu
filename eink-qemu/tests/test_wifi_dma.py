@@ -124,6 +124,60 @@ class WifiActionFrames(WifiHarness):
             data += chunk
         return data
 
+    def test_station_data_preserves_ethernet_addresses(self):
+        ap = bytes.fromhex('100100c40a56')
+        station = bytes.fromhex('02446688aacc')
+        self.write(0x6000e150, 12 << 20)  # simulated AP's channel 1
+        self.post(b'\xb0\x00\x00\x00' + ap + station + ap + bytes(2) +
+                  b'\x00\x00\x01\x00\x00\x00' + bytes(4))
+        self.post(bytes(4) + ap + station + ap + bytes(2 + 4 + 4))
+        for destination, ethertype in [
+            (b'\xff' * 6, b'\x08\x00'),  # DHCP broadcast
+            (bytes.fromhex('123456789abc'), b'\x08\x00'),
+            (bytes.fromhex('123456789abc'), b'\x08\x06'),  # ARP reply
+        ]:
+            with self.subTest(destination=destination, ethertype=ethertype):
+                payload = bytes(range(48))
+                # ToDS: receiver/BSSID, transmitting station, final destination.
+                frame = (b'\x08\x01\x00\x00' + ap + station + destination +
+                         bytes(2) + b'\xaa\xaa\x03\x00\x00\x00' +
+                         ethertype + payload + bytes(4))
+                self.post(frame)
+                size = struct.unpack('!I', self.recv_exact(4))[0]
+                self.assertEqual(self.recv_exact(size),
+                                 destination + station + ethertype + payload)
+
+    def test_incoming_station_data_preserves_ethernet_addresses(self):
+        ap = bytes.fromhex('100100c40a56')
+        station = bytes.fromhex('525400123456')
+        source = bytes.fromhex('123456789abc')
+        self.write(0x6000e150, 12 << 20)
+        self.post(b'\xb0\x00\x00\x00' + ap + station + ap + bytes(2) +
+                  b'\x00\x00\x01\x00\x00\x00' + bytes(4))
+        self.post(bytes(4) + ap + station + ap + bytes(2 + 4 + 4))
+        # Consume the authentication and association responses first.
+        self.inject(None)
+        self.inject(None)
+        # Slot 0 matches the AP; slot 1 matches only the remote Ethernet sender.
+        for offset, address in [(0x40, ap), (0x48, source)]:
+            self.command(f'write {WIFI + offset:#x} 6 0x{address.hex()}')
+        for destination, ethertype in [
+            (bytes.fromhex('525400123456'), b'\x08\x00'),
+            (b'\xff' * 6, b'\x08\x06'),
+            (bytes.fromhex('01005e0000fb'), b'\x08\x00'),
+        ]:
+            with self.subTest(destination=destination, ethertype=ethertype):
+                payload = bytes(range(48))
+                received = self.inject(destination + source + ethertype + payload)
+                frame = received[48:]
+                self.assertEqual(frame[:2], b'\x08\x02')
+                self.assertEqual(frame[10:16], ap)
+                self.assertEqual(frame[4:10], destination)
+                self.assertEqual(frame[16:22], source)
+                self.assertEqual(frame[24:-4],
+                                 b'\xaa\xaa\x03\x00\x00\x00' + ethertype + payload)
+                self.assertEqual(received[3] & 0xc0, 0x40)
+
     def inject(self, packet, *, error=None):
         desc, buf = DESC + 0x100, BUFFER + 0x2000
         self.write(desc, (1 << 31) | 2048)
@@ -132,7 +186,8 @@ class WifiActionFrames(WifiHarness):
         sentinel = bytes([0xa5]) * 2048
         self.command(f'write {buf:#x} 2048 0x{sentinel.hex()}')
         self.write(WIFI + 0x88, desc)
-        self.net.sendall(struct.pack('!I', len(packet)) + packet)
+        if packet is not None:
+            self.net.sendall(struct.pack('!I', len(packet)) + packet)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             self.command('clock_step 1000000')

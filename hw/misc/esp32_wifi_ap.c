@@ -531,6 +531,13 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           return size;
         }
         Esp32_WLAN_init_ap_frame(s, frame);
+        if (s->mode == Esp32_Mode_Station &&
+            s->ap_state != Esp32_WLAN__STATE_STA_ASSOCIATED) {
+            /* FromDS: address 1 is the final destination, address 2 the AP,
+             * and address 3 the original Ethernet sender. */
+            memcpy(frame->destination_address, buf, 6);
+            memcpy(frame->bssid_address, buf + 6, 6);
+        }
         Esp32_WLAN_insert_frame(s, frame);
     }
     return size;
@@ -847,20 +854,25 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             ethernet_frame[12] = frame->data_and_fcs[6];
             ethernet_frame[13] = frame->data_and_fcs[7];
 
-            // the new originator of the packet is
-            // the access point
-            if(s->ap_state == Esp32_WLAN__STATE_ASSOCIATED)
-                memcpy(&ethernet_frame[6], s->ap_macaddr, 6);
-            else
-                memcpy(&ethernet_frame[6], s->macaddr, 6);
-
-            if (ethernet_frame[12] == 0x08 && ethernet_frame[13] == 0x06) {
-                // for arp request, we use a broadcast
-                memset(&ethernet_frame[0], 0xff, 6);
+            /* ToDS carries the final destination in address 3 and the
+             * transmitting station in address 2. Address 1 is only the AP
+             * receiver, not an Ethernet endpoint. In particular DHCP must
+             * remain broadcast and ARP replies must remain unicast. */
+            if (s->mode == Esp32_Mode_Station &&
+                (frame->frame_control.flags & 3) == 1) {
+                memcpy(&ethernet_frame[0], frame->bssid_address, 6);
+                memcpy(&ethernet_frame[6], frame->source_address, 6);
             } else {
-                // otherwise we forward the packet to
-                // where it really belongs
-                memcpy(&ethernet_frame[0], frame->destination_address, 6);
+                if (s->ap_state == Esp32_WLAN__STATE_ASSOCIATED) {
+                    memcpy(&ethernet_frame[6], s->ap_macaddr, 6);
+                } else {
+                    memcpy(&ethernet_frame[6], s->macaddr, 6);
+                }
+                if (ethernet_frame[12] == 0x08 && ethernet_frame[13] == 0x06) {
+                    memset(&ethernet_frame[0], 0xff, 6);
+                } else {
+                    memcpy(&ethernet_frame[0], frame->destination_address, 6);
+                }
             }
 
             // add packet content

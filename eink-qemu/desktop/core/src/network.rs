@@ -78,7 +78,15 @@ pub fn args(mode: WifiMode, target: Option<&NetworkTarget>, overrides: &NetworkO
     if overrides.bridge.as_ref().is_some_and(|s| !s.is_empty()) { return Ok(None); }
     let Some(target) = target else { return Ok(None); };
     let nic = match target {
-        NetworkTarget::MacSocket { path } => format!("stream,server=off,addr.type=unix,addr.path={},model=esp32_wifi", escape(path_text(path)?)),
+        NetworkTarget::MacSocket { path } => {
+            // Stream addresses require QEMU's modern -netdev parser. -nic
+            // uses the legacy flat visitor and cannot decode addr.type/path.
+            // JSON also preserves commas, quotes and spaces in the socket path.
+            let backend = serde_json::json!({"type":"stream", "id":"eink-managed-wifi", "server":false,
+                "addr":{"type":"unix", "path":path_text(path)?}});
+            return Ok(Some(vec!["-netdev".into(), backend.to_string(), "-net".into(),
+                "nic,netdev=eink-managed-wifi,model=esp32_wifi".into()]));
+        },
         NetworkTarget::WindowsTap { name } => format!("tap,ifname={},model=esp32_wifi", escape(checked(name)?)),
         NetworkTarget::LinuxBridge { name, helper } => {
             // QEMU interpolates bridge names into its helper shell command.
