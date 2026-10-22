@@ -57,6 +57,17 @@ its connected reader page; mDNS resolved the same address. The emulator was
 closed and the fixture cleanup completed, restoring the original profiles and
 removing the temporary authorization.
 
+The installed Ubuntu package also recovered after the desktop process was
+forcibly terminated while **Keep connection** was pending. Without further
+client requests, the helper restored the original Ethernet connection and
+removed the temporary bridge. The observer recorded completion 3.93 seconds
+after the confirmation deadline, with no resource, rollback, or cleanup left
+pending. The independent fixture-cleanup timer had not fired. Reopening the app
+cleared the stale saved selection and offered **Set up bridge**; its chooser
+showed the connected Ethernet adapter. The test then restored the original
+Netplan and IPv6 fixtures, removed the temporary polkit rule, and stopped its
+backup timer.
+
 The current macOS QA app includes support removal and is development signed
 for macOS 15 or newer; it is not the release artifact. Its native helper update
 installed the exact bundled payload and preserved the retained bridge service.
@@ -96,12 +107,15 @@ fixtures and do not replace native network lifecycle tests of the new packages.
 ## Remaining acceptance work
 
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
-  dependencies, Developer ID signing, and notarization. Test Intel macOS.
+  dependencies, Developer ID signing, and notarization. A Developer ID identity
+  is currently unavailable; the user confirmed this on 2026-10-22. Development
+  signing remains available for VM tests. Intel macOS still needs native testing.
 - Complete Linux x64 native coverage and Linux/Windows C3/S3 physical-LAN
   acceptance. Their shared-network results do not satisfy that requirement.
 - Retest the latest recovery changes through installed services and the actual
-  wizard, including interrupted setup and reboot. Windows package removal with
-  a retained bridge and subsequent reinstall now pass.
+  wizard, including interrupted setup and reboot. Ubuntu desktop-crash recovery
+  during confirmation now passes. Windows package removal with a retained
+  bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
   and version-mismatch flows. Windows testing remains at the user's requested
   800 × 600 resolution.
