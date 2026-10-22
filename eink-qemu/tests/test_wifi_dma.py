@@ -108,7 +108,9 @@ class WifiActionFrames(WifiHarness):
             listener.listen(1)
             port = listener.getsockname()[1]
             self.extra_qemu_args = [
-                '-nic', f'socket,model=esp32_wifi,connect=127.0.0.1:{port}',
+                '-netdev', f'stream,id=wifi,server=off,addr.type=inet,'
+                           f'addr.host=127.0.0.1,addr.port={port}',
+                '-net', 'nic,netdev=wifi,model=esp32_wifi',
                 '-d', 'guest_errors',
             ]
             super().setUp()
@@ -123,6 +125,41 @@ class WifiActionFrames(WifiHarness):
             self.assertTrue(chunk, 'network connection closed')
             data += chunk
         return data
+
+    def test_receive_resumes_after_a_burst_fills_the_wifi_queue(self):
+        # More than the 20-frame Wi-Fi queue can hold. Virtual time stays
+        # stopped while the stream backend reads the burst and applies
+        # backpressure. Each frame gets a separate DMA descriptor.
+        count = 32
+        descriptors, buffers = DESC + 0x100, BUFFER + 0x2000
+        for index in range(count):
+            desc = descriptors + index * 12
+            self.write(desc, (1 << 31) | 256)
+            self.write(desc + 4, buffers + index * 256)
+            self.write(desc + 8, desc + 12 if index + 1 < count else 0)
+        self.write(WIFI + 0x88, descriptors)
+        header = b'\xff' * 6 + bytes.fromhex('123456789abc') + b'\xa0\x0d'
+        packets = [header + bytes([index]) * 32 + bytes(4)
+                   for index in range(count)]
+        self.net.sendall(b''.join(struct.pack('!I', len(p)) + p for p in packets))
+        time.sleep(0.05)  # Let host I/O run without draining the virtual timer.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            self.command('clock_step 1000000')
+            if (self.read(descriptors + (count - 1) * 12) >> 12) & 0xfff:
+                break
+            time.sleep(0.005)
+        lengths = [(self.read(descriptors + i * 12) >> 12) & 0xfff
+                   for i in range(count)]
+        self.assertEqual(lengths, [48 + 24 + 32 + 4] * count,
+                         'stream receive stalled after Wi-Fi backpressure')
+        for index, length in enumerate(lengths):
+            data = bytes.fromhex(self.command(
+                f'read {buffers + index * 256:#x} {length}')[0][2:])
+            self.assertEqual(data[48 + 24:-4], bytes([index]) * 32)
+        # A later packet must also arrive after the burst has fully drained.
+        self.assertEqual(self.inject(header + b'after-burst' + bytes(4))[72:-4],
+                         b'after-burst')
 
     def test_station_data_preserves_ethernet_addresses(self):
         ap = bytes.fromhex('100100c40a56')

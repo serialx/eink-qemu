@@ -35,11 +35,27 @@ unicast, broadcast, multicast, AP identity, and both BSSID-match bits. All 17
 Wi-Fi DMA/packet tests passed on macOS ARM64 and native Ubuntu 22.04 ARM64;
 focused code review found no remaining actionable issues in these fixes.
 
-With the corrected signed package, DHCP broadcasts reach the macOS VM's uplink,
-but its outer Shared NAT network has not offered the emulated reader a lease.
-The same capture records successful DHCP replies to the macOS VM itself.
-Testing with a bridged VM attachment is pending approval; firmware LAN
-acceptance is not established.
+After the user approved changing the disposable VM's attachment to bridged
+Ethernet, S3 firmware obtained a LAN DHCP lease through the managed socket.
+The development Mac, acting as a separate network peer, received HTTP 200 and
+opened the reader's web interface, which reported Connected and firmware
+version 1.6.5-ko.0. mDNS resolved `crosspoint.local` to the reader's LAN address.
+
+C3 initially timed out on the same bridge: the router sent DHCP Offers, but
+none reached the Wi-Fi receive handler. A burst regression reproduced a shared
+Wi-Fi model fault on both architectures. Once its 20-frame queue filled, the
+stream backend stopped reading and never resumed when space became available.
+The injection timer now flushes waiting network packets after freeing space,
+and a full receiver returns backpressure instead of dropping those packets.
+The regression verifies all 32 burst packets in order and a subsequent packet;
+all 19 Wi-Fi tests pass on macOS ARM64.
+
+With this fix, the unchanged C3 firmware completed Discover/Offer/Request/ACK
+through the managed bridge. Its transfer screen displayed a LAN address; the
+development Mac received HTTP 200, opened the web interface with Connected
+status and version 1.6.5-ko.0, and resolved `crosspoint.local`. This establishes
+C3 and S3 firmware LAN connectivity in the disposable macOS VM. Release signing,
+the advertised deployment baseline, and helper maintenance remain separate gates.
 
 The installed Ubuntu 22.04 ARM64 package completed configuration and removal
 through the wizard, including each two-minute confirmation step. Its protected
@@ -62,6 +78,13 @@ ordinary-user TAP access verification, and saved selection. The wizard displayed
 “Bridge ready”, and the journal retained one resource with no pending rollback.
 The emulated x64 VM took several minutes for native connection queries. These
 checks do not establish firmware LAN connectivity or complete platform acceptance.
+
+Updating the installed Windows package with a retained bridge also passed:
+the installer exited successfully, the recorded resources remained identical,
+and the helper resumed running with automatic startup. Both installed QEMU
+binaries match the staged package hashes. The initial verification incorrectly
+expected the unstripped build hashes; packaging deliberately strips debug
+information, so the corrected check compares the packaged payloads.
 
 Signed macOS packaging now verifies matching app/helper team requirements,
 embedded dependency staging, notices, architecture, and each binary's deployment

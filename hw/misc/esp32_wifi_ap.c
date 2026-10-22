@@ -105,6 +105,9 @@ static void Esp32_WLAN_inject_timer(void *opaque)
         s->inject_queue = frame->next_frame;
         Esp32_sendFrame(s, (void *)frame, frame->frame_length,frame->signal_strength);
         free(frame);
+        /* Space is available again. Resume packets held by the network core;
+         * stream backends stop reading until their queued send completes. */
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
     }
     if (s->inject_queue_size > 0) {
         // there are more packets... schedule
@@ -361,10 +364,9 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
     Esp32WifiState *s = qemu_get_nic_opaque(ncs);
     struct mac80211_frame *frame;
     if (!Esp32_WLAN_can_receive(ncs)) {
-        // this should not happen, but in
-        // case it does, let's simply drop
-        // the packet
-        return -1;
+        /* Queue flushing can call receive without checking can_receive.
+         * Keep the packet queued until the injection timer frees space. */
+        return 0;
     }
 
     if (!s) {
