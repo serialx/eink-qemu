@@ -87,16 +87,52 @@ impl FamilySnapshot {
     pub fn preserved_by(&self, current: &Self) -> bool {
         same_set(&self.addresses, &current.addresses) && same_set(&self.routes, &current.routes) && self.properties == current.properties
     }
+    /// Renewed DHCP/SLAAC values need not match an old lease, but a link-local
+    /// address cannot replace the host's usable routed address. Retain the
+    /// original default-route and DNS capabilities without requiring Internet
+    /// access on networks that never supplied either one.
+    fn usable_by(&self, current: &Self, ipv6: bool) -> bool {
+        let scope = |family: &Self| family.addresses.iter().filter_map(|entry| {
+            let address = <&str>::try_from(entry["data"].get("address")?).ok()?.parse::<IpAddr>().ok()?;
+            match address {
+                IpAddr::V4(ip) if !ipv6 && !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && !ip.is_broadcast() => Some(!ip.is_link_local()),
+                IpAddr::V6(ip) if ipv6 && !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() => Some(!ip.is_unicast_link_local()),
+                _ => None,
+            }
+        }).max();
+        let default_route = |family: &Self| family.routes.iter().any(|entry| {
+            let fields = &entry["data"];
+            u32::try_from(&fields["prefix"]).ok() == Some(0)
+                && <&str>::try_from(&fields["dest"]).ok().and_then(|value| value.parse::<IpAddr>().ok())
+                    .is_some_and(|address| address.is_ipv6() == ipv6 && address.is_unspecified())
+        });
+        let dns = |family: &Self| {
+            let value = family.properties["data"]["Nameservers"].clone();
+            if ipv6 { Vec::<Vec<u8>>::try_from(value).is_ok_and(|servers| !servers.is_empty()) }
+            else { Vec::<u32>::try_from(value).is_ok_and(|servers| !servers.is_empty()) }
+        };
+        let address_preserved = match scope(self) {
+            Some(required) => scope(current).is_some_and(|present| present || !required),
+            None => self.addresses.is_empty(),
+        };
+        address_preserved && (!default_route(self) || default_route(current)) && (!dns(self) || dns(current))
+    }
 }
 impl HostSnapshot {
     /// A committed DHCP/SLAAC connection may legitimately renew its addresses,
-    /// routes and DNS. Its persistent profile is checked separately. Keep exact
-    /// runtime checks for static families and for every in-flight conversion.
+    /// routes and DNS. Preserve their capabilities and check the persistent
+    /// profile separately. Keep exact runtime checks for static families and
+    /// for every in-flight conversion.
     pub fn verify_committed(&self, current: &Self, profile: &Profile) -> Result<(), BridgeError> {
         for (name, before, after) in [("ipv4", &self.ipv4, &current.ipv4), ("ipv6", &self.ipv6, &current.ipv6)] {
             let method = profile.get(name).and_then(|fields| fields.get("method")).and_then(|v| <&str>::try_from(v).ok());
             let valid = if matches!(method, Some("auto" | "dhcp")) {
-                after.as_ref().is_some_and(|family| !family.addresses.is_empty())
+                match (before, after) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.usable_by(b, name == "ipv6"),
+                    (None, Some(b)) => b.usable_by(b, name == "ipv6"),
+                    _ => false,
+                }
             } else {
                 match (before, after) { (None, None) => true, (Some(a), Some(b)) => a.preserved_by(b), _ => false }
             };

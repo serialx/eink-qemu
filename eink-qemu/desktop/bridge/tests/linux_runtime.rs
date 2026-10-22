@@ -56,6 +56,82 @@ fn committed_dynamic_addresses_can_renew_but_setup_and_static_checks_stay_exact(
     assert!(before.verify_committed(&current, &profile).is_err());
 }
 
+fn dynamic_snapshot(properties: BTreeMap<String, OwnedValue>, ipv6: bool) -> (eink_bridge::linux_verify::HostSnapshot, eink_bridge::linux_profiles::Profile) {
+    use eink_bridge::{linux_profiles::Profile, linux_verify::HostSnapshot};
+    let family = Some(FamilySnapshot::from_properties(properties).unwrap());
+    let snapshot = if ipv6 { HostSnapshot { ipv4: None, ipv6: family } }
+        else { HostSnapshot { ipv4: family, ipv6: None } };
+    (snapshot, Profile(BTreeMap::from([
+        ("ipv4".into(), BTreeMap::from([("method".into(), text(if ipv6 { "disabled" } else { "auto" }))])),
+        ("ipv6".into(), BTreeMap::from([("method".into(), text(if ipv6 { "auto" } else { "disabled" }))])),
+    ])))
+}
+fn dynamic_properties(ipv6: bool, address: &str, gateway: &str, dns: &str) -> BTreeMap<String, OwnedValue> {
+    let mut fields = properties();
+    fields.insert("AddressData".into(), Value::from(vec![HashMap::from([
+        ("address", text(address)), ("prefix", (if ipv6 { 64u32 } else { 24u32 }).into()),
+    ])]).try_into().unwrap());
+    fields.insert("RouteData".into(), Value::from(vec![HashMap::from([
+        ("dest", text(if ipv6 { "::" } else { "0.0.0.0" })), ("prefix", 0u32.into()),
+        ("next-hop", text(gateway)), ("metric", 100u32.into()),
+    ])]).try_into().unwrap());
+    fields.insert("Gateway".into(), text(gateway));
+    fields.insert("Nameservers".into(), if ipv6 {
+        Value::from(vec![dns.parse::<std::net::Ipv6Addr>().unwrap().octets().to_vec()]).try_into().unwrap()
+    } else {
+        Value::from(vec![u32::from_ne_bytes(dns.parse::<std::net::Ipv4Addr>().unwrap().octets())]).try_into().unwrap()
+    });
+    fields
+}
+
+#[test]
+fn committed_dynamic_readiness_requires_original_address_scope_routes_and_dns() {
+    for (ipv6, address, gateway, dns, degraded) in [
+        (false, "192.0.2.8", "192.0.2.1", "192.0.2.53", vec!["169.254.1.2", "0.0.0.0", "127.0.0.1", "224.0.0.1", "2001:db8::8"]),
+        (true, "2001:db8::8", "fe80::1", "2001:db8::53", vec!["fe80::8", "::", "::1", "ff02::1", "192.0.2.8"]),
+    ] {
+        let original = dynamic_properties(ipv6, address, gateway, dns);
+        let (before, profile) = dynamic_snapshot(original.clone(), ipv6);
+        for address in degraded {
+            let changed = dynamic_properties(ipv6, address, gateway, dns);
+            // A mismatched IPv4 address with an IPv6 prefix is rejected at parsing.
+            if let Ok(family) = FamilySnapshot::from_properties(changed) {
+                let mut current = before.clone();
+                if ipv6 { current.ipv6 = Some(family); } else { current.ipv4 = Some(family); }
+                assert!(before.verify_committed(&current, &profile).is_err(), "accepted degraded address {address}");
+            }
+        }
+        for missing in ["RouteData", "Nameservers"] {
+            let mut changed = original.clone();
+            changed.insert(missing.into(), if missing == "RouteData" {
+                Value::from(Vec::<HashMap<String, OwnedValue>>::new()).try_into().unwrap()
+            } else if ipv6 {
+                Value::from(Vec::<Vec<u8>>::new()).try_into().unwrap()
+            } else { Value::from(Vec::<u32>::new()).try_into().unwrap() });
+            let (current, _) = dynamic_snapshot(changed, ipv6);
+            assert!(before.verify_committed(&current, &profile).is_err(), "accepted lost {missing} for ipv6={ipv6}");
+        }
+    }
+}
+
+#[test]
+fn committed_dynamic_readiness_allows_renewed_values_and_local_only_networks() {
+    for (ipv6, before_values, after_values) in [
+        (false, ("192.0.2.8", "192.0.2.1", "192.0.2.53"), ("198.51.100.8", "198.51.100.1", "198.51.100.53")),
+        (true, ("2001:db8::8", "fe80::1", "2001:db8::53"), ("fd00::8", "fe80::2", "fd00::53")),
+    ] {
+        let (before, profile) = dynamic_snapshot(dynamic_properties(ipv6, before_values.0, before_values.1, before_values.2), ipv6);
+        let (current, _) = dynamic_snapshot(dynamic_properties(ipv6, after_values.0, after_values.1, after_values.2), ipv6);
+        assert!(before.verify_committed(&current, &profile).is_ok());
+        let mut local = dynamic_properties(ipv6, if ipv6 { "fe80::8" } else { "169.254.1.8" }, "", after_values.2);
+        local.insert("RouteData".into(), Value::from(Vec::<HashMap<String, OwnedValue>>::new()).try_into().unwrap());
+        local.insert("Nameservers".into(), if ipv6 { Value::from(Vec::<Vec<u8>>::new()).try_into().unwrap() }
+            else { Value::from(Vec::<u32>::new()).try_into().unwrap() });
+        let (local, _) = dynamic_snapshot(local, ipv6);
+        assert!(local.verify_committed(&local, &profile).is_ok());
+    }
+}
+
 #[test]
 fn conversion_pins_live_mac_mtu_route_and_dns_defaults() {
     use eink_bridge::{linux_profiles::{migrate, Profile}, linux_verify::HostSnapshot};
