@@ -388,6 +388,7 @@ mod tests {
         assert!(original.runtime_changes(&rotating).unwrap().is_empty());
     }
     #[test]
+    #[ignore = "requires a native adapter with complete Windows network settings"]
     fn native_read_only_profile_contains_both_address_families() {
         let adapter=crate::inspect().unwrap().adapters.into_iter().find(|a|a.eligible).unwrap();
         let devices=windows_device::enumerate().unwrap();

@@ -8,6 +8,13 @@ do not include the signed managed helper. This is the current checklist; the
 [platform gate record](bridge-platform-gates.md) contains the detailed evidence
 and earlier failed attempts.
 
+The live Windows route/profile tests and the macOS real-authorization-reference
+test are opt-in native acceptance checks. They require a prepared network adapter
+or an installed private bridge authorization policy, which generic CI runners
+do not provide. Standard CI still runs the fixture-based route/profile tests and
+forged-authorization rejection checks. A green CI run does not complete native
+acceptance.
+
 ## Verified scope
 
 Tests run in disposable VMs. The development Mac's own networking was not
