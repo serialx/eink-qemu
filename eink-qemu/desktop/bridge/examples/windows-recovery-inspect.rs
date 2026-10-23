@@ -18,6 +18,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let record: serde_json::Value = serde_json::from_reader(file)?;
     let snapshot = &record["prepared"]["snapshot"];
     let physical = serde_json::from_value::<windows_device::DeviceIdentity>(snapshot["physical"].clone())?;
+    let original = serde_json::from_value::<windows_profile::Snapshot>(snapshot["original"].clone())?;
+    let original_saved = serde_json::from_value::<windows_saved::Saved>(snapshot["original_saved"].clone())?;
     let bridge = serde_json::from_value::<windows_device::DeviceIdentity>(snapshot["bridge"]["device"].clone())?;
     macro_rules! inspect {
         ($name:expr, $expr:expr) => {{
@@ -28,11 +30,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }};
     }
     inspect!("devices", windows_device::enumerate());
-    inspect!("topology", Topology::read());
+    inspect!("topology", Topology::read().map(|topology| {
+        let bindings = serde_json::from_value::<std::collections::BTreeMap<String, bool>>(
+            snapshot["physical_bindings"].clone());
+        println!("originalPhysicalBindingsMatch={}", bindings.as_ref().ok()
+            .is_some_and(|expected| topology.bindings(&physical.guid).ok() == Some(expected)));
+        println!("recordedBridgeDevicesAbsent={}", ["tap", "bootstrap"].into_iter()
+            .filter_map(|key| snapshot[key]["guid"].as_str())
+            .chain(Some(bridge.guid.as_str()))
+            .all(|guid| topology.device(guid).is_err()));
+        topology
+    }));
     for (name, device) in [("physical", physical), ("bridge", bridge)] {
-        inspect!(format!("{name}-saved"), windows_saved::Saved::read(&device));
+        inspect!(format!("{name}-saved"), windows_saved::Saved::read(&device).map(|saved| {
+            if name == "physical" {
+                println!("originalSavedConfigurationMatches={}", original_saved.same_configuration(&saved));
+            }
+            saved
+        }));
         inspect!(format!("{name}-profile"), windows_profile::Snapshot::read(&device).map(|profile| {
             println!("profileJson:{name}={}", serde_json::to_string(&profile).expect("serializable native profile"));
+            if name == "physical" {
+                println!("configurationChanges={:?}", original.configuration_changes(&profile));
+                println!("runtimeChanges={:?}", original.runtime_changes(&profile));
+            }
             profile
         }));
         if name == "bridge" { inspect!("bridge-address", windows_network_bridge::address(&device)); }

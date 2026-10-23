@@ -16,11 +16,13 @@ reconfigured. Host readiness and firmware connectivity are separate results:
 | macOS 26.5.2 ARM64, VirtualBuddy, bridged Ethernet | Ordinary-user wizard setup and system authorization; native removal, reboot recovery, and lease protection | C3 and S3 acquired LAN addresses; a separate peer opened their HTTP services and resolved mDNS |
 | Ubuntu 22.04 ARM64, UTM shared network | Packaged wizard configuration and confirmed removal; package update, leased-removal refusal, cleanup, and reinstall with reversible network fixtures | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
 | Windows 11 Pro x64 build 26300, UTM shared network | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
-| Ubuntu 24.04.5 x64, UTM shared network and bridged Ethernet | 82 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V30 actual wizard retry and cold-boot recovery passed; V33 wizard setup and Keep passed on Ethernet | C3 and S3 DHCP, HTTP, and mDNS passed on the physical LAN |
+| Ubuntu 24.04.5 x64, UTM shared network and bridged Ethernet | 84 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V39 normal desktop password-prompt cancellation, setup and removal passed; V30 actual wizard retry and cold-boot recovery passed; V33 wizard setup and Keep passed on Ethernet | C3 and S3 DHCP, HTTP, and mDNS passed on the physical LAN |
 
-The Linux tests used an explicitly authorized temporary polkit rule for the
-single bridge action. Each lifecycle fixture removed it afterward. These runs
-do not establish a standard Linux desktop's password-prompt behavior.
+Earlier Linux tests used an explicitly authorized temporary polkit rule for the
+single bridge action. Each lifecycle fixture removed it afterward. V39 also
+passed the normal desktop password-prompt flow on Ubuntu 24.04 x64, without a
+temporary authorization rule: cancellation, approved setup, and separately
+approved removal.
 
 ## Current packages and regression results
 
@@ -33,7 +35,7 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
 | Windows x64 NSIS installer V36 | `9b3e989f418a32612fd31560cea7a32f682aa604c54e876df58bb6ea4adbe8b5` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; actual cold-boot recovery remains failed |
-| Ubuntu x64 Debian package V30 | `ad0d254cf906e32ed5fb2a9ac556fa18bba14005b3096b4e384074f01d1c8068` | Ubuntu 22.04 build and archive checks passed; update passed payload, service and permission checks and preserved the failed operation byte-for-byte; actual UI restoration and fresh cold-boot recovery passed. Preceding V26 passed configure, lease protection and removal |
+| Ubuntu x64 Debian package V36 | `0f26348d17d36c4185e5512ad62e8d014ab8df593a7a6e6c69ccf5aca62b0c25` | Ubuntu 22.04 build and archive checks passed; installed payload and service checks passed; stale-service repair UI, unsupported IPv6-mode refusal, and V39 standard polkit lifecycle passed. Preceding V30 passed UI restoration and fresh cold-boot recovery; V33 passed C3/S3 physical-LAN access |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
 check after its update and launched the saved X4 Pro firmware. The reader reached
@@ -377,6 +379,67 @@ policy were absent, the exact recovery units were removed, and the normal login
 manager was restored. Production recovery checks were not changed. Evidence: `/tmp/eink-noble-ipv6-identity-refused-v37.jpg`,
 `/tmp/eink-noble-exact-diagnostic-v37.log`, and
 `/tmp/eink-noble-exact-cleanup-v37.log`.
+
+### Windows recovery investigation, V38
+
+Read-only native inspection confirmed that the retained operation's original
+saved configuration matches the current physical adapter. The only effective
+interface-setting difference is IPv6 MTU (recorded 1280, current 1500), with no
+persistent MTU configured. Runtime comparison reports missing active addresses
+and routes: IPv4 remains intact, but the original SLAAC prefix and IPv6 default
+route are absent. DNS comparison passes after normalizing duplicate entries.
+The owned bridge and TAP devices are absent and the unrelated TAP remains.
+The diagnostic left the protected journal unchanged.
+
+The Ubuntu x64 VM on the same Shared Network captured three explicit IPv6
+router solicitations with valid checksums and hop limit 255, but no router
+advertisement during a 45-second capture (zero dropped packets). An earlier
+45-second passive capture also saw a solicitation without a reply. This supports
+an unavailable shared-network IPv6 router as the current readiness blocker; it
+does not identify the cause of the original Windows cold-boot command timeout.
+No development-host network settings were changed.
+
+Current native reads completed in 8.7 seconds for topology, 30.9 seconds for
+saved settings, and 37.2 seconds for the live profile. They did not reproduce
+the startup timeout. The separate native timeout test passed in 61.3 seconds:
+the guarded command and its descendant were terminated, and the recovery
+journal remained unchanged. Evidence: `/tmp/eink-windows-recovery-inspect-v38.log`,
+`/tmp/eink-windows-physical-v38.json`, `/tmp/eink-windows-timeout-v38.json`, and
+`/tmp/eink-noble-ra-solicited-v38.log`.
+
+### Normal Linux desktop authorization, V39
+
+With the user's authorization, the disposable Ubuntu account received a
+temporary test password and logged into the installed XFCE desktop through
+LightDM. The configured session needed correction from an absent Ubuntu desktop
+to XFCE. The normal desktop polkit agent then handled the installed wizard's
+authorization requests; no test allow rule was installed.
+
+Cancelling the first password prompt displayed **Authorization cancelled**.
+The journal retained zero completed mutations, no rollback requirement, and no
+owned resources. A fresh plan and approved password prompt completed setup and
+**Keep connection**, reaching **Bridge ready**. Ordinary-user IPC verification
+and transferred-lease checks passed. The first verification ran during
+finalization and reported a missing resource; repeating it after the ready
+state passed, so that initial result was a test timing error.
+
+Removal required a fresh password prompt, then completed **Keep connection**
+and displayed **Bridge setup removed**. Native checks confirmed no configured
+resource. Cleanup restored the original IPv6 profile and runtime, restored
+Netplan storage, removed the backup timer, and left the helper running. Cleanup
+exited zero. The fixture now waits for the original link-local address to settle
+before taking its baseline and explicitly selects supported EUI-64 generation
+for the positive test; production recovery checks are unchanged.
+
+Evidence: `/tmp/eink-noble-polkit-prompt-v39.jpg`,
+`/tmp/eink-noble-polkit-cancelled-v39.jpg`,
+`/tmp/eink-noble-polkit-ready-v39.jpg`,
+`/tmp/eink-noble-polkit-remove-prompt-v39.jpg`,
+`/tmp/eink-noble-polkit-removed-v39.jpg`,
+`/tmp/eink-noble-auth-cancel-v39.json`,
+`/tmp/eink-noble-ready-final-v39.json`,
+`/tmp/eink-noble-ui-ready-verify-v39.log`, and
+`/tmp/eink-noble-ui-cleanup-v39.log`.
 
 ## Remaining acceptance work
 

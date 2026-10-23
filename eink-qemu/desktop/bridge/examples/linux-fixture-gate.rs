@@ -11,7 +11,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nm = NetworkManager::connect()?;
     if args[1] == "--prepare" {
         let active = nm.active_profile("enp0s1")?;
-        let before = nm.runtime("enp0s1")?;
+        // Storage-fixture activation can return before IPv6 DAD completes.
+        // These two QA hosts have a preexisting link-local address; never
+        // record its transient absence as the state restoration must preserve.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let before = loop {
+            let candidate = nm.runtime("enp0s1")?;
+            let json = serde_json::to_value(&candidate)?;
+            let has_addresses = ["ipv4", "ipv6"].into_iter().all(|family|
+                json[family]["addresses"].as_array().is_some_and(|rows| !rows.is_empty()));
+            if has_addresses {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if candidate.verify_preserved(&nm.runtime("enp0s1")?).is_ok() { break candidate; }
+            }
+            if std::time::Instant::now() >= deadline { return Err("original QA network has not settled; no fixture was applied".into()); }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        };
         let link = nm.link_identity("enp0s1")?;
         let original = active.profile;
         let mut fixture = original.clone();
@@ -22,6 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // the original profile in the same guarded restoration record.
         let method = if args[2] == "eink-bridge-noble-x64" { "auto" } else { "link-local" };
         ipv6.insert("method".into(), zbus::zvariant::Str::from(method).into());
+        // Positive lifecycle tests need an explicit identity-independent mode.
+        // Keep the original default mode untouched in the restoration record.
+        ipv6.insert("addr-gen-mode".into(), 0i32.into());
         // NM-managed link-local routes use a different metric than the
         // preexisting kernel-managed fixture. This QA baseline deliberately
         // changes IPv6 policy; it must preserve IPv4 connectivity and restore
