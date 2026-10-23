@@ -7,3 +7,6 @@
 Cargo.lock      diff=toml merge=binary
 
 *.patch         -text -whitespace
+
+# Bridge dependency notices are verified against upstream byte-level hashes.
+eink-qemu/desktop/scripts/bridge/licenses/* -text

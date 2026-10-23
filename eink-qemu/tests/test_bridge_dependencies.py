@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -43,7 +44,9 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual((self.output / "driver/payload").read_bytes(), b"pinned bytes")
         self.assertFalse((self.output / "unused-installer.exe").exists())
         self.assertFalse((self.output / "previous").exists())
-        self.assertEqual((self.output / "driver/payload").stat().st_mode & 0o7777, 0o644)
+        # Windows chmod only controls the read-only flag, not POSIX mode bits.
+        if os.name != "nt":
+            self.assertEqual((self.output / "driver/payload").stat().st_mode & 0o7777, 0o644)
 
     def test_changed_archive_or_payload_preserves_previous_bundle(self):
         entry = self.manifest["targets"]["test"]
