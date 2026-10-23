@@ -35,6 +35,7 @@
 #include "system/reset.h"
 #include "system/cpus.h"
 #include "system/runstate.h"
+#include "system/runstate-action.h"
 #include "system/blockdev.h"
 #include "system/block-backend.h"
 #include "net/net.h"
@@ -191,16 +192,42 @@ static void esp32s3_dig_reset(void *opaque, int n, int level)
     }
 }
 
-static void esp32s3_cpu_reset(void* opaque, int n, int level)
+static void esp32s3_reset_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    Esp32s3SocState *s = data.host_ptr;
+    unsigned n = cpu == CPU(&s->cpu[0]) ? 0 : 1;
+
+    xtensa_select_static_vectors(&s->cpu[n].env,
+                                 s->rtc_cntl.stat_vector_sel[n]);
+    remove_cpu_watchpoints(&s->cpu[n]);
+    cpu_reset(cpu);
+}
+
+static void esp32s3_cpu_reset(void *opaque, int n, int level)
 {
     Esp32s3SocState *s = ESP32S3_SOC(opaque);
-    if (level) {
-        s->requested_reset = (n == 0) ? ESP32S3_SOC_RESET_PROCPU : ESP32S3_SOC_RESET_APPCPU;
-        /* Use different cause for APP CPU so that its reset doesn't cause QEMU to exit,
-         * when -no-reboot option is given.
-         */
-        ShutdownCause cause = (n == 0) ? SHUTDOWN_CAUSE_GUEST_RESET : SHUTDOWN_CAUSE_SUBSYSTEM_RESET;
-        qemu_system_reset_request(cause);
+    CPUState *cpu = CPU(&s->cpu[n]);
+
+    if (!level) {
+        return;
+    }
+    /* Preserve -no-reboot for PRO CPU resets; APP CPU resets are local. */
+    if (n == 0 && reboot_action == REBOOT_ACTION_SHUTDOWN) {
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        return;
+    }
+
+    /*
+     * A system reset also walks the default sysbus and resets shared devices.
+     * In particular, resetting the clock controller would gate the calling
+     * core halfway through esp_restart(), leaving its old PC and stack to be
+     * resumed by the next firmware. Reset only the requested CPU instead.
+     */
+    if (cpu == current_cpu) {
+        /* Leave the current TB before changing its CPU state. */
+        async_run_on_cpu(cpu, esp32s3_reset_cpu, RUN_ON_CPU_HOST_PTR(s));
+    } else {
+        run_on_cpu(cpu, esp32s3_reset_cpu, RUN_ON_CPU_HOST_PTR(s));
     }
 }
 
@@ -219,14 +246,10 @@ static void esp32s3_soc_reset(DeviceState *dev)
         }
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_PROCPU) {
-        xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
-        remove_cpu_watchpoints(&s->cpu[0]);
-        cpu_reset(CPU(&s->cpu[0]));
+        esp32s3_reset_cpu(CPU(&s->cpu[0]), RUN_ON_CPU_HOST_PTR(s));
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_APPCPU && (ESP32S3_CPU_COUNT > 1)) {
-        xtensa_select_static_vectors(&s->cpu[1].env, s->rtc_cntl.stat_vector_sel[1]);
-        remove_cpu_watchpoints(&s->cpu[1]);
-        cpu_reset(CPU(&s->cpu[1]));
+        esp32s3_reset_cpu(CPU(&s->cpu[1]), RUN_ON_CPU_HOST_PTR(s));
     }
     if (s->requested_reset & ESP32S3_SOC_RESET_PERIPH) {
         /* Reset CPU clock gates after CPU reset so RTC stalls from deep sleep
