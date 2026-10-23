@@ -285,7 +285,10 @@ impl<P: PlatformOps> Coordinator<P> {
             && record.undo_required && record.in_flight_mutation.is_none() && record.completed_mutations > 0;
         if !resuming && record.operation.state != OperationState::AwaitingAuthorization { return Err(BridgeError::new("EBUSY", "Bridge operation has already started.")); }
         if self.cancellation_requested(&record)? { return self.cancel_record(&mut record); }
-        if (!resuming && now >= record.prepared.plan.expires_at) || self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
+        if !resuming && now >= record.prepared.plan.expires_at {
+            return Err(BridgeError::new("ESTALE", "The setup review expired. Review setup again."));
+        }
+        if self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
             return Err(BridgeError::new("ESTALE", "The selected connection changed. Review setup again."));
         }
         if resuming {
