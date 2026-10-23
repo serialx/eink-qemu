@@ -47,22 +47,33 @@ impl Journal {
             options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
         }
         let file = options.open(self.root.join(name)).map_err(io)?;
+        self.validate_file(&file, create)?;
+        Ok(file)
+    }
+    fn validate_file(&self, file: &File, create: bool) -> Result<(), BridgeError> {
+        #[cfg(not(unix))]
+        let _ = create;
         let meta = file.metadata().map_err(io)?;
         if !meta.is_file() { return Err(io("Invalid bridge journal file.")); }
         #[cfg(target_os = "macos")]
-        crate::transport::unix::validate_no_acl_writes(&file).map_err(io)?;
+        crate::transport::unix::validate_no_acl_writes(file).map_err(io)?;
         #[cfg(unix)] {
             use std::os::unix::fs::MetadataExt;
-            if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 || meta.nlink() != 1 {
+            // Atomic publication can unlink an old record after a reader has
+            // opened it. Its private, owned inode remains a valid snapshot.
+            // Locks/writers must still refer to one live link; extra links
+            // remain forbidden for every handle.
+            if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0
+                || meta.nlink() > 1 || (create && meta.nlink() != 1) {
                 return Err(io("Bridge journal file has unsafe ownership or permissions."));
             }
         }
         #[cfg(windows)] {
             use std::os::windows::fs::MetadataExt;
             if meta.file_attributes() & 0x400 != 0 { return Err(io("Bridge journal cannot be a reparse point.")); }
-            crate::windows_security::validate_private_handle(&file, &self.principal)?;
+            crate::windows_security::validate_private_handle(file, &self.principal)?;
         }
-        Ok(file)
+        Ok(())
     }
     pub fn lock(&self) -> Result<File, BridgeError> {
         let file = self.open_file("operation.lock", true)?;
@@ -164,6 +175,32 @@ impl Journal {
         temp.persist(self.root.join(name)).map_err(io)?;
         #[cfg(unix)] File::open(&self.root).and_then(|f| f.sync_all()).map_err(io)?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn an_atomic_replacement_does_not_invalidate_an_open_read_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = Journal::open(root.path()).unwrap();
+        journal.write(&41u64).unwrap();
+        // Reproduce replacement between open() and validation of that handle.
+        let mut previous = File::open(root.path().join("operation.json")).unwrap();
+        journal.write(&42u64).unwrap();
+        assert_eq!(previous.metadata().unwrap().nlink(), 0);
+        journal.validate_file(&previous, false).expect("an immutable old read snapshot remains safe");
+        let mut text = String::new();
+        previous.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "41");
+        assert_eq!(journal.read::<u64>().unwrap(), Some(42));
+        // Writable lock handles must still name a single live inode.
+        assert!(journal.validate_file(&previous, true).is_err());
+        fs::hard_link(root.path().join("operation.json"), root.path().join("alias.json")).unwrap();
+        assert!(journal.read::<u64>().is_err(), "hard-linked records remain forbidden");
     }
 }
 

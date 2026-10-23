@@ -49,7 +49,10 @@ fn service_watchdog_restores_after_the_request_handler_disappears() {
     when_unlocked(|| request_handler.apply(&plan.id, 101));
     drop(request_handler);
     clock.store(222, Ordering::SeqCst);
-    restored.recv_timeout(Duration::from_secs(3)).expect("recovery must not need another client request");
+    restored.recv_timeout(Duration::from_secs(3)).unwrap_or_else(|error| {
+        panic!("recovery must not need another client request: {error}; worker health: {:?}; journal: {:?}",
+            worker.health(), std::fs::read_to_string(dir.path().join("operation.json")));
+    });
     worker.stop().unwrap();
     assert_eq!(host.mutations.load(Ordering::SeqCst), 1);
     let mut coordinator = Coordinator::open(dir.path(), "user", host).unwrap();

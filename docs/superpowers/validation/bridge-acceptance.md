@@ -754,6 +754,34 @@ so they do not establish a call stack or fault location. Evidence:
 The earlier firmware and WebKit crashes remain unexplained. Release signing
 remains blocked.
 
+### Atomic journal read recovery regression (V47)
+
+The post-merge host suite exposed a Unix recovery race. A read-only journal
+handle can be opened immediately before atomic publication replaces its file.
+The old inode then has zero directory links, even though the open handle still
+holds a valid private snapshot. Requiring exactly one link rejected this read
+with `EJOURNAL` and stopped the recovery worker. Repetition reproduced the
+failure on run 23; the worker's diagnostic identified the ownership/permissions
+validation, with recovery still pending in the journal.
+
+Read-only handles now accept the unlinked snapshot. Writable lock handles still
+require exactly one link; all handles still reject extra hard links, unsafe
+ownership, permissions, and applicable ACLs. A deterministic atomic-replacement
+test failed before the correction and passed afterward, including rejection of
+an unlinked writable handle and a hard-linked record. All 100 repeated recovery
+suite runs passed after the correction (300 tests). The full macOS workspace
+suite passed 274 tests with five native checks ignored, and the Linux container
+passed 91 bridge tests as an ordinary user. Windows compilation of all bridge
+targets also passed. Installed Mac/Linux package checks for this correction are
+still pending; preceding package acceptance does not cover it.
+
+Evidence: `/tmp/eink-recovery-race-v46.log`,
+`/tmp/eink-journal-unlinked-red-v47.log`,
+`/tmp/eink-journal-unlinked-green-v47.log`,
+`/tmp/eink-recovery-stress-v47.log`, `/tmp/eink-workspace-v47.log`,
+`/tmp/eink-linux-x64-v22/netplan-unprivileged-tests-v47.log`, and
+`/tmp/eink-windows-check-v47.log`.
+
 ### WebKit crash evidence recovered in V42
 
 The rotated Ubuntu ARM crash-handler log explains the missing core: Apport
