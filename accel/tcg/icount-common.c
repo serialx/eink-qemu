@@ -262,6 +262,7 @@ static void icount_warp_rt(void)
 {
     unsigned seq;
     int64_t warp_start;
+    int64_t deadline = -1;
 
     /*
      * The icount_warp_timer is rescheduled soon after vm_clock_warp_start
@@ -276,6 +277,17 @@ static void icount_warp_rt(void)
         return;
     }
 
+    /*
+     * Read the virtual deadline before taking its clock's write lock. In
+     * fixed-rate mode, host scheduling latency must not skip pending guest
+     * events: a delayed wakeup could otherwise expire a watchdog before the
+     * guest has a chance to service the timer that originally woke it.
+     */
+    if (icount_enabled() == ICOUNT_PRECISE) {
+        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                            ~QEMU_TIMER_ATTR_EXTERNAL);
+    }
+
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     if (runstate_is_running()) {
@@ -284,6 +296,9 @@ static void icount_warp_rt(void)
         int64_t warp_delta;
 
         warp_delta = clock - timers_state.vm_clock_warp_start;
+        if (deadline >= 0) {
+            warp_delta = MIN(warp_delta, deadline);
+        }
         if (icount_enabled() == ICOUNT_ADAPTATIVE) {
             /*
              * In adaptive mode, do not let QEMU_CLOCK_VIRTUAL run too far
