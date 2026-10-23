@@ -335,6 +335,49 @@ interface no longer has the previously observed IPv6 prefix. This observation
 has not established the cause of the original startup timeout. No host network
 settings were changed, and no successful Windows cold-boot recovery is claimed.
 
+### Installed repair checks, 2026-10-23
+
+The Ubuntu x64 V36 app correctly classified an installer-owned stale Unix socket
+as missing bridge support and displayed Debian package repair instructions with
+**Check again**. After restoring the service, Check again returned to the
+connected Ethernet chooser. The protected journal was byte-for-byte unchanged,
+and the backup timer was stopped. Escape followed by Space reopened the visible
+firmware card, confirming keyboard focus restoration. Evidence:
+`/tmp/eink-noble-stale-support-v36.jpg`, `/tmp/eink-noble-stale-restored-v36.jpg`,
+and `/tmp/eink-noble-return-focus-v36.jpg`.
+
+The Windows V36 app retried the retained failed operation through the actual UI.
+It entered **Restoring your connection** and then returned to **Connection needs
+repair**, retaining the recovery record at revision 25. The native cause is now
+`EHOSTNETWORK` after the readiness wait, rather than the previous immediate MTU
+conflict. IPv4 remained usable, the unrelated TAP was preserved, and no owned
+bridge resources remained. The original IPv6 global address and default route
+were still absent, so this is a safe failure-path check, not a recovery pass.
+Evidence: `/tmp/eink-windows-network-check-v36.json`,
+`/tmp/eink-windows-recovery-journal-v36.json`, and
+`/tmp/eink-windows-recovery-retained-v36.jpg`. The app was closed and the idle
+Windows VM paused after the check.
+
+The Ubuntu V37 negative-profile check also passed in the installed wizard:
+NetworkManager's `default-or-eui64` IPv6 mode was rejected before authorization
+or bridge mutation, with guidance to use an existing bridge or NAT. The bridge
+journal remained byte-for-byte unchanged. This does not establish the normal
+polkit password-prompt flow: the QA desktop has no logind session or desktop
+authentication agent, and this attempt stopped at planning.
+
+The QA cleanup initially failed its exact runtime comparison. A read-only
+comparison established that the original saved profile and every runtime field
+matched except for one link-local address: the fixture snapshot was taken during
+address validation and recorded an empty address list. The earlier pre-fixture
+baseline and current state both contained `fe80::8cf:91ff:fe4b:d342/64`. A narrowly
+guarded cleanup checked that exact difference, retained the original QA record
+as an archive, and restored the original Netplan storage. Final cleanup passed:
+the original connection and helper were active, both fixture records and test
+policy were absent, the exact recovery units were removed, and the normal login
+manager was restored. Production recovery checks were not changed. Evidence: `/tmp/eink-noble-ipv6-identity-refused-v37.jpg`,
+`/tmp/eink-noble-exact-diagnostic-v37.log`, and
+`/tmp/eink-noble-exact-cleanup-v37.log`.
+
 ## Remaining acceptance work
 
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
