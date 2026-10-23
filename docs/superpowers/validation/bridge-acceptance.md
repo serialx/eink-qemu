@@ -34,7 +34,7 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | Package | SHA-256 | Result |
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
-| Windows x64 NSIS installer V36 | `9b3e989f418a32612fd31560cea7a32f682aa604c54e876df58bb6ea4adbe8b5` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; actual cold-boot recovery remains failed |
+| Windows x64 NSIS installer V36 | `9b3e989f418a32612fd31560cea7a32f682aa604c54e876df58bb6ea4adbe8b5` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; V39 fresh interrupted-setup cold-boot recovery passed. The original V22 failure remains unresolved and preserved |
 | Ubuntu x64 Debian package V36 | `0f26348d17d36c4185e5512ad62e8d014ab8df593a7a6e6c69ccf5aca62b0c25` | Ubuntu 22.04 build and archive checks passed; installed payload and service checks passed; stale-service repair UI, unsupported IPv6-mode refusal, and V39 standard polkit lifecycle passed. Preceding V30 passed UI restoration and fresh cold-boot recovery; V33 passed C3/S3 physical-LAN access |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
@@ -441,6 +441,48 @@ Evidence: `/tmp/eink-noble-polkit-prompt-v39.jpg`,
 `/tmp/eink-noble-ui-ready-verify-v39.log`, and
 `/tmp/eink-noble-ui-cleanup-v39.log`.
 
+### Fresh Windows interrupted-setup recovery, V39
+
+The original failed Windows VM was shut down and preserved. A separate UTM copy
+used the current Shared Network baseline. Before resetting only that copy's QA
+operation record, native inspection confirmed matching saved configuration and
+physical bindings and the absence of all recorded bridge devices. The old record
+was archived in the protected journal directory; this preparation was not
+counted as recovery of the original failure.
+
+The installed V36 wizard created a fresh plan and requested real UAC approval.
+The first attempt returned **Another bridge operation is running** without any
+network mutation. A new reviewed plan and approval progressed normally. This
+transient busy refusal remains a usability issue; the evidence does not identify
+the lock holder.
+
+The test forcibly powered off the copy after eight completed setup mutations,
+with the next connection-settings mutation marked in flight. On cold boot, the
+installed automatic service restored the connection without a client retry.
+The operation ended cancelled with no error, resource, rollback requirement, or
+pending cleanup. Ethernet was up, both owned TAP devices and the bridge were
+removed, and the unrelated TAP remained. Verification exited zero, 359 seconds
+after the recorded boot time. This establishes recovery on the current baseline,
+not a short disruption bound. A separate native comparison found matching
+original saved configuration, physical bindings, effective settings, addresses,
+routes, and DNS, with all recorded bridge devices absent. Reopening the installed
+app offered **Set up bridge** and showed Ethernet connected in the chooser.
+The app was closed and the restored copy shut down cleanly afterward.
+
+The fresh baseline had IPv4 plus IPv6 link-local connectivity and MTU 1500.
+The older failed operation expected an additional SLAAC prefix, IPv6 default
+route, and router-advertised MTU 1280. Therefore, this pass supports the current
+recovery path but does not explain the original cold-boot timeout or make its
+missing IPv6 connectivity a successful restoration.
+
+Evidence: `/tmp/eink-windows-recovery-inspect-v39.log`,
+`/tmp/eink-windows-authorization-busy-v39.jpg`,
+`/tmp/eink-windows-ui-at-cut-v39.json`,
+`/tmp/eink-windows-ui-power-cycle-v39.json`, and
+`/tmp/eink-windows-ui-recovery-result-v39.json`,
+`/tmp/eink-windows-recovery-inspect-after-v39.log`, and
+`/tmp/eink-windows-coldboot-chooser-v39.jpg`.
+
 ## Remaining acceptance work
 
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
@@ -454,11 +496,13 @@ Evidence: `/tmp/eink-noble-polkit-prompt-v39.jpg`,
   wizard, including interrupted setup and reboot. Ubuntu ARM64 desktop-crash recovery
   during confirmation and cold-boot recovery pass; Ubuntu 24.04 x64 cold-boot
   recovery also passes after the Netplan timeout fix. Windows desktop-crash recovery
-  during confirmation also passes. Windows package removal with a retained
+  during confirmation and V39 fresh interrupted-setup cold-boot recovery also
+  pass. The original Windows timeout remains unexplained. Windows package removal with a retained
   bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
   and version-mismatch flows. Windows testing remains at the user's requested
-  800 × 600 resolution.
+  800 × 600 resolution. Investigate the V39 transient busy refusal after UAC;
+  retry succeeded, but the refusal is not yet explained.
 - Investigate the Ubuntu WebKit process SIGSEGV and the Windows C3 firmware
   interrupt-watchdog reset. A successful retry does not explain either failure.
 
