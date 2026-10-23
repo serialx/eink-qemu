@@ -541,6 +541,48 @@ These successful LAN runs do not explain the earlier C3 watchdog reset or the
 original recovery timeout.
 Release signing remains blocked.
 
+## Idle recovery lock contention fix (V41–V42)
+
+The periodic recovery worker took the exclusive operation lock even when it
+only needed to read an idle, confirmation-waiting, or reboot-waiting record.
+This could reject Apply or Keep with **Another bridge operation is running**.
+Recovery now reads atomic status without that lock when no action is needed.
+Restoration, cancellation, and cleanup still acquire the lock and reread the
+record before changing anything. Authorization grants remain single-use.
+
+Deterministic regressions pause recovery's snapshot read while the foreground
+client reviews, applies, or confirms a plan. The original code rejected review
+and Keep; the initial fix also failed a separate reboot-wait lock test. All six
+final regressions pass, including cancellation and an expired observation that
+must not undo a concurrently confirmed operation. They also pass inside Windows
+x64 (six passed in 4.72 seconds). The workspace has 273 passing tests and four
+existing ignored platform fixtures; Linux has 90 passing ordinary-user bridge
+tests. Evidence: `/tmp/eink-idle-recovery-red-v41.log`,
+`/tmp/eink-idle-recovery-reboot-red-v42.log`,
+`/tmp/eink-idle-recovery-windows-v42.log`, `/tmp/eink-workspace-v42.log`, and
+`/tmp/eink-linux-x64-v22/netplan-unprivileged-tests-v42.log`.
+
+The installed V41 Windows wizard completed administrator approval, Apply, Keep,
+and **Bridge ready** on its first attempt. Operation
+`5919598667625a245c77785d0f3980c6` ended at revision 32 without an error or pending
+rollback or cleanup. This shared-network baseline included an IPv6 ULA and a
+default IPv6 route. Evidence: `/tmp/eink-windows-ready-v41.jpg` and
+`/tmp/eink-windows-operation-v41.json`.
+
+The installed V41 Ubuntu service passed creation, confirmation, transport
+verification, lease-protected removal refusal, removal, and automatic restoration
+when the client exited without Keep. The watchdog restored the connection before
+any further client request. Cleanup restored the original IPv6 and Netplan
+profiles and removed the temporary authorization. Both lifecycle and cleanup
+exited zero. Evidence: `/tmp/eink-noble-native-lifecycle-v41.log`,
+`/tmp/eink-noble-native-lifecycle-v41.exit`, and
+`/tmp/eink-noble-cleanup-v41.exit`.
+
+V42 adds the reboot-wait case to the same fix. Final package update, removal,
+and interrupted-recovery checks are still in progress. These results do not
+explain the original Windows recovery timeout or the earlier firmware and
+WebKit crashes. Release signing remains blocked.
+
 ## Remaining acceptance work
 
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
@@ -559,8 +601,8 @@ Release signing remains blocked.
   bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
   and version-mismatch flows. Windows testing remains at the user's requested
-  800 × 600 resolution. Investigate the V39 transient busy refusal after UAC;
-  retry succeeded, but the refusal is not yet explained.
+  800 × 600 resolution. Finish installed-package validation of the idle recovery
+  lock fix described above, including removal and interrupted recovery.
 - Investigate the Ubuntu WebKit process SIGSEGV and the Windows C3 firmware
   interrupt-watchdog reset. A successful retry does not explain either failure.
 

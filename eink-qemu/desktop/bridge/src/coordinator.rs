@@ -450,6 +450,20 @@ impl<P: PlatformOps> Coordinator<P> {
     /// Periodic recovery in a running helper. Caller identity is irrelevant to
     /// restoration; the service must call recover_startup before serving IPC.
     pub fn recover(&mut self, now: u64) -> Result<Option<Operation>, BridgeError> {
+        // Atomic journal reads need no transaction lock. Most watchdog ticks
+        // have nothing to change; taking the exclusive lock for those reads
+        // can reject an approved Apply or Keep racing the tick. A stale no-op
+        // observation is harmless: the next tick reads the latest record.
+        // Any restoration or cancellation still locks and rereads below.
+        let Some(record) = self.record()? else { return Ok(None); };
+        let waiting = record.operation.state == OperationState::Verifying
+            && record.operation.confirmation_deadline.is_some_and(|deadline| now < deadline);
+        let awaiting_reboot = record.operation.state == OperationState::Applying && record.operation.reboot_required;
+        if !record.cleanup_pending && (!record.undo_required || waiting || awaiting_reboot)
+            && !((record.undo_required || record.operation.state == OperationState::AwaitingAuthorization)
+                && self.cancellation_requested(&record)?) {
+            return Ok(Some(record.operation));
+        }
         self.recover_inner(Some(now))
     }
     fn recover_inner(&mut self, now: Option<u64>) -> Result<Option<Operation>, BridgeError> {
