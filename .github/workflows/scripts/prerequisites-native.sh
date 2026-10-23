@@ -18,6 +18,7 @@ apt-get install -y -q --no-install-recommends \
     ninja-build \
     pkg-config \
     python3 \
+    python3-tomli \
     python3-venv \
     xz-utils \
     zlib1g-dev \
