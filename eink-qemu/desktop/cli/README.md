@@ -370,7 +370,8 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 | `shot` | `file`, `pixels_sha256` (of the gray pixels, not the PNG file), `size` |
 | `heap` | see below; a `heap-on-log` walk adds `on_log` (the line), `line_fw_ms`, `line_age_ms` and `lines` |
 | `repeat` (until-log loops) | `passes`, `ended` (`log`, `outer` or `count`), `line` |
-| `trace-stop` | `allocs`, `alloc_bytes`, `freed`, `kept`, `kept_bytes`, `older_freed_bytes`, `top_sites` |
+| `trace-start` | `name` (with `{i}` expanded), `guest_ms` at the stopped boundary |
+| `trace-stop` | `name`, `file`, `window_guest_ms` (guest duration, null without a guest clock), `window_host_ms` (host elapsed duration), `guest_ms` at the stopped boundary, `allocs`, `alloc_bytes`, `freed`, `kept`, `kept_bytes`, `older_freed`, `older_freed_bytes`, `top_sites` |
 | failed step | `error`, `last_lines`, `fail_dir` |
 
 A `warning` record (`text`, `warning`) says something about a step that did
@@ -426,7 +427,22 @@ profile and counted with the allocator, so its caller is the site. Between `trac
 record counts allocations, frees and the bytes still held at the end, by
 allocation site; `traces/NAME.json` lists every site. A window sees only
 what happened inside it; `live_sites` in a `heap` record covers everything
-alive, from boot. The run keeps the whole allocation log as `trace.bin`
+alive, from boot.
+
+Both trace steps briefly stop the guest to capture its clock and the end
+of the allocation log. The window includes records written after the
+start boundary and through the stop boundary; parsing happens after the
+guest resumes and excludes later records. Boundaries use log positions,
+independent of host timestamps and `--sleep` pacing. `window_guest_ms`
+measures guest time across all intervening steps, including waits;
+`window_host_ms` measures host elapsed time across the same boundaries.
+These replace the old, undocumented host-time `window_ms` field. Each trace
+step's `guest_ms` is its boundary time, before resuming. A `wait-log`
+followed by `trace-stop` still includes guest execution between the firmware
+printing the line and QEMU processing the stop command; it cannot stop
+retroactively at the line's timestamp.
+
+The run keeps the whole allocation log as `trace.bin`
 (the format of `contrib/plugins/heaptrace.c`). To watch the heaps live, add
 `--gui`.
 
