@@ -16,7 +16,7 @@ reconfigured. Host readiness and firmware connectivity are separate results:
 | macOS 26.5.2 ARM64, VirtualBuddy, bridged Ethernet | Ordinary-user wizard setup and system authorization; native removal, reboot recovery, and lease protection | C3 and S3 acquired LAN addresses; a separate peer opened their HTTP services and resolved mDNS |
 | Ubuntu 22.04 ARM64, UTM shared network | Packaged wizard configuration and confirmed removal; package update, leased-removal refusal, cleanup, and reinstall with reversible network fixtures | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
 | Windows 11 Pro x64 build 26300, UTM shared network | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
-| Ubuntu 24.04.5 x64, UTM shared network | 82 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V30 actual wizard retry and cold-boot recovery passed | Pending |
+| Ubuntu 24.04.5 x64, UTM shared network and bridged Ethernet | 82 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V30 actual wizard retry and cold-boot recovery passed; V33 wizard setup and Keep passed on Ethernet | C3 and S3 DHCP, HTTP, and mDNS passed on the physical LAN |
 
 The Linux tests used an explicitly authorized temporary polkit rule for the
 single bridge action. Each lifecycle fixture removed it afterward. These runs
@@ -254,14 +254,39 @@ the updated timeout. Final fixture cleanup also passed: the original Netplan sou
 IPv6 policy, IPv4 address and gateway were restored; temporary authorization and
 the backup service/timer were removed; the helper and login manager were active.
 
+## Ubuntu x64 physical-LAN acceptance
+
+The installed V30 package completed the actual wizard on Ubuntu 24.04.5 x64
+with UTM bridged to Ethernet `en14`. Selecting `enp0s1`, reviewing, applying,
+and keeping the connection reached **Bridge ready**. Operation
+`a0865ae405b4fe577f6a1f2e7cb48f4e` committed bridge `eqa0865ae405b4` at revision
+20 without an error.
+
+Both CrossPoint 1.6.5-ko.0 targets were loaded through the packaged app's file
+chooser. The C3 reader used keyboard navigation; the S3 reader used its
+emulated touchscreen. Each joined `PICSimLabWifi` and received `192.168.1.38`
+from the physical LAN. They ran sequentially and used the same emulated MAC.
+For each target, the development Mac received HTTP 200, opened a fresh reader
+web page showing Connected and the matching address, and resolved
+`crosspoint.local` to that address. These results establish Linux x64
+physical-LAN connectivity separately from the wizard's host-readiness check.
+
+After both tests, the emulator was stopped and the guarded cleanup completed
+with exit 0. The original connection UUID, IPv4 address/gateway, IPv6 profile
+and runtime were restored. The temporary polkit rule, profile fixtures and
+backup timer/service were removed. The normal login manager was restored, the
+VM was shut down, and UTM was saved back to **Shared Network**. Evidence is recorded in the V33 entries of
+the local execution ledger and `/tmp/eink-noble-lan-cleanup-v33.log`.
+
 ## Remaining acceptance work
 
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
   dependencies, Developer ID signing, and notarization. A Developer ID identity
   is currently unavailable; the user confirmed this on 2026-10-22. Development
   signing remains available for VM tests. Intel macOS still needs native testing.
-- Complete Linux x64 native coverage and Linux/Windows C3/S3 physical-LAN
-  acceptance. Their shared-network results do not satisfy that requirement.
+- Complete the remaining Linux x64 native lifecycle/UI coverage and Windows
+  C3/S3 physical-LAN acceptance. Windows shared-network results do not satisfy
+  the LAN requirement; Linux x64 C3/S3 physical-LAN acceptance now passes.
 - Retest the latest recovery changes through installed services and the actual
   wizard, including interrupted setup and reboot. Ubuntu ARM64 desktop-crash recovery
   during confirmation and cold-boot recovery pass; Ubuntu 24.04 x64 cold-boot
