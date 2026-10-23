@@ -278,3 +278,37 @@ for (const platform of ['linux','windows']) for (const support of ['missing','ne
     assert.match(dialog.textContent,/Choose a connection/);
     buttons().find(b=>b.textContent==='Close').dispatchEvent(new Event('click'));await finished;
   });
+
+for (const remove of [false, true]) test(`expired ${remove ? 'removal' : 'setup'} review explains how to continue without applying`, async t => {
+  const {document,trigger,tick}=installDom(t);
+  const originalNow=Date.now;
+  let now=1_000_000, applies=0;
+  Date.now=()=>now;
+  t.after(()=>{Date.now=originalNow;});
+  const inspection={support:'ready',platform:'macos',adapters:[{id:'en0',name:'Ethernet',eligible:true,linkUp:true,fingerprint:'one',kind:'ethernet',reason:null}],capabilities:{create:true,existingBridge:false,reason:null},selection:remove?{resourceId:operation.id,adapterId:'en0',displayName:'Ethernet'}:null,readiness:remove?'ready':'needsSetup',activeOperation:null,externalOverride:null};
+  const backend={watch:async()=>()=>{},inspect:async()=>inspection,
+    plan:async request=>({id:operation.id,request,fingerprint:'one',changes:['Change bridge'],mayDisconnect:false,requiresAuthorization:true,expiresAt:Math.floor(now/1000)+300}),
+    apply:async()=>{applies++;throw new Error('Expired plans must not apply');}};
+  const {openBridgeDialog}=await import('../desktop/src/bridge-dialog.ts');
+  const finished=openBridgeDialog(backend,trigger);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  await flush();
+  const dialog=document.body.querySelectorAll('dialog')[0];
+  const find=label=>dialog.querySelectorAll('button').find(e=>e.textContent===label);
+  if (!remove) dialog.querySelectorAll('input')[0].dispatchEvent(new Event('change'));
+  find(remove?'Remove setup':'Review setup').dispatchEvent(new Event('click'));
+  await flush();
+  const label=remove?'Remove setup':'Apply setup';
+  assert.equal(find(label).disabled,false);
+  now+=300_000;tick();
+  assert.equal(find(label).disabled,true);
+  assert.match(dialog.textContent,/review has expired.*Back.*review the changes again/);
+  find(label).dispatchEvent(new Event('click'));await flush();
+  assert.equal(applies,0);
+  find('Back').dispatchEvent(new Event('click'));
+  if (!remove) dialog.querySelectorAll('input')[0].dispatchEvent(new Event('change'));
+  find(remove?'Remove setup':'Review setup').dispatchEvent(new Event('click'));await flush();
+  assert.equal(find(label).disabled,false);
+  assert.doesNotMatch(dialog.textContent,/review has expired/);
+  find('Close').dispatchEvent(new Event('click'));await finished;
+});
