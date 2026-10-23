@@ -15,7 +15,7 @@ reconfigured. Host readiness and firmware connectivity are separate results:
 | --- | --- | --- |
 | macOS 26.5.2 ARM64, VirtualBuddy, bridged Ethernet | Ordinary-user wizard setup and system authorization; native removal, reboot recovery, and lease protection | C3 and S3 acquired LAN addresses; a separate peer opened their HTTP services and resolved mDNS |
 | Ubuntu 22.04 ARM64, UTM shared network | Packaged wizard configuration and confirmed removal; package update, leased-removal refusal, cleanup, and reinstall with reversible network fixtures | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
-| Windows 11 Pro x64 build 26300, UTM shared network | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
+| Windows 11 Pro x64 build 26300, UTM shared network and bridged Ethernet | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge; V40 LAN removal and native restoration comparison passed after a fresh approval retry | C3 and S3 DHCP, HTTP, and mDNS passed on both the shared virtual network and physical LAN |
 | Ubuntu 24.04.5 x64, UTM shared network and bridged Ethernet | 84 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V39 normal desktop password-prompt cancellation, setup and removal passed; V30 actual wizard retry and cold-boot recovery passed; V33 wizard setup and Keep passed on Ethernet | C3 and S3 DHCP, HTTP, and mDNS passed on the physical LAN |
 
 Earlier Linux tests used an explicitly authorized temporary polkit rule for the
@@ -335,7 +335,8 @@ The Windows recovery record remains retained. Its original IPv6 global address
 and default route are still unavailable on Shared Network; the host's shared
 interface no longer has the previously observed IPv6 prefix. This observation
 has not established the cause of the original startup timeout. No host network
-settings were changed, and no successful Windows cold-boot recovery is claimed.
+settings were changed. This retained operation has not recovered; the later V39
+fresh-baseline cold-boot test below passed.
 
 ### Installed repair checks, 2026-10-23
 
@@ -483,15 +484,72 @@ Evidence: `/tmp/eink-windows-recovery-inspect-v39.log`,
 `/tmp/eink-windows-recovery-inspect-after-v39.log`, and
 `/tmp/eink-windows-coldboot-chooser-v39.jpg`.
 
+### Windows physical-LAN acceptance, V40
+
+The fresh Windows x64 test VM was temporarily switched to bridged Ethernet
+`en14` with the user's approval. The packaged V36 app completed adapter
+selection, review, UAC approval, Apply, and Keep through its actual UI. Operation
+`6175bc506e543e69f937e89607ec9d0a` reached Ready at revision 32 with one resource
+and no pending rollback or cleanup. The original failed VM remained stopped.
+
+The S3 X4 Pro firmware `1.6.5-ko.0` then ran using the app-created TAP
+`{9bb1b0c0-8e56-4a50-921d-8a315fb46382}`. Its File Transfer screen received
+`192.168.1.38`; a request from the host returned HTTP 200, and a fresh browser
+page showed Connected with the same address and firmware version.
+`crosspoint.local` resolved to that address on the physical LAN interface.
+Evidence: `/tmp/eink-windows-lan-ready-v40.jpg`,
+`/tmp/eink-windows-s3-status-v40.json`,
+`/tmp/eink-windows-s3-address-v40.jpg`,
+`/tmp/eink-windows-s3-http-v40.headers`, and
+`/tmp/eink-windows-s3-browser-v40.png`.
+
+C3 X3 firmware `1.6.5-ko.0` passed the same checks afterward, using the same
+managed TAP and emulated MAC. Its File Transfer screen, HTTP 200 response,
+fresh browser Connected status, and local name resolution all agreed on
+`192.168.1.38`. Evidence is in `/tmp/eink-windows-c3-status-v40.json`,
+`/tmp/eink-windows-c3-address-v40.jpg`,
+`/tmp/eink-windows-c3-http-v40.headers`, and
+`/tmp/eink-windows-c3-browser-v40.png`.
+
+The first removal attempt reproduced the transient busy refusal immediately
+after UAC approval. Its journal remained at revision 1, awaiting authorization,
+with zero completed mutations, no rollback or cleanup pending, and the retained
+bridge resource. The native-command observer showed no helper child commands
+between the completed plan and this refusal. This narrows the investigation to
+transaction-lock contention but does not identify the lock owner. Evidence:
+`/tmp/eink-windows-remove-busy-v40.jpg`,
+`/tmp/eink-windows-remove-busy-v40.json`, and
+`/tmp/eink-windows-lan-commands-v40.jsonl`.
+
+A fresh review and UAC approval succeeded. Removal operation
+`896d2dbf425435eec13513460589a8fb` completed after the UI Keep confirmation.
+The app displayed **Bridge setup removed**; revision 14 retained no resources,
+rollback requirement, cleanup, or error. The independent native verifier exited
+zero: original saved configuration and physical bindings matched, configuration
+and runtime comparisons reported no differences, and all recorded bridge devices
+were absent. The unrelated TAP remained, and the original failed-operation
+archive was unchanged. Evidence: `/tmp/eink-windows-lan-removed-v40.jpg`,
+`/tmp/eink-windows-lan-cleanup-operation-v40.json`,
+`/tmp/eink-windows-lan-restore-v40.log`, and
+`/tmp/eink-windows-lan-restore-v40.exit`.
+
+The app was closed, the test observer stopped, and Windows shut down cleanly.
+UTM then saved Shared Network again; its library showed the test copy stopped
+with that network mode. Evidence:
+`/tmp/eink-windows-lan-restored-shared-v40.jpg`.
+These successful LAN runs do not explain the earlier C3 watchdog reset or the
+original recovery timeout.
+Release signing remains blocked.
+
 ## Remaining acceptance work
 
 - Build and verify the advertised macOS 12.3 baseline with release-compatible
   dependencies, Developer ID signing, and notarization. A Developer ID identity
   is currently unavailable; the user confirmed this on 2026-10-22. Development
   signing remains available for VM tests. Intel macOS still needs native testing.
-- Complete the remaining Linux x64 native lifecycle/UI coverage and Windows
-  C3/S3 physical-LAN acceptance. Windows shared-network results do not satisfy
-  the LAN requirement; Linux x64 C3/S3 physical-LAN acceptance now passes.
+- Complete the remaining Linux x64 native lifecycle/UI coverage. Windows and
+  Linux x64 C3/S3 physical-LAN connectivity pass; Windows V40 confirmed removal
+  and independent restoration comparison also pass.
 - Retest the latest recovery changes through installed services and the actual
   wizard, including interrupted setup and reboot. Ubuntu ARM64 desktop-crash recovery
   during confirmation and cold-boot recovery pass; Ubuntu 24.04 x64 cold-boot
