@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use steps::{Kind, Step};
 
 /// The QOM path of the guest clock the run adds (-object guest-clock,id=…).
@@ -382,7 +382,7 @@ pub struct Runner {
     last_heap: Option<(String, Fields)>,
     crash_pos: usize,
     heap: HeapView,
-    traces: HashMap<String, u64>,
+    traces: HashMap<String, TraceBoundary>,
     shots: HashMap<String, PathBuf>,
     /// Output names taken so far, as "kind/name".
     names: HashSet<String>,
@@ -398,8 +398,13 @@ pub struct Runner {
     pub record_error: Option<String>,
 }
 
-fn epoch_us() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+#[derive(Clone, Copy)]
+struct TraceBoundary {
+    run: u64,
+    /// File length after QMP stop has joined the vCPUs' unbuffered writes.
+    offset: u64,
+    host: Instant,
+    guest_ns: Option<i64>,
 }
 
 /// A name with `{i}` replaced by the innermost repeat's iteration.
@@ -768,7 +773,10 @@ impl Runner {
         let result = self.exec(step, iters).await;
         match result {
             Ok(fields) => {
-                let guest = self.clock.now_ms().await;
+                let guest = match fields.get("guest_ms") {
+                    Some(value) => value.as_i64(),
+                    None => self.clock.now_ms().await,
+                };
                 let mut record = self.base_record(step.kind.name(), &step.text, iters, started, guest, true);
                 for (k, v) in fields {
                     record.insert(k, v);
@@ -1311,23 +1319,28 @@ impl Runner {
                 }
             }
             Kind::TraceStart { name } => {
-                self.trace_log()?;
-                self.traces.insert(name.clone(), epoch_us());
+                let name = expand(name, iters);
+                let boundary = self.trace_boundary().await?;
+                self.traces.insert(name.clone(), boundary);
                 f.insert("name".into(), json!(name));
+                f.insert("guest_ms".into(), json!(boundary.guest_ns.map(|ns| ns / 1_000_000)));
             }
             Kind::TraceStop { name } => {
-                let from = *self.traces.get(name).ok_or_else(|| Failure::new(format!("no trace-start:{name} before this step")))?;
-                self.trace_log()?;
-                // Let the plugin's buffered writes reach the file.
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let to = epoch_us();
-                let window = self.heap.trace_window(from, to).ok_or_else(|| Failure::new("the allocation log could not be read"))?;
-                let label = self.unique("traces", &expand(name, iters));
+                let name = expand(name, iters);
+                let from = *self.traces.get(&name).ok_or_else(|| Failure::new(format!("no trace-start:{name} before this step")))?;
+                let to = self.trace_boundary().await?;
+                if from.run != to.run {
+                    return Err(Failure::new("the emulator restarted since trace-start"));
+                }
+                let window = self.heap.trace_window(from.offset, to.offset).map_err(Failure::new)?;
+                let label = self.unique("traces", &name);
                 let file = format!("traces/{label}.json");
                 std::fs::write(self.opts.dir.join(&file), window.to_string()).map_err(|e| Failure::new(e.to_string()))?;
                 f.insert("name".into(), json!(label));
                 f.insert("file".into(), json!(file));
-                f.insert("window_ms".into(), json!((to - from) / 1000));
+                f.insert("guest_ms".into(), json!(to.guest_ns.map(|ns| ns / 1_000_000)));
+                f.insert("window_guest_ms".into(), json!(from.guest_ns.zip(to.guest_ns).map(|(a, b)| (b - a) / 1_000_000)));
+                f.insert("window_host_ms".into(), json!(to.host.duration_since(from.host).as_millis() as u64));
                 for key in ["allocs", "alloc_bytes", "freed", "kept", "kept_bytes", "older_freed", "older_freed_bytes"] {
                     f.insert(key.into(), window[key].clone());
                 }
@@ -1458,16 +1471,17 @@ impl Runner {
         Ok(())
     }
 
-    fn trace_log(&mut self) -> Result<(), Failure> {
-        match self.session.trace_log() {
-            Some(Ok(log)) => {
-                let run = self.session.info().run;
-                self.heap.use_trace(run, log);
-                Ok(())
-            }
-            Some(Err(reason)) => Err(Failure::new(format!("allocation tracing is off: {reason}"))),
-            None => Err(Failure::new("the emulator is not running")),
-        }
+    async fn trace_boundary(&mut self) -> Result<TraceBoundary, Failure> {
+        let (boundary, log) = self.session.with_guest_stopped(|| async {
+            let log = self.session.trace_log().ok_or_else(|| AppError::new("EIDLE", "The emulator is not running."))?
+                .map_err(|reason| AppError::new("ETRACE", format!("allocation tracing is off: {reason}")))?;
+            let host = Instant::now();
+            let guest_ns = self.clock.now_ns().await;
+            let offset = std::fs::metadata(&log)?.len();
+            Ok((TraceBoundary { run: self.session.info().run, offset, host, guest_ns }, log))
+        }).await?;
+        self.heap.use_trace(boundary.run, log);
+        Ok(boundary)
     }
 
     /// A fresh heap snapshot, with the allocation sites' names; retried

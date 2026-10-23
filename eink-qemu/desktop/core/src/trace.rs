@@ -387,32 +387,48 @@ impl Trace {
 
     /// Read what the plugin appended since the last call. A shorter file
     /// means it started over.
-    pub fn update(&mut self, mut site_of: impl FnMut(&[u32]) -> i32) {
-        let Ok(mut file) = std::fs::File::open(&self.path) else { return };
-        let Ok(len) = file.metadata().map(|m| m.len()) else { return };
+    pub fn update(&mut self, site_of: impl FnMut(&[u32]) -> i32) {
+        let _ = self.update_until(None, site_of);
+    }
+
+    /// Read at most `end` bytes, captured while the guest was stopped.
+    /// Later writes cannot change a scripted window or delay its parsing.
+    pub fn update_until(&mut self, end: Option<u64>, mut site_of: impl FnMut(&[u32]) -> i32) -> Result<(), String> {
+        let mut file = std::fs::File::open(&self.path).map_err(|e| e.to_string())?;
+        let len = file.metadata().map_err(|e| e.to_string())?.len();
+        if end.is_some_and(|end| len < end) {
+            return Err("the allocation log was truncated after the trace boundary".into());
+        }
+        let len = end.unwrap_or(len);
+        // A bounded read can refer to an earlier position already parsed.
+        if end.is_some() && len <= self.pos {
+            return Ok(());
+        }
         if len < self.pos {
             *self = Trace::new(std::mem::take(&mut self.path), self.gen + 1);
         }
-        if len == self.pos || !self.format_ok || file.seek(SeekFrom::Start(self.pos)).is_err() {
-            return;
+        if len == self.pos || !self.format_ok {
+            return Ok(());
         }
+        file.seek(SeekFrom::Start(self.pos)).map_err(|e| e.to_string())?;
         let mut chunk = Vec::new();
-        if file.read_to_end(&mut chunk).is_err() {
-            return;
+        file.take(len - self.pos).read_to_end(&mut chunk).map_err(|e| e.to_string())?;
+        if chunk.len() as u64 != len - self.pos {
+            return Err("short read of the allocation log".into());
         }
-        self.pos += chunk.len() as u64; // the file may have grown since the length was read
+        self.pos += chunk.len() as u64;
         let mut data = std::mem::take(&mut self.rest);
         data.extend_from_slice(&chunk);
         let mut off = 0;
         if !self.header {
             if data.len() < 8 {
                 self.rest = data; // the header is not complete yet
-                return;
+                return Ok(());
             }
             self.header = true;
             if &data[..8] != MAGIC {
                 self.format_ok = false;
-                return;
+                return Ok(());
             }
             off = 8;
         }
@@ -455,6 +471,7 @@ impl Trace {
             }
         }
         self.rest = data.split_off(off);
+        Ok(())
     }
 
     /// Events from index `start` as columns, times in microseconds after the
@@ -483,20 +500,24 @@ impl Trace {
         })
     }
 
-    /// What happened between host times `from` and `to` (microseconds
-    /// since the epoch, the log's clock), by allocation site: blocks
+    /// What happened between file offsets `[from, to)`, captured with the
+    /// vCPUs stopped, by allocation site: blocks
     /// allocated in the window, those of them still live at its end, and
     /// older blocks freed in it (attributed to the site that allocated them).
-    pub fn window(&self, from: u64, to: u64) -> Vec<SiteWindow> {
+    pub fn window(&self, from: u64, to: u64) -> Result<Vec<SiteWindow>, String> {
+        if !self.format_ok || from > to || to > self.pos - self.rest.len() as u64 {
+            return Err("the allocation window is incomplete or has an unsupported log format".into());
+        }
         let mut by_site: HashMap<i32, SiteWindow> = HashMap::new();
         // pointer -> (size, site, allocated inside the window)
         let mut live: HashMap<u32, (u32, i32, bool)> = HashMap::new();
+        let mut offset = MAGIC.len() as u64;
         for i in 0..self.t.len() {
-            let t = self.t[i];
-            if t > to {
+            if offset >= to {
                 break;
             }
-            let inside = t >= from;
+            let inside = offset >= from;
+            offset += 24 + 4 * self.stacks[self.stack[i] as usize].len() as u64;
             let site = self.stack_site.get(self.stack[i] as usize).copied().unwrap_or(-1);
             let (kind, ptr, size, old) = (self.kind[i], self.ptr[i], self.size[i], self.old[i]);
             let mut release = |p: u32, by_site: &mut HashMap<i32, SiteWindow>| {
@@ -536,7 +557,7 @@ impl Trace {
         }
         let mut sites: Vec<SiteWindow> = by_site.into_values().collect();
         sites.sort_by(|a, b| b.kept_bytes.cmp(&a.kept_bytes).then(b.alloc_bytes.cmp(&a.alloc_bytes)));
-        sites
+        Ok(sites)
     }
 
     pub fn stack(&self, id: usize) -> Option<&[u32]> {
@@ -623,6 +644,59 @@ mod tests {
         std::fs::write(&path, MAGIC).unwrap();
         trace.update(|_| 0);
         assert_eq!((trace.events_len(), trace.gen), (0, 2));
+    }
+
+    #[test]
+    fn windows_use_stopped_log_positions_not_timestamps_or_later_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("heaptrace.bin");
+        let mut log = MAGIC.to_vec();
+        log.extend(record(ALLOC as u16, 0x100, 16, 0, 1000, &[1]));
+        let from = log.len() as u64;
+        // Equal timestamps at the start, then a host clock adjustment.
+        log.extend(record(ALLOC as u16, 0x200, 32, 0, 1000, &[2, 3]));
+        log.extend(record(FREE as u16, 0x100, 0, 0, 500, &[]));
+        log.extend(record(REALLOC as u16, 0x300, 64, 0x200, 501, &[2, 3]));
+        let to = log.len() as u64;
+        // Already on disk when parsed, but outside the stopped boundary.
+        log.extend(record(FREE as u16, 0x300, 0, 0, 501, &[]));
+        log.extend(record(ALLOC as u16, 0x400, 128, 0, 501, &[1]));
+        std::fs::write(&path, &log).unwrap();
+        let mut trace = Trace::new(path, 1);
+        trace.update_until(Some(to), |stack| stack.first().copied().unwrap_or(0) as i32).unwrap();
+        assert_eq!(trace.events_len(), 4);
+        let check = |trace: &Trace| {
+            let sites = trace.window(from, to).unwrap();
+            let older = sites.iter().find(|w| w.site == 1).unwrap();
+            assert_eq!((older.allocs, older.older_freed, older.older_freed_bytes), (0, 1, 16));
+            let new = sites.iter().find(|w| w.site == 2).unwrap();
+            assert_eq!((new.allocs, new.alloc_bytes, new.freed, new.freed_bytes, new.kept, new.kept_bytes), (2, 96, 1, 32, 1, 64));
+            assert!(trace.window(to, to).unwrap().is_empty());
+        };
+        check(&trace);
+        trace.update(|stack| stack.first().copied().unwrap_or(0) as i32);
+        assert_eq!(trace.events_len(), 6);
+        check(&trace); // A later reader cannot change kept bytes at the stop.
+    }
+
+    #[test]
+    fn incomplete_or_unreadable_windows_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("heaptrace.bin");
+        let mut trace = Trace::new(path.clone(), 1);
+        assert!(trace.update_until(Some(8), |_| 0).is_err());
+        let mut log = MAGIC.to_vec();
+        log.extend(&record(ALLOC as u16, 0x100, 16, 0, 1, &[1])[..25]);
+        std::fs::write(&path, &log).unwrap();
+        trace.update_until(Some(log.len() as u64), |_| 0).unwrap();
+        assert!(trace.window(8, log.len() as u64).is_err());
+        assert!(trace.window(9, 8).is_err());
+        std::fs::write(&path, MAGIC).unwrap();
+        assert!(trace.update_until(Some(log.len() as u64), |_| 0).is_err());
+        std::fs::write(&path, b"HTRC\x01\0\0\0").unwrap();
+        let mut trace = Trace::new(path, 1);
+        trace.update_until(Some(8), |_| 0).unwrap();
+        assert!(trace.window(8, 8).is_err());
     }
 
     #[test]
