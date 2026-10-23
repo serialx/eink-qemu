@@ -775,10 +775,11 @@ impl Session {
             "-machine".into(),
             if machine == "x4pro" { format!("x4pro,panel={}", options.panel) } else { machine.to_string() },
             "-icount".into(),
-            // Idle time always passes in real time (sleep=on): with native
+            // Idle time defaults to real time (sleep=on): with native
             // speed, sleep=off would run a resting device through minutes of
             // guest time per second, into its auto-sleep, at a full core.
             // Turbo's speed-up comes from the peripheral overrides below.
+            // The CLI defaults to --sleep off through options.extra below.
             format!("shift={},sleep=on", if machine == "picco" { 2 } else { 0 }),
         ]);
         if options.turbo {
@@ -1277,6 +1278,37 @@ impl Session {
         }
     }
 
+    /// Take a measurement with the vCPUs stopped and device input held back.
+    /// Serialize with heap/SD operations and always resume after an action
+    /// error. An already stopped or suspended VM keeps its previous state.
+    pub(crate) async fn with_guest_stopped<T, F>(
+        self: &Arc<Self>,
+        action: impl FnOnce() -> F,
+    ) -> Result<T, AppError>
+    where
+        F: std::future::Future<Output = Result<T, AppError>>,
+    {
+        let _ops = self.ops.lock().await;
+        let run = self.current().ok_or_else(|| AppError::new("EIDLE", "The emulator is not running."))?;
+        let _gate = run.gate.lock().await;
+        let status = run.qmp().execute("query-status", None).await.map_err(|e| AppError::new("EQMP", e))?;
+        let running = status["running"].as_bool().ok_or_else(|| AppError::new("EQMP", "Missing running status."))?;
+        if running {
+            if let Err(error) = run.qmp().execute("stop", None).await {
+                self.finish(&run, Exit { kind: "failed", reason: Some(format!("Stopping for a measurement failed: {error}")) }).await;
+                return Err(AppError::new("EQMP", error));
+            }
+        }
+        let result = action().await;
+        if running {
+            if let Err(error) = run.qmp().execute("cont", None).await {
+                self.finish(&run, Exit { kind: "failed", reason: Some(format!("Resuming after a measurement failed: {error}")) }).await;
+                return Err(AppError::new("EQMP", error));
+            }
+        }
+        result
+    }
+
     /// Read the firmware's heaps (heap.rs). The guest is stopped around it,
     /// as for an SD operation; while another operation runs, EBUSY.
     /// Without an ELF the heap list is found by a scan of internal DRAM.
@@ -1476,6 +1508,9 @@ mod path_tests {
 
 #[cfg(test)]
 mod card_tests;
+
+#[cfg(test)]
+mod trace_tests;
 
 #[cfg(test)]
 mod wifi_tests {

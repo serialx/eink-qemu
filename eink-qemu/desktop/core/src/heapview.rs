@@ -66,11 +66,18 @@ impl HeapView {
 
     /// Read what the plugin appended, symbolizing new stacks.
     fn update_trace(&mut self) {
-        let (Some((_, trace)), Some(elf)) = (self.trace.as_mut(), self.elf.as_ref()) else { return };
+        let _ = self.update_trace_until(None);
+    }
+
+    fn update_trace_until(&mut self, end: Option<u64>) -> Result<(), String> {
+        let (_, trace) = self.trace.as_mut().ok_or("no allocation log for the current run")?;
+        let Some(elf) = self.elf.as_ref() else {
+            return trace.update_until(end, |_| -1);
+        };
         let symbols = self.symbols.get_or_insert_with(|| Symbols::new(&elf.path));
         let sites = &mut self.sites;
         // Symbolizing parses DWARF: keep it off the async workers' backs.
-        tokio::task::block_in_place(|| trace.update(|stack| sites.of(symbols, stack)));
+        tokio::task::block_in_place(|| trace.update_until(end, |stack| sites.of(symbols, stack)))
     }
 
     /// The running firmware's heaps, as heapview.py's /snapshot. The ELF
@@ -184,13 +191,12 @@ impl HeapView {
         self.last = None;
     }
 
-    /// The allocation log's activity between two host times (microseconds
-    /// since the epoch), by site with names, largest kept bytes first; None
-    /// without a log for the current run.
-    pub fn trace_window(&mut self, from: u64, to: u64) -> Option<Value> {
-        self.update_trace();
-        let (_, trace) = self.trace.as_ref()?;
-        let sites = trace.window(from, to);
+    /// Activity between file offsets captured with the guest stopped, by
+    /// site with names, largest kept bytes first. Parse only through `to`.
+    pub fn trace_window(&mut self, from: u64, to: u64) -> Result<Value, String> {
+        self.update_trace_until(Some(to))?;
+        let (_, trace) = self.trace.as_ref().ok_or("no allocation log for the current run")?;
+        let sites = trace.window(from, to)?;
         let total = |f: fn(&crate::trace::SiteWindow) -> u64| sites.iter().map(f).sum::<u64>();
         let named: Vec<Value> = sites.iter().map(|w| {
             let mut v = serde_json::to_value(w).unwrap_or_default();
@@ -199,7 +205,7 @@ impl HeapView {
             v["loc"] = name.as_ref().and_then(|n| n.get("loc")).cloned().unwrap_or(json!(""));
             v
         }).collect();
-        Some(json!({
+        Ok(json!({
             "allocs": total(|w| w.allocs),
             "alloc_bytes": total(|w| w.alloc_bytes),
             "freed": total(|w| w.freed),

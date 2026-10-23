@@ -12,6 +12,13 @@ It runs headless by default, in the desktop app's window with `--gui`, as a
 long-lived session you drive step by step (`start`, `do`, `stop`), and as a
 side-by-side comparison of two builds (`compare`).
 
+**Timing:** the CLI defaults to `--sleep off`, skipping idle host waits
+while preserving device timing. Leave `--turbo` off for firmware benchmarks.
+Use `--sleep on` for interactive sessions, including `start`/`do` and
+`--gui`. Older installed CLIs without `--sleep` (including released 0.8.1)
+accept `--qemu-arg=-icount --qemu-arg=sleep=off` for benchmarks instead.
+See [Time](#time) for choosing measurements and waits.
+
 It assumes ESP-IDF and nothing about the firmware itself: any app for these
 boards boots, runs scripts, and gets screenshots, heap snapshots and the
 emulator's own measurements (display updates, panel refreshes and their
@@ -322,11 +329,27 @@ firmware lives in; heap reads stop it, so they never disturb a measurement.
 `wait`, `wait-quiet`, key holds and the input wait count guest time. Time
 limits count host time.
 
+The CLI defaults to `--sleep off`: when the guest CPU is idle, QEMU jumps
+to the next virtual timer instead of waiting on the host. This preserves
+the CPU and peripheral timing model; `--turbo` changes peripheral delays.
+Use guest time or firmware-reported durations to compare firmware, with
+the same sleep setting on both sides. Host elapsed time measures emulator
+and harness performance, and changes with sleep pacing.
+
+Pass `--sleep on` for interactive sessions. All CLI launches, including
+`start`, `run --hold` and `--gui`, default to `off`; the desktop app's own
+launches keep `on`. With `off`, guest time can advance rapidly while the
+harness waits in host time, potentially
+triggering firmware auto-sleep. Prefer `wait-log:` milestones when the
+firmware provides them; `--ready-quiet` and `--settle` still count host time.
+The start record's `qemu` command includes the selected override. Explicit
+`--qemu-arg` options come last and can override `--sleep`.
+
 Runs are close to deterministic: accurate timing, a fixed real-time clock
 (`--rtc`, 2026-01-01 09:00 by default) and a card made the same way give the
 same screens and heaps run after run, and firmware timings within a few
 milliseconds. When a timing comparison matters, use accurate timing (no
-`--turbo`) and the 2050 MiB card. Clocks at a glance: `wait`, `wait-quiet`,
+`--turbo`), `--sleep off` and the 2050 MiB card. Clocks at a glance: `wait`, `wait-quiet`,
 key holds, `--input-quiet` and `--panel-idle` are guest time; `--ready-quiet`,
 `--settle` and every time limit are host time.
 
@@ -348,7 +371,8 @@ a repeat, and `error` when they fail. Each step adds its own fields:
 | `shot` | `file`, `pixels_sha256` (of the gray pixels, not the PNG file), `size` |
 | `heap` | see below; a `heap-on-log` walk adds `on_log` (the line), `line_fw_ms`, `line_age_ms` and `lines` |
 | `repeat` (until-log loops) | `passes`, `ended` (`log`, `outer` or `count`), `line` |
-| `trace-stop` | `allocs`, `alloc_bytes`, `freed`, `kept`, `kept_bytes`, `older_freed_bytes`, `top_sites` |
+| `trace-start` | `name` (with `{i}` expanded), `guest_ms` at the stopped boundary |
+| `trace-stop` | `name`, `file`, `window_guest_ms` (guest duration, null without a guest clock), `window_host_ms` (host elapsed duration), `guest_ms` at the stopped boundary, `allocs`, `alloc_bytes`, `freed`, `kept`, `kept_bytes`, `older_freed`, `older_freed_bytes`, `top_sites` |
 | failed step | `error`, `last_lines`, `fail_dir` |
 
 A `warning` record (`text`, `warning`) says something about a step that did
@@ -404,7 +428,22 @@ profile and counted with the allocator, so its caller is the site. Between `trac
 record counts allocations, frees and the bytes still held at the end, by
 allocation site; `traces/NAME.json` lists every site. A window sees only
 what happened inside it; `live_sites` in a `heap` record covers everything
-alive, from boot. The run keeps the whole allocation log as `trace.bin`
+alive, from boot.
+
+Both trace steps briefly stop the guest to capture its clock and the end
+of the allocation log. The window includes records written after the
+start boundary and through the stop boundary; parsing happens after the
+guest resumes and excludes later records. Boundaries use log positions,
+independent of host timestamps and `--sleep` pacing. `window_guest_ms`
+measures guest time across all intervening steps, including waits;
+`window_host_ms` measures host elapsed time across the same boundaries.
+These replace the old, undocumented host-time `window_ms` field. Each trace
+step's `guest_ms` is its boundary time, before resuming. A `wait-log`
+followed by `trace-stop` still includes guest execution between the firmware
+printing the line and QEMU processing the stop command; it cannot stop
+retroactively at the line's timestamp.
+
+The run keeps the whole allocation log as `trace.bin`
 (the format of `contrib/plugins/heaptrace.c`). To watch the heaps live, add
 `--gui`.
 
@@ -419,7 +458,7 @@ eink-qemu/cli run .pio/build/default --put book.epub --trace \
 
 ```sh
 eink-qemu/cli compare base/.pio/build/default pr/.pio/build/default \
-    --put book.epub --script reading.txt --names base,pr
+    --sleep off --put book.epub --script reading.txt --names base,pr
 ```
 
 Both run at once from identical cards, and both boards must take the steps
@@ -502,7 +541,7 @@ heap:after-turns
 ## Sessions
 
 ```sh
-eink-qemu/cli start .pio/build/default --put book.epub ready
+eink-qemu/cli start .pio/build/default --sleep on --put book.epub ready
 eink-qemu/cli do press:confirm wait-screen shot:files
 eink-qemu/cli do heap:files
 eink-qemu/cli stop
@@ -520,7 +559,8 @@ the session fails if any of its steps failed. They find the session through
 `eink-qemu-out/latest`, or take `--session DIR` (pass the run directory a
 `start --out DIR` used). A session ends by itself after 30 minutes without
 a request (`--hold-timeout`). `run --hold` holds the session in the
-foreground instead.
+foreground instead. Use `--sleep on` when starting a session you will drive
+interactively so guest time stays paced between commands.
 
 ## Driving CrossPoint
 
@@ -635,6 +675,7 @@ than calling it dead.
 | `--console usb\|uart0` | Where the firmware log comes from (USB Serial/JTAG by default) |
 | `--ready-quiet SECONDS` | How long the screen must stay unchanged for `ready` (default 5) |
 | `--elf auto\|none\|PATH` | The ELF for heap sites and traces |
+| `--sleep on\|off` | Idle clock pacing (default `off`); use `on` for interactive sessions |
 | `--turbo` | Fast peripherals; quicker, not for timing comparisons |
 | `--ghosting`, `--animate` | E-ink ghosting and refresh animation (both off) |
 | `--wifi` | Enable Wi-Fi using NAT without host setup (Wi-Fi is off by default) |

@@ -227,6 +227,9 @@ keeps idle time in real time (`-icount sleep=on`): native QEMU would otherwise
 run a resting device through its 10-minute auto-sleep in under a minute at a
 full CPU core.
 
+The CLI defaults to `sleep=off` for scripted runs, including runs opened
+with `--gui`. Pass `--sleep on` when using the CLI for interactive control.
+
 The device keys follow the keyboard press and release: arrows, Enter,
 Esc/Backspace for Back on X3/X4, and P for Power. On the X4 Pro, Esc, H
 and Home press its capacitive Home key. Picco has no Home key. Hold P

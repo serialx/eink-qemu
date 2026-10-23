@@ -301,31 +301,38 @@ fn walk_pool(mem: &[u8], base: u32, end: u32, pool: u32) -> Option<Vec<Block>> {
     }
 }
 
-/// The pool starts right after the TLSF control structure, whose size
-/// depends on the IDF version and pool size: try each word until a walk fits.
+/// ESP-IDF 5.x's 32-bit TLSF control_t: a 16-byte block_null, packed
+/// dimensions, metadata size, fl_bitmap, sl_bitmap pointer and blocks pointer.
+/// tlsf_get_pool() returns heap_data + control->size. Validate the immutable
+/// dimensions and table addresses before trusting that size; allocation
+/// payloads and the mutable free-list contents do not identify a pool.
+/// Layout: espressif/tlsf 2867f688, tlsf_control_functions.h (control_t).
 fn find_pool(mem: &[u8], base: u32, end: u32, heap_data: u32) -> Option<(u32, Vec<Block>)> {
-    let lo = heap_data.checked_add(8)? & !3;
-    let hi = heap_data.saturating_add(16384).min(end.saturating_sub(8));
-    // Control-table bitmaps can masquerade as used block sizes and jump
-    // into the real chain. Repeated block_null pointers in their payload
-    // identify the free-list table. Only check used blocks: a real free
-    // block can have both next_free and prev_free pointing to block_null.
-    let in_control = |pool: u32, size: u32| {
-        (pool + 4..pool.saturating_add(4).saturating_add(size).min(end))
-            .step_by(4)
-            .filter(|&a| u32_at(mem, (a - base) as usize) == Some(heap_data))
-            .take(2)
-            .count() > 1
-    };
-    (lo.max(base)..hi).step_by(4).find_map(|pool| {
-        let size = u32_at(mem, (pool - base) as usize)?;
-        if size & 2 != 0 || (size & !3) < 12 || (size & !3) > end - pool
-            || (size & 1 == 0 && in_control(pool, size & !3))
-        {
-            return None;
-        }
-        walk_pool(mem, base, end, pool).filter(|blocks| !blocks.is_empty()).map(|blocks| (pool, blocks))
-    })
+    if heap_data % 4 != 0 || heap_data.checked_add(36)? > end {
+        return None;
+    }
+    let at = heap_data.checked_sub(base)? as usize;
+    let params = u32_at(mem, at + 16)?;
+    let (fl, shift, max, sl, log2, small) = (
+        params & 31, (params >> 5) & 7, (params >> 8) & 63,
+        (params >> 14) & 63, (params >> 20) & 7, (params >> 23) & 255,
+    );
+    if !(3..=5).contains(&log2) || shift != log2 + 2 || sl != 1 << log2
+        || small != 1 << shift || fl == 0 || max > 32 || fl + shift != max + 1
+    {
+        return None;
+    }
+    let size = 36 + 4 * fl * (1 + sl);
+    let bitmap = heap_data.checked_add(36)?;
+    let blocks = bitmap.checked_add(4 * fl)?;
+    let pool = heap_data.checked_add(size)?;
+    if u32_at(mem, at + 20)? != size || u32_at(mem, at + 28)? != bitmap
+        || u32_at(mem, at + 32)? != blocks || pool.checked_add(20)? > end
+    {
+        return None;
+    }
+    // A failed walk is a torn/corrupt heap, never a reason to try a later block.
+    walk_pool(mem, base, end, pool).filter(|blocks| !blocks.is_empty()).map(|blocks| (pool, blocks))
 }
 
 /// A heap_t at `at`, with the offset of its fields: registered_heaps is an
@@ -586,7 +593,7 @@ mod tests {
     const DESC: u32 = 0x3C00_0020; // &esp_app_desc
     const START: u32 = 0x3FC9_0000;
     const END: u32 = 0x3FC9_1000;
-    const CONTROL: u32 = 0x3A4; // TLSF control size; the walker must find it
+    const CONTROL: u32 = 36 + 4 * 8 * (1 + 8); // 4 KiB pool: FL=8, SL=8
 
     struct Fake {
         mem: BTreeMap<u32, Vec<u8>>,
@@ -621,10 +628,13 @@ mod tests {
 
     /// blocks: (size, free, requested); the last free block takes the rest.
     fn build(blocks: &[(u32, bool, Option<u32>)], task_tracking: bool) -> Fake {
-        build_with_control(blocks, task_tracking, CONTROL)
+        build_layout(blocks, task_tracking, 8, 3)
     }
 
-    fn build_with_control(blocks: &[(u32, bool, Option<u32>)], task_tracking: bool, control: u32) -> Fake {
+    fn build_layout(blocks: &[(u32, bool, Option<u32>)], task_tracking: bool, fl: u32, log2: u32) -> Fake {
+        let sl = 1 << log2;
+        let shift = log2 + 2;
+        let control = 36 + 4 * fl * (1 + sl);
         let used: u32 = blocks.iter().map(|b| b.0 + 4).sum();
         let rest = (END - (START + 20 + control - 4) - 8 - used - 4) & !3;
         let blocks: Vec<_> = blocks.iter().copied().chain([(rest, true, None)]).collect();
@@ -632,7 +642,13 @@ mod tests {
         let free: u32 = blocks.iter().filter(|b| b.1).map(|b| b.0).sum();
         // multi_heap_info: lock, free_bytes, minimum_free_bytes, pool_size, heap_data
         put(&mut region, START, &[0, free, free - 64, END - START - 20, START + 20]);
-        let (mut b, mut prev_free) = (START + 20 + control - 4, 0);
+        let data = START + 20;
+        let params = fl | (shift << 5) | ((fl + shift - 1) << 8) | (sl << 14) | (log2 << 20) | ((1 << shift) << 23);
+        put(&mut region, data + 16, &[params, control, 0, data + 36, data + 36 + 4 * fl]);
+        for a in (data + 36 + 4 * fl..data + control).step_by(4) {
+            put(&mut region, a, &[data]);
+        }
+        let (mut b, mut prev_free) = (data + control - 4, 0);
         for &(size, free, req) in &blocks {
             put(&mut region, b + 4, &[size | free as u32 | prev_free << 1]);
             if let Some(req) = req {
@@ -692,15 +708,104 @@ mod tests {
     }
 
     #[test]
+    fn skips_a_candidate_inside_the_control_table() {
+        let mut guest = build(&[(64, false, Some(40)), (32, false, Some(16))], false);
+        // A word in the control's free-list table that parses as a used block
+        // ending exactly at the real first block, inside a run of block_null pointers.
+        let fake = START + 20 + 0x100;
+        let region = guest.mem.get_mut(&START).unwrap();
+        let size = START + 20 + CONTROL - 4 - fake;
+        put(region, fake, &[size]);
+        for a in (fake + 4..fake + size).step_by(4) {
+            put(region, a, &[START + 20]);
+        }
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
+        assert_eq!(snap.heaps[0].pool, 20 + CONTROL - 4);
+    }
+
+    #[test]
+    fn keeps_a_first_block_holding_stale_free_list_links() {
+        let mut guest = build(&[(64, false, Some(40)), (128, true, None), (32, false, Some(16))], false);
+        // Old next/prev links to block_null left in a used block's payload.
+        let first = START + 20 + CONTROL - 4;
+        let region = guest.mem.get_mut(&START).unwrap();
+        put(region, first + 24, &[START + 20, START + 20]);
+        put(region, first + 40, &[START + 20, START + 20]);
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
+        assert_eq!(snap.heaps[0].pool, 20 + CONTROL - 4);
+        assert_eq!(snap.missing, 0);
+    }
+
+    #[test]
+    fn keeps_a_first_block_holding_four_block_null_pointers() {
+        let mut guest = build(&[(64, false, Some(40)), (32, false, Some(16))], false);
+        let first = START + 20 + CONTROL - 4;
+        put(guest.mem.get_mut(&START).unwrap(), first + 24, &[START + 20; 4]);
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
+        let heap = &snap.heaps[0];
+        assert_eq!((heap.pool, heap.used, heap.count), (20 + CONTROL - 4, 96, 3));
+        assert_eq!((heap.corrupt, snap.missing), (0, 0));
+    }
+
+    #[test]
+    fn reads_pool_dimensions_with_a_used_or_free_first_block() {
+        // tlsf_create_with_pool permits max_bytes to exceed the pool size.
+        for (fl, log2) in [(8, 3), (13, 4), (18, 5)] {
+            for free in [false, true] {
+                let mut guest = build_layout(&[(64, free, None), (32, false, Some(16))], false, fl, log2);
+                let control = 36 + 4 * fl * (1 + (1 << log2));
+                let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut Pools::new())).unwrap();
+                let heap = &snap.heaps[0];
+                assert_eq!(heap.pool, 20 + control - 4);
+                assert_eq!(heap.count, 3);
+                assert_eq!(heap.used, if free { 32 } else { 96 });
+                assert_eq!(snap.missing, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_control_metadata_without_scanning() {
+        let guest = build(&[(64, false, None), (32, false, None)], false);
+        let mem = &guest.mem[&START];
+        let data = START + 20;
+        let params = u32_at(mem, 20 + 16).unwrap();
+        for (offset, value) in [
+            (16, 0), (16, params ^ 1), (16, params ^ (1 << 5)),
+            (16, params ^ (1 << 8)), (16, params ^ (1 << 14)),
+            (16, params ^ (1 << 20)), (16, params ^ (1 << 23)),
+            (20, CONTROL + 4), (20, u32::MAX), (28, data + 40), (32, data + 36),
+        ] {
+            let mut bad = mem.clone();
+            put(&mut bad, data + offset, &[value]);
+            assert!(find_pool(&bad, START, END, data).is_none(), "offset {offset}, value {value:#x}");
+        }
+        for data in [0, START - 4, START + 21, END - 4, u32::MAX - 3] {
+            assert!(find_pool(mem, START, END, data).is_none());
+        }
+        assert!(find_pool(&mem[..40], START, END, START + 20).is_none());
+        assert!(find_pool(mem, START, START + 20 + CONTROL + 16, START + 20).is_none());
+    }
+
+    #[test]
+    fn does_not_skip_a_torn_first_block_on_the_first_snapshot() {
+        let mut guest = build(&[(64, false, None), (32, false, None)], false);
+        // A valid suffix remains, but the first block incorrectly says its predecessor is free.
+        put(guest.mem.get_mut(&START).unwrap(), START + 20 + CONTROL, &[64 | 2]);
+        let mut pools = Pools::new();
+        let snap = run(snapshot(&mut guest, &Lookup::Elf(&elf()), &mut pools)).unwrap();
+        assert!(snap.heaps.is_empty());
+        assert_eq!(snap.missing, 1);
+        assert!(pools.starts.is_empty());
+    }
+
+    #[test]
     fn skips_a_control_table_that_walks_into_the_real_pool() {
-        let mut guest = build_with_control(&[(236, false, None), (64, false, Some(40))], false, 852);
+        let mut guest = build_layout(&[(236, false, None), (64, false, Some(40))], false, 12, 4);
         let region = guest.mem.get_mut(&START).unwrap();
         let heap_data = START + 20;
         // Unused free-list entries point to block_null, at heap_data. A
         // bitmap happens to look like a used block spanning into the pool.
-        for at in (heap_data + 8..START + 868).step_by(4) {
-            put(region, at, &[heap_data]);
-        }
         put(region, START + 84, &[1024]);
         let fake = walk_pool(region, START, END, START + 84).unwrap();
         assert_eq!(fake[0], (START + 80, 1024, false));

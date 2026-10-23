@@ -17,6 +17,33 @@ firmware may use the same chip differently (hardware SPI CS, DMA, other panel
 commands). CrossDink (`prokrypt/CrossDink`, read-only for you) is the reference
 firmware for testing because its drivers are readable and it logs a lot.
 
+## Benchmarking firmware
+
+**The CLI defaults to `--sleep off` for scripted runs and benchmarks.**
+Agents can pass it explicitly to document the pacing. Keep `--turbo` off
+when benchmarking firmware: it changes peripheral delays and makes firmware
+timing comparisons invalid. `--sleep off` keeps
+the device timing model and skips host waits while the guest CPU is idle.
+
+```sh
+eink-qemu/cli compare base/build candidate/build --sleep off --script benchmark.txt
+```
+
+For installed CLIs without `--sleep` (including released 0.8.1), use
+`--qemu-arg=-icount --qemu-arg=sleep=off`. Repeated `-icount` options merge,
+so this keeps the board's clock shift. Confirm the final override in the
+start record's `qemu` command.
+
+Compare guest time or firmware-reported durations with the same pacing on
+both sides; host elapsed time includes emulator and harness overhead. For
+emulator throughput benchmarks, measure host time with the same workload
+and sleep setting. Use log milestones when available: screen-settle waits
+still count host time, during which an unpaced guest can reach auto-sleep.
+Pass `--sleep on` for interactive sessions or tests of real-time pacing,
+including `start`/`do` and `--gui`; these also default to `off` in the CLI.
+The desktop app's own launches keep `sleep=on`.
+See the [CLI timing guide](eink-qemu/desktop/cli/README.md#time).
+
 ## Porting layers
 
 See [eink-qemu/porting/README.md](eink-qemu/porting/README.md) for the QEMU 11.1.2
