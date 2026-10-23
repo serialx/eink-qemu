@@ -40,13 +40,33 @@ impl Topology {
         Ok(Self { devices, bindings })
     }
     pub fn read() -> Result<Self, BridgeError> {
-        let before = windows_device::enumerate()?;
-        let arguments = ["-NoProfile", "-NonInteractive", "-Command", INSPECT].map(OsStr::new);
-        let output = windows_command::run(Tool::PowerShell, &arguments, Duration::from_secs(120))
-            .and_then(|output| output.checked()).map_err(|error| error.context("Read Windows bridge membership"))?;
-        let after = windows_device::enumerate()?;
-        if before != after { return Err(conflict()); }
-        Self::parse(after, &output.stdout)
+        Self::read_with(windows_device::enumerate, || {
+            let arguments = ["-NoProfile", "-NonInteractive", "-Command", INSPECT].map(OsStr::new);
+            windows_command::run(Tool::PowerShell, &arguments, Duration::from_secs(120))
+                .and_then(|output| output.checked()).map(|output| output.stdout)
+                .map_err(|error| error.context("Read Windows bridge membership"))
+        })
+    }
+    fn read_with(mut devices: impl FnMut() -> Result<BTreeMap<String, DeviceIdentity>, BridgeError>,
+        mut inspect: impl FnMut() -> Result<Vec<u8>, BridgeError>) -> Result<Self, BridgeError> {
+        let mut retried = false;
+        loop {
+            let before = devices()?;
+            let output = match inspect() {
+                // The CIM provider can exceed its bounded query timeout while
+                // Windows is starting. This query only reads bindings, and its
+                // process tree has exited before run() returns. Retry it once;
+                // discard the old device snapshot and recheck all identities.
+                Err(error) if error.code == "ETIMEDOUT" && !retried => {
+                    retried = true;
+                    continue;
+                }
+                result => result?,
+            };
+            let after = devices()?;
+            if before != after { return Err(conflict()); }
+            return Self::parse(after, &output);
+        }
     }
     pub fn device(&self, id: &str) -> Result<&DeviceIdentity, BridgeError> {
         self.devices.get(&windows_device::guid(id)?).ok_or_else(conflict)
@@ -143,6 +163,67 @@ mod tests {
                 serde_json::json!({ "InstanceID": format!("{}::{component}",device.guid), "ComponentID": component, "Enabled": enabled }))
         }).collect();
         Topology::parse(devices.iter().map(|d| (d.guid.clone(),d.clone())).collect(), &serde_json::to_vec(&rows).unwrap()).unwrap()
+    }
+    #[test]
+    fn membership_timeout_retries_with_fresh_device_identities() {
+        let mut enumerations = 0;
+        let mut inspections = 0;
+        let result = Topology::read_with(|| {
+            enumerations += 1;
+            // The failed query's device snapshot must not be reused.
+            let device = device(if enumerations == 1 { 0 } else { 1 }, false);
+            Ok(BTreeMap::from([(device.guid.clone(), device)]))
+        }, || {
+            inspections += 1;
+            if inspections == 1 { Err(BridgeError::new("ETIMEDOUT", "boot-time provider timeout")) }
+            else { Ok(b"[]".to_vec()) }
+        }).unwrap();
+        assert_eq!(inspections, 2);
+        assert_eq!(enumerations, 3);
+        assert!(result.device(&device(1, false).guid).is_ok());
+    }
+    #[test]
+    fn membership_timeout_retry_is_bounded() {
+        let mut inspections = 0;
+        let error = Topology::read_with(|| Ok(BTreeMap::new()), || {
+            inspections += 1;
+            Err(BridgeError::new("ETIMEDOUT", "provider remains unavailable"))
+        }).unwrap_err();
+        assert_eq!(error.code, "ETIMEDOUT");
+        assert_eq!(inspections, 2);
+    }
+    #[test]
+    fn membership_retry_does_not_mask_command_or_identity_errors() {
+        for code in ["EHOSTCOMMAND", "EOUTPUTLIMIT", "ECONFLICT"] {
+            let mut inspections = 0;
+            let error = Topology::read_with(|| Ok(BTreeMap::new()), || {
+                inspections += 1;
+                Err(BridgeError::new(code, "do not retry"))
+            }).unwrap_err();
+            assert_eq!(error.code, code);
+            assert_eq!(inspections, 1);
+        }
+        let mut enumerations = 0;
+        let mut inspections = 0;
+        let error = Topology::read_with(|| {
+            enumerations += 1;
+            let device = device(enumerations, false);
+            Ok(BTreeMap::from([(device.guid.clone(), device)]))
+        }, || { inspections += 1; Ok(b"[]".to_vec()) }).unwrap_err();
+        assert_eq!(error.code, "ECONFLICT");
+        assert_eq!(inspections, 1);
+    }
+    #[test]
+    fn membership_retry_rejects_incomplete_output_and_enumeration_errors() {
+        let mut inspections = 0;
+        let error = Topology::read_with(|| Ok(BTreeMap::new()), || {
+            inspections += 1; Ok(b"{}".to_vec())
+        }).unwrap_err();
+        assert_eq!(error.code, "EDISCOVERY");
+        assert_eq!(inspections, 1);
+        let error = Topology::read_with(|| Err(BridgeError::new("ETIMEDOUT", "device enumeration")),
+            || panic!("Only the contained read-only PowerShell query may be retried")).unwrap_err();
+        assert_eq!(error.message, "device enumeration");
     }
     #[test]
     fn partial_creation_extra_member_and_multiple_bridges_are_conflicts() {

@@ -146,8 +146,8 @@ impl WindowsPlatform {
                     during_static.interfaces.iter_mut().find(|i|i.address_family==address.address_family).ok_or_else(conflict)?.dhcp=0;
                     during_static.configured_dhcp.as_mut().ok_or_else(conflict)?.iter_mut().find(|i|i.address_family==address.address_family).ok_or_else(conflict)?.enabled=0;
                 }
-                options::validate_current(before,&snapshot.original,&current)
-                    .or_else(|_|options::validate_current(before,&during_static,&current))?;
+                options::validate_owned_removal(before,&snapshot.original,&current,&saved.baseline)
+                    .or_else(|_|options::validate_owned_removal(before,&during_static,&current,&saved.baseline))?;
                 windows_routes::validate_source(&bridge,&current)?;
                 let address=native::address(&bridge)?;
                 let wanted=snapshot.original.mac.replace('-',"");

@@ -77,6 +77,24 @@ pub fn validate_current(before:&Snapshot,desired:&Snapshot,current:&Snapshot)->R
     Ok(())
 }
 
+/// Validate the app-owned bridge before removing an interrupted setup.
+pub fn validate_owned_removal(before:&Snapshot,desired:&Snapshot,current:&Snapshot,baseline:&Snapshot)->Result<(),BridgeError>{
+    if validate_current(before,desired,current).is_ok(){return Ok(());}
+    let mut before=before.clone();let mut desired=desired.clone();let mut current=current.clone();let mut baseline=baseline.clone();
+    for value in [&mut before,&mut desired,&mut current,&mut baseline]{value.normalize()?;value.require_restorable()?;}
+    if baseline.guid!=current.guid || !baseline.instance_id.eq_ignore_ascii_case(&current.instance_id){return Err(conflict());}
+    // A reboot can discard an RA-learned MTU and restore the bridge's recorded
+    // initial value. Accept only that known runtime reset for destruction of
+    // this owned bridge, never a saved override or a different active value.
+    // The physical NIC still has to pass exact restoration and readiness.
+    let router_default=[&before,&desired,&current,&baseline].into_iter().all(|profile|
+        profile.interfaces[1].router_discovery==1
+        && profile.persistent_interfaces.as_ref().unwrap()[1].nl_mtu.is_none());
+    if !router_default || current.interfaces[1].nl_mtu!=baseline.interfaces[1].nl_mtu{return Err(conflict());}
+    before.interfaces[1].nl_mtu=baseline.interfaces[1].nl_mtu;
+    validate_current(&before,&desired,&current)
+}
+
 /// Apply the intended options or finish a partially applied operation. Each
 /// field must still match one of the recorded states. This function may change
 /// DHCP runtime state; callers must also retain address/route restoration data.
@@ -128,6 +146,32 @@ mod tests{
         partial=before.clone();let mut address=partial.active_addresses[0].clone();
         address.ip_address="192.0.2.99".into();address.prefix_origin=1;partial.active_addresses.push(address);
         assert_eq!(validate_current(&before,&desired,&partial).unwrap_err().code,"ECONFLICT");
+    }
+    #[test]
+    fn interrupted_removal_accepts_only_recorded_router_mtu_reset(){
+        let mut baseline=fixture();
+        for row in baseline.persistent_interfaces.as_mut().unwrap(){row.nl_mtu=None;}
+        let mut before=baseline.clone();before.interfaces[1].nl_mtu=1280;
+        let desired=before.clone();let current=baseline.clone();
+        assert_eq!(validate_current(&before,&desired,&current).unwrap_err().code,"ECONFLICT");
+        validate_owned_removal(&before,&desired,&current,&baseline).unwrap();
+        for case in 0..10 {
+            let mut old=before.clone();let mut new=desired.clone();let mut actual=current.clone();let mut initial=baseline.clone();
+            match case {
+                0=>actual.interfaces[1].nl_mtu=1400,
+                1=>actual.interfaces[0].nl_mtu=1400,
+                2=>actual.interfaces[1].forwarding=1,
+                3=>actual.persistent_interfaces.as_mut().unwrap()[1].nl_mtu=Some(1500),
+                4=>old.persistent_interfaces.as_mut().unwrap()[1].nl_mtu=Some(1280),
+                5=>new.persistent_interfaces.as_mut().unwrap()[1].nl_mtu=Some(1280),
+                6=>initial.persistent_interfaces.as_mut().unwrap()[1].nl_mtu=Some(1500),
+                7=>{old.interfaces[1].router_discovery=0;new.interfaces[1].router_discovery=0;actual.interfaces[1].router_discovery=0;},
+                8=>initial.instance_id="OTHER".into(),
+                9=>actual.manual_dns[0].domain="administrator.invalid".into(),
+                _=>unreachable!(),
+            }
+            assert_eq!(validate_owned_removal(&old,&new,&actual,&initial).unwrap_err().code,"ECONFLICT","case {case}");
+        }
     }
     #[test]
     fn planning_refuses_unrestorable_options_before_native_work(){
