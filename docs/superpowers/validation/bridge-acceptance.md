@@ -16,7 +16,7 @@ reconfigured. Host readiness and firmware connectivity are separate results:
 | macOS 26.5.2 ARM64, VirtualBuddy, bridged Ethernet | Ordinary-user wizard setup and system authorization; native removal, reboot recovery, and lease protection | C3 and S3 acquired LAN addresses; a separate peer opened their HTTP services and resolved mDNS |
 | Ubuntu 22.04 ARM64, UTM shared network | Packaged wizard configuration and confirmed removal; package update, leased-removal refusal, cleanup, and reinstall with reversible network fixtures | C3 and S3 DHCP, HTTP, and mDNS address resolution on the shared virtual network |
 | Windows 11 Pro x64 build 26300, UTM shared network and bridged Ethernet | Actual UAC decline and approval; wizard setup and Keep; native configure, repair, cancelled/confirmed removal, lease checks; package updates preserve a retained bridge; V40 LAN removal and native restoration comparison passed after a fresh approval retry | C3 and S3 DHCP, HTTP, and mDNS passed on both the shared virtual network and physical LAN |
-| Ubuntu 24.04.5 x64, UTM shared network and bridged Ethernet | 84 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V39 normal desktop password-prompt cancellation, setup and removal passed; V30 actual wizard retry and cold-boot recovery passed; V33 wizard setup and Keep passed on Ethernet | C3 and S3 DHCP, HTTP, and mDNS passed on the physical LAN |
+| Ubuntu 24.04.5 x64, UTM shared network and bridged Ethernet | 90 ordinary-user bridge regressions; package update, native creation, verification, lease-protected removal refusal and confirmed removal; V39 normal desktop password-prompt cancellation, setup and removal passed; V30 actual wizard retry and cold-boot recovery passed; V33 wizard setup and Keep passed on Ethernet | C3 and S3 DHCP, HTTP, and mDNS passed on the physical LAN |
 
 Earlier Linux tests used an explicitly authorized temporary polkit rule for the
 single bridge action. Each lifecycle fixture removed it afterward. V39 also
@@ -34,8 +34,8 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | Package | SHA-256 | Result |
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
-| Windows x64 NSIS installer V36 | `9b3e989f418a32612fd31560cea7a32f682aa604c54e876df58bb6ea4adbe8b5` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; V39 fresh interrupted-setup cold-boot recovery passed. The original V22 failure remains unresolved and preserved |
-| Ubuntu x64 Debian package V36 | `0f26348d17d36c4185e5512ad62e8d014ab8df593a7a6e6c69ccf5aca62b0c25` | Ubuntu 22.04 build and archive checks passed; installed payload and service checks passed; stale-service repair UI, unsupported IPv6-mode refusal, and V39 standard polkit lifecycle passed. Preceding V30 passed UI restoration and fresh cold-boot recovery; V33 passed C3/S3 physical-LAN access |
+| Windows x64 NSIS installer V45 | `aee98f2e275ad782586b7f7e17673e4a0e9819cda64c12f185e4f6f2b5b24cec` | Update and payload checks passed. V46 actual-wizard interrupted-setup cold-boot recovery and independent exact restoration comparison passed. The earlier run's IPv6-network readiness failure remains preserved |
+| Ubuntu x64 Debian package V42 | `8082908e5f31595b8f76c29fbf12f10887a24546f0273d7b591e5a328c52f798` | Ubuntu 22.04 build and archive checks passed; update preserved the journal. V43 normal password approval, actual wizard cold-boot recovery, and fixture cleanup passed. Preceding packages passed repair/refusal UI and C3/S3 physical-LAN access |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
 check after its update and launched the saved X4 Pro firmware. The reader reached
@@ -141,7 +141,9 @@ Removal deleted the packet-service payload, then failed with `ECLEANUP` on the
 plist. Recovery restored the original payload bytes and restarted the helper;
 all three support files matched their pre-test hashes. The test removed the
 immutable flag, and the actual app reopened **Choose a connection** successfully.
-The VM is idle with bridge support installed and no configured bridge.
+That maintenance run ended with bridge support installed and no configured bridge.
+The later V42 helper update installed the exact bundled payload; its fresh
+setup test is awaiting the normal guest-password prompt.
 
 The update exposed a dialog stall: an existing completed bridge operation
 entered **Saving setup** without starting verification. Both support-update
@@ -149,11 +151,58 @@ paths now invoke the same verification step used by inspection. Two regression
 tests reproduced the missing call before the fix and pass afterward; the
 updated QA app reaches **Bridge ready** when reopening the retained setup.
 
-Current-source regression results: 254 macOS workspace tests passed, with four
-existing tests ignored; 80 Ubuntu ARM64 bridge tests and 35 Windows x64
+Regression results before the V44 Windows membership-read change: 273 macOS workspace tests passed, with four
+existing tests ignored; 90 Ubuntu x64 ordinary-user bridge tests and six native Windows idle-recovery regressions passed; 80 Ubuntu ARM64 bridge tests and 35 Windows x64
 transaction/reboot-pause/cleanup tests passed. All 35 bridge UI tests,
 TypeScript checking, the frontend build, and 18 packaging/probe tests passed. These suites use temporary
 fixtures and do not replace native network lifecycle tests of the new packages.
+
+## V43 Windows startup timeout investigation
+
+The V42 Windows package reproduced the cold-boot recovery failure after a power
+cut during **Preserve connection settings**, with eight mutations completed.
+Operation `b318bffc7e407e3d8fe239ef86f14544` ended failed at revision 21, retaining
+`undo_required=true`. The diagnostic now identifies the failing read:
+`ETIMEDOUT` in **Read Windows bridge membership**. The read-only PowerShell CIM
+query exceeded its 120-second bound. After startup, the same native topology
+inspection completed successfully in 15.412 seconds. Saved settings, bridge
+settings, and bridge address reads also completed; reading the physical IP
+interface correctly failed while that adapter remained attached to the bridge.
+No recovery pass is claimed for this run.
+
+The test's own injection marker was not flushed before the forced power cut
+and read back as zero bytes. The host had already captured its complete contents
+and the successful stop/start result. The post-boot verifier uses those captured
+values; the product's protected journal remained readable. Future power-cut
+markers must be flushed before signalling readiness.
+
+Evidence: `/tmp/eink-windows-ui-boot-v43-host.json`,
+`/tmp/eink-windows-journal-afterboot-v43.json`, and
+`/tmp/eink-windows-recovery-inspect-v43.log`. The latter is a read-only diagnostic,
+not proof of restored networking. The V44 candidate retries only a timed-out
+membership query once, taking fresh device snapshots and retaining all identity,
+output, and ownership checks. Two regressions failed against the pre-fix read. All nine native Windows topology
+tests pass with the candidate, including the real read-only topology query.
+The V44 package update passed after comparing the installed desktop against
+the actual installer payload (packaging changes its metadata). The failed
+recovery journal was preserved byte-for-byte. Actual UI **Retry restoration**
+completed at revision 23 with no error, resources, rollback, or cleanup remaining.
+The independent native comparison passed: original physical bindings and saved
+configuration matched, owned bridge devices were absent, and both configuration
+and runtime changes were empty. Evidence: `/tmp/eink-windows-restore-v44.log`
+and `/tmp/eink-windows-restore-v44.exit`. The subsequent cold-boot failure and its
+IPv6 runtime-setting diagnosis are recorded below. Regression evidence: `/tmp/eink-topology-v44-red.log`,
+`/tmp/eink-topology-v44.log`, and `/tmp/eink-package-verified-v44.exit`.
+
+## V43 Linux UI crash observation
+
+A bounded 30-minute debugger attachment to the Ubuntu 22.04 ARM64 app's WebKit
+process captured no SIGSEGV, SIGBUS, or SIGABRT. During that window, the actual UI
+loaded C3 firmware, joined PICSimLabWifi with NAT address `10.0.2.15`, displayed
+live heap data, loaded its matching ELF, and reset the firmware. The debugger
+detached on its scheduled timeout (`124`). This does not establish the cause or
+resolution of the earlier WebKit crash. Evidence:
+`/tmp/eink-webkit-gdb-v43.log` and `/tmp/eink-webkit-v43.exit`.
 
 ## Latest validation findings
 
@@ -578,10 +627,134 @@ exited zero. Evidence: `/tmp/eink-noble-native-lifecycle-v41.log`,
 `/tmp/eink-noble-native-lifecycle-v41.exit`, and
 `/tmp/eink-noble-cleanup-v41.exit`.
 
-V42 adds the reboot-wait case to the same fix. Final package update, removal,
-and interrupted-recovery checks are still in progress. These results do not
-explain the original Windows recovery timeout or the earlier firmware and
-WebKit crashes. Release signing remains blocked.
+V42 adds the reboot-wait case to the same fix. Its installed Windows update
+preserved the ready bridge journal byte-for-byte, restored the automatic
+service, and matched all packaged payload hashes. The Ubuntu package update
+also preserved its clean journal and passed installed-file and service checks.
+Evidence: `/tmp/eink-package-update-v42.exit`,
+`/tmp/eink-package-update-v42.result`, and `/tmp/eink-noble-package-v42.log`.
+
+The V42 Windows wizard also completed removal on the first administrator
+approval and Keep, without a busy refusal. Operation
+`3dd4a1f45df66b9158568f29d94175ac` reached revision 14 with no error, resources,
+rollback, or pending cleanup. The independent native comparison matched the
+original physical bindings, saved configuration, IPv4 and IPv6 runtime settings;
+all owned bridge devices were absent. The archived earlier failure was unchanged.
+Evidence: `/tmp/eink-windows-remove-kept-v42.json`,
+`/tmp/eink-windows-restore-v42.log`, and `/tmp/eink-windows-restore-v42.exit`.
+
+The V43 Ubuntu retest used the installed V42 package and the normal desktop
+password prompt, with no temporary authorization rule. The unchanged saved test
+credential was accepted using slower, grouped keyboard input. Earlier input
+attempts also dropped visible path characters, so those rejected attempts do not
+establish a password or polkit defect.
+
+After actual UI Apply reached verification, the VM shut down without Keep and
+cold-booted. The installed service restored the original connection automatically:
+operation `9fba8c8d29d8f5aad0ce65a8e71d69f3` changed from verifying revision 18 to
+cancelled revision 20, with no error, resources, rollback, or cleanup remaining.
+The independent backup recovery script had not run. Cleanup then restored the
+original IPv6 and Netplan profiles, removed the test timer, and verified the
+normal desktop and helper service. Both recovery and cleanup checks passed.
+Evidence: `/tmp/eink-noble-ui-boot-v43-observe.log`,
+`/tmp/eink-noble-ui-cleanup-v43.log`, and `/tmp/eink-noble-ui-cleanup-v43.exit`.
+
+The V44 Windows cold-boot test passed the membership query but still failed
+restoration with `ECONFLICT`. Read-only inspection left the journal unchanged
+and identified the active IPv6 MTU as the sole option mismatch: both migration
+and original snapshots recorded 1280, while the rebooted bridge used its earlier
+recorded baseline of 1500. All persistent MTU values were unset. Recovery stopped
+before deleting the owned bridge. Operation `ee401f5c94b2b7fc619dff9302039b78`
+stopped at failed revision 21. Evidence:
+`/tmp/eink-windows-ui-boot-v44-host.json`,
+`/tmp/eink-windows-recovery-progress-v44.json`, and
+`/tmp/eink-windows-recovery-inspect-v44.log`. A regression reproduced the same
+conflict on Windows. The correction accepts only this recorded runtime reset
+when validating removal of an owned bridge. All five Windows option tests pass,
+including the regression that failed before the correction. The full native
+suite passed 58 tests, with two failures in
+checks that assume IP transports are on the physical adapter; the retained
+failed bridge still owned them. Both checks passed after bridge removal
+(91.85 seconds), with the journal unchanged. Twelve fixture-specific tests
+remained ignored. The V45 installer
+updated the VM successfully, preserving the failed journal byte-for-byte and
+verifying all installed payloads and the automatic service. Actual UI retry removed the owned bridge and restored physical bindings and
+saved settings, but ended with `EHOSTNETWORK` at revision 23. The physical
+adapter had IPv4 and IPv6 link-local connectivity; its earlier router-advertised
+IPv6 prefix, default route, and MTU 1280 were absent. The host's Shared Network
+interface also lacked that IPv6 prefix. This is a readiness failure, not a
+complete recovery pass.
+
+The disposable VM's failed record was preserved in
+`qa-ipv6-network-unavailable-v45.json` with SHA-256
+`54b395191aa3fdd6f7514f1d64b08163ee5a7eee206fb65c12f2498dda312059`.
+A guarded QA reset required the exact failed operation, absent owned devices,
+restored original bindings/saved configuration, and a closed desktop before
+moving the record. It made no network changes and explicitly recorded
+`originalRecoveryPassed=false`. The original V39 archive remains retained.
+A new cold-boot test used the current baseline, with Ubuntu remaining on Shared
+Network to keep the virtual network present.
+Evidence: `/tmp/eink-windows-retry-v45.json`,
+`/tmp/eink-windows-recovery-inspect-v45.log`,
+`/tmp/eink-native-physical-v45.log`, and
+`/tmp/eink-windows-fresh-prepare-v45.json`.
+
+That V46 test passed with the installed V45 package. The actual wizard accepted
+its first administrator approval without a busy refusal. After eight recorded
+setup steps, the test cut power during settings migration and restarted Windows.
+Without reopening the app or clicking Retry, the automatic service restored the
+connection. Operation `a653e4586b0bb9d88a58e0fdccf84b48` ended at cancelled
+revision 21, with no error, owned resources, rollback, or cleanup pending.
+Ethernet was up and the unrelated TAP remained present. A separate native
+comparison then matched the original bindings, saved configuration, addresses,
+routes, and DNS, and confirmed that the owned devices were absent. The original
+failed archive remained unchanged. Both checks exited zero.
+
+The fresh baseline had IPv4 and IPv6 link-local connectivity; it did not have
+the earlier router-advertised IPv6 prefix. Recovery was observed complete about
+604 seconds after the power cut in this emulated x64 VM. This establishes
+automatic recovery for this baseline, not a short disruption bound or recovery
+of an unavailable external network. Evidence:
+`/tmp/eink-windows-ui-boot-v46-host.json`,
+`/tmp/eink-windows-ui-boot-v46-result.json`, and
+`/tmp/eink-windows-ui-boot-v46-restore.log`.
+
+The updated macOS helper completed actual-wizard setup after a fresh password
+approval. Operation `6a6a00c2e88e0c0e811f5b6f52a21394` reached ready revision 7;
+public inspection confirmed the selected Ethernet adapter and ready state.
+Removal through the same helper is awaiting its separate password approval.
+Evidence: `/tmp/eink-macos-bridge-ready-v44.jpg` and
+`/tmp/eink-macos-inspection-v44.json`. An expired review also exposed misleading
+connection-change wording; the source now reports that the review expired. The
+existing expiry/no-mutation regression passes.
+
+A bounded host-native C3 diagnostic used the matching firmware ELF, NAT, and a
+panic breakpoint. Ten scan/normal-restart cycles completed without a panic;
+all ten screenshots show the network list. The diagnostic emulator was stopped.
+This does not reproduce Windows execution timing or resolve its earlier
+interrupt-watchdog failure. Evidence: `/tmp/eink-c3-watchdog-cycles-v44.log`,
+`/tmp/eink-c3-watchdog-gdb-v44.log`, and
+`/tmp/eink-c3-watchdog-diagnostic-v44b/shots/`.
+Symbolication of the earlier Windows crash dump found that its reported stack
+window starts at `systimer_hal.1` and continues through static timer objects.
+Its two code addresses are timer conversion functions stored in those objects,
+so they do not establish a call stack or fault location. Evidence:
+`/tmp/eink-windows-watchdog-symbols-v45.log` and
+`/tmp/eink-windows-panic-capture-disasm-v45.log`.
+The earlier firmware and WebKit crashes remain unexplained. Release signing
+remains blocked.
+
+### WebKit crash evidence recovered in V42
+
+The rotated Ubuntu ARM crash-handler log explains the missing core: Apport
+dropped it after it exceeded its 2308 MiB limit. The recorded resident memory
+was 359384 KiB, with a peak of 472844 KiB; the dump limit alone does not establish
+a memory leak. WebKit and JavaScriptCore were installed before this session and
+were not upgraded around the crash. An eink-qemu package update did occur while
+the earlier application session was open, but no evidence yet connects it to
+the crash. The V43 debugger-backed run described above did not reproduce the crash. Evidence:
+`/tmp/eink-webkit-history-v42.log` and
+`/tmp/eink-linux-webkit-20261022.crash`.
 
 ## Remaining acceptance work
 
@@ -589,20 +762,26 @@ WebKit crashes. Release signing remains blocked.
   dependencies, Developer ID signing, and notarization. A Developer ID identity
   is currently unavailable; the user confirmed this on 2026-10-22. Development
   signing remains available for VM tests. Intel macOS still needs native testing.
-- Complete the remaining Linux x64 native lifecycle/UI coverage. Windows and
-  Linux x64 C3/S3 physical-LAN connectivity pass; Windows V40 confirmed removal
-  and independent restoration comparison also pass.
+- Linux x64 native lifecycle, normal desktop authorization, interrupted recovery,
+  and fixture cleanup now pass. Windows and Linux x64 C3/S3 physical-LAN
+  connectivity pass; Windows V40 confirmed removal and independent restoration
+  comparison also pass. Retest affected paths if subsequent fixes change them.
 - Retest the latest recovery changes through installed services and the actual
   wizard, including interrupted setup and reboot. Ubuntu ARM64 desktop-crash recovery
   during confirmation and cold-boot recovery pass; Ubuntu 24.04 x64 cold-boot
   recovery also passes after the Netplan timeout fix. Windows desktop-crash recovery
   during confirmation and V39 fresh interrupted-setup cold-boot recovery also
-  pass. The original Windows timeout remains unexplained. Windows package removal with a retained
+  pass. V43 reproduced a membership-read timeout during startup. V44 exposed an
+  IPv6 runtime-reset conflict. Both guards are corrected; V46 installed-service
+  cold-boot recovery and exact restoration pass on the current network baseline.
+  Windows package removal with a retained
   bridge and subsequent reinstall also pass.
 - Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
   and version-mismatch flows. Windows testing remains at the user's requested
-  800 × 600 resolution. Finish installed-package validation of the idle recovery
-  lock fix described above, including removal and interrupted recovery.
+  800 × 600 resolution. Installed-package validation of the idle recovery lock
+  fix now covers Windows setup, removal, and interrupted recovery, plus Linux
+  setup and cold-boot recovery. The updated macOS helper passed setup; its
+  removal still needs the guest's separate password approval.
 - Investigate the Ubuntu WebKit process SIGSEGV and the Windows C3 firmware
   interrupt-watchdog reset. A successful retry does not explain either failure.
 
