@@ -334,6 +334,11 @@ export async function openBridgeDialog(backend: BridgeBackend, trigger: HTMLElem
     else if (focused && focused !== trigger && focused !== document.body) heading.focus();
   }
   function tick() {
+    if (state.step === 'review' && state.plan) {
+      message.textContent = now() >= state.plan.expiresAt
+        ? 'This review has expired. Choose Back, then review the changes again to continue.'
+        : bridgeView(state).message;
+    }
     const deadline = state.operation?.confirmationDeadline;
     countdown.textContent = state.step === 'progress' && deadline !== null && deadline !== undefined
       ? `Automatic restoration in ${Math.max(0, deadline - now())} seconds.` : '';

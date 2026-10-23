@@ -32,7 +32,7 @@ impl Dispatcher {
             RequestKind::Apply { plan_id, authorization } => {
                 let proof = authorization.ok_or_else(|| BridgeError::new("EAUTHDENIED", "Administrator authorization is required for bridge setup."))?;
                 let _authorization = Authorization::verify(&proof)?;
-                Ok(ReplyKind::Operation { operation: Some(self.coordinator.apply(&plan_id, now)?) })
+                Ok(ReplyKind::Operation { operation: Some(self.coordinator.apply_after_authorization(&plan_id, now)?) })
             },
             RequestKind::Keep { operation_id } => Ok(ReplyKind::Operation { operation: Some(self.coordinator.keep(&operation_id, now)?) }),
             RequestKind::Cancel { operation_id } => Ok(ReplyKind::Operation { operation: Some(self.coordinator.cancel(&operation_id)?) }),

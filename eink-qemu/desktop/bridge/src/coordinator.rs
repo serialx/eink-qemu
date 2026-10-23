@@ -272,6 +272,16 @@ impl<P: PlatformOps> Coordinator<P> {
         self.journal.write(&record)?; Ok(plan)
     }
     pub fn apply(&mut self, id: &OperationId, now: u64) -> Result<Operation, BridgeError> {
+        self.apply_review(id, now, false)
+    }
+    /// Call only after verifying fresh, single-use native authorization. If its
+    /// prompt outlived the review, rebuild the entire protected plan under the
+    /// mutation and resource locks. Only the expiry may differ; a changed
+    /// snapshot, mutation, or displayed change requires another user review.
+    pub fn apply_after_authorization(&mut self, id: &OperationId, now: u64) -> Result<Operation, BridgeError> {
+        self.apply_review(id, now, true)
+    }
+    fn apply_review(&mut self, id: &OperationId, now: u64, refresh_expired: bool) -> Result<Operation, BridgeError> {
         let started = std::time::Instant::now();
         let _lock = self.journal.lock()?; let mut record = self.owned(id)?;
         let _lease = match &record.prepared.plan.request {
@@ -286,7 +296,23 @@ impl<P: PlatformOps> Coordinator<P> {
         if !resuming && record.operation.state != OperationState::AwaitingAuthorization { return Err(BridgeError::new("EBUSY", "Bridge operation has already started.")); }
         if self.cancellation_requested(&record)? { return self.cancel_record(&mut record); }
         if !resuming && now >= record.prepared.plan.expires_at {
-            return Err(BridgeError::new("ESTALE", "The setup review expired. Review setup again."));
+            if !refresh_expired {
+                return Err(BridgeError::new("ESTALE", "The setup review expired. Review setup again."));
+            }
+            let existing = match &record.prepared.plan.request {
+                PlanRequest::Configure { .. } => None,
+                PlanRequest::Repair { resource_id } | PlanRequest::Remove { resource_id } =>
+                    Some(self.resource(&record.resources, resource_id)?),
+            };
+            let mut fresh = self.platform.prepare(record.prepared.plan.request.clone(), id.clone(), now, existing)?;
+            let expires_at = fresh.plan.expires_at;
+            fresh.plan.expires_at = record.prepared.plan.expires_at;
+            let encode = |prepared: &Prepared<P::Snapshot, P::Mutation>| serde_json::to_value(prepared)
+                .map_err(|_| BridgeError::new("EPROTOCOL", "Cannot compare the reviewed bridge changes."));
+            if expires_at <= now || encode(&fresh)? != encode(&record.prepared)? {
+                return Err(BridgeError::new("ESTALE", "The connection or proposed changes changed while awaiting authorization. Review setup again."));
+            }
+            record.prepared.plan.expires_at = expires_at;
         }
         if self.platform.fingerprint(&record.prepared.plan.request, &record.prepared.snapshot)? != record.prepared.plan.fingerprint {
             return Err(BridgeError::new("ESTALE", "The selected connection changed. Review setup again."));

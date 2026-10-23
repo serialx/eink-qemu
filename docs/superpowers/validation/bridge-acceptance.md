@@ -44,8 +44,8 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | Package | SHA-256 | Result |
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
-| Windows x64 NSIS installer V45 | `aee98f2e275ad782586b7f7e17673e4a0e9819cda64c12f185e4f6f2b5b24cec` | Update and payload checks passed. V46 actual-wizard interrupted-setup cold-boot recovery and independent exact restoration comparison passed. The earlier run's IPv6-network readiness failure remains preserved |
-| Ubuntu x64 Debian package V42 | `8082908e5f31595b8f76c29fbf12f10887a24546f0273d7b591e5a328c52f798` | Ubuntu 22.04 build and archive checks passed; update preserved the journal. V43 normal password approval, actual wizard cold-boot recovery, and fixture cleanup passed. Preceding packages passed repair/refusal UI and C3/S3 physical-LAN access |
+| Windows x64 NSIS installer V54 | `809297d381783143056848634b137afd21b26f38ec1670d56ed0af9c910141fb` | Update and installed-payload checks passed against files extracted from the installer; journal and archived failure evidence were preserved, and the helper is automatic and running. V46 preceding-package interrupted-setup cold-boot recovery and independent exact restoration passed |
+| Ubuntu x64 Debian package V58 | `e2f17d88aeef34ab0b9d13c6e37c655e377d20cbd202e611fa525b9d5c77d191` | Archive checks, installation, unchanged recovery record, running helper, and delayed-timer regression against installed QEMU passed. V47 preceding package passed installed-service setup, lease protection, removal, and unconfirmed recovery; V57 passed adapter removal during Apply and restoration. Earlier packages passed cold-boot recovery and C3/S3 physical-LAN access |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
 check after its update and launched the saved X4 Pro firmware. The reader reached
@@ -153,7 +153,7 @@ all three support files matched their pre-test hashes. The test removed the
 immutable flag, and the actual app reopened **Choose a connection** successfully.
 That maintenance run ended with bridge support installed and no configured bridge.
 The later V42 helper update installed the exact bundled payload; its fresh
-setup test is awaiting the normal guest-password prompt.
+setup test is covered by the subsequent successful lifecycle checks below.
 
 The update exposed a dialog stall: an existing completed bridge operation
 entered **Saving setup** without starting verification. Both support-update
@@ -732,7 +732,7 @@ of an unavailable external network. Evidence:
 The updated macOS helper completed actual-wizard setup after a fresh password
 approval. Operation `6a6a00c2e88e0c0e811f5b6f52a21394` reached ready revision 7;
 public inspection confirmed the selected Ethernet adapter and ready state.
-Removal through the same helper is awaiting its separate password approval.
+The subsequent V56 removal passed after the helper updates described below.
 Evidence: `/tmp/eink-macos-bridge-ready-v44.jpg` and
 `/tmp/eink-macos-inspection-v44.json`. An expired review also exposed misleading
 connection-change wording; the source now reports that the review expired. The
@@ -772,8 +772,14 @@ an unlinked writable handle and a hard-linked record. All 100 repeated recovery
 suite runs passed after the correction (300 tests). The full macOS workspace
 suite passed 274 tests with five native checks ignored, and the Linux container
 passed 91 bridge tests as an ordinary user. Windows compilation of all bridge
-targets also passed. Installed Mac/Linux package checks for this correction are
-still pending; preceding package acceptance does not cover it.
+targets also passed. The installed Linux 0.9.0 package passed ordinary-user setup, lease protection,
+removal, and unattended rollback after the client exited without confirming.
+The independent watchdog reached cancelled state with no error, owned resources,
+rollback, or cleanup pending before another client request. Fixture cleanup
+restored the original network profile and removed the temporary action-specific
+polkit rule. Both lifecycle and cleanup checks exited zero. The macOS 0.9.0
+helper update preserved its existing ready bridge; V56 subsequently passed
+removal after delayed system authorization, as recorded below.
 
 Evidence: `/tmp/eink-recovery-race-v46.log`,
 `/tmp/eink-journal-unlinked-red-v47.log`,
@@ -781,6 +787,193 @@ Evidence: `/tmp/eink-recovery-race-v46.log`,
 `/tmp/eink-recovery-stress-v47.log`, `/tmp/eink-workspace-v47.log`,
 `/tmp/eink-linux-x64-v22/netplan-unprivileged-tests-v47.log`, and
 `/tmp/eink-windows-check-v47.log`.
+Installed-package evidence: `/tmp/eink-noble-package-v47.log`,
+`/tmp/eink-noble-native-lifecycle-v47.log`,
+`/tmp/eink-noble-native-lifecycle-v47.exit`, and
+`/tmp/eink-noble-cleanup-verified-v47.txt`.
+
+### Review expiry and Windows firmware investigation (V49)
+
+An expired review disabled Apply/Remove without explaining how to continue.
+The dialog now tells the user to choose Back and review the changes again.
+Setup and removal regressions verify that expiry blocks application, displays
+this explanation, and permits a fresh review. All 37 bridge UI tests pass;
+the Windows 0.9.0 QA installer builds with this change.
+
+The Windows firmware diagnostic captured an interrupt-watchdog panic while
+booting the matching C3 firmware under a panic breakpoint. Its saved exception
+PC is `0x40380264` in `_interrupt_handler`, immediately after enabling nested
+interrupts; the interrupted handler's cause is `0x80000005`. This establishes
+the captured context, not the cause of the original failure. A comparison
+without debugger pauses reached Home; the subsequent idle/scan results are
+recorded below. Evidence: `/tmp/eink-panic-v49.json`,
+`/tmp/eink-windows-watchdog-v49-console.log`, and
+`/tmp/eink-progress-v50.json`.
+
+The earlier QA installer contained a CLI built with a dynamically linked Visual
+C++ runtime that was absent in the clean VM. The default CLI packaging and CI
+already request static linking. The replacement QA package follows that path;
+the standalone corrected CLI launches on the clean Windows VM. Earlier
+controller failures (missing runtime and PowerShell exit-code handling) were
+test-harness failures, not completed firmware checks.
+
+### Delayed timer wakeups and authorization (V51–V54)
+
+The Windows C3 comparison without a debugger also reset at about 90 seconds
+of firmware uptime. A native-host reproduction then isolated the cause:
+pausing QEMU for one second during fixed-rate instruction-counted sleep made
+its virtual clock skip the pending wakeup timer and expire the firmware's
+interrupt watchdog. Idle clock advancement now stops at the earliest pending
+guest timer. Adaptive instruction counting and sleep-off behavior are unchanged.
+
+The new regression fails against the old binary and passes with the fix.
+All 23 C3/S3 sleep and delayed-wakeup tests pass. The real C3 firmware also
+survived ten one-second host pauses with no panic, restart, or change to its
+Home image. Windows and macOS QA packages containing the corrected QEMU build
+have been built. The Windows V52 diagnostic stayed stable through 148 seconds
+of firmware time, but its controller's ten-minute wall-clock deadline stopped
+the run before the requested 300 firmware seconds. Its debugger incorrectly
+classified the deliberate shutdown stop as a panic; the stop PC was outside
+the panic handler and no firmware panic was logged. V54 corrects that
+classification and gives the slower x64 VM more time. V54 completed 300
+seconds of emulated idle time without a panic or watchdog restart and exited
+zero. Its six-cycle scan script only exercised three actual scans: the firmware
+intentionally restarts on leaving Wi-Fi, and the next inputs sometimes arrived
+before that restart finished. The corrected V56 script waits through each
+restart and requires exactly one additional restart per completed scan. V56
+passed all six scans using QEMU from the installed V54 package, with exactly
+six intentional restarts and no panic breakpoint. Every return to Home had
+the same pixel hash; the final scan screenshot shows the expected three
+networks. The installed executable hashes match the extracted installer, and
+the update preserved the recovery journal and running helper service.
+
+Evidence: `/tmp/eink-c3-host-delay-result-v51.json`,
+`/tmp/eink-c3-host-delay-fixed-result-v51.json`,
+`/tmp/eink-icount-wakeup-red-v51.log`,
+`/tmp/eink-icount-wakeup-green-v51.log`,
+`/tmp/eink-sleep-regressions-v51.log`, `/tmp/eink-progress-v52.json`,
+`/tmp/eink-progress-v54-final.json`, `/tmp/eink-firmware-wifi-exit-v54.txt`,
+`/tmp/eink-progress-v56-final.json`, `/tmp/eink-windows-scan-6-v56.png`, and
+`/tmp/eink-payload-check-v56.json`.
+
+Repeated macOS removal attempts exposed another usability failure: the
+five-minute review could expire while the system password prompt remained
+open. After fresh native authorization, the helper now reconstructs the
+protected plan while holding its mutation and resource locks. It proceeds only
+if the complete snapshot, mutations, and displayed plan are identical, apart
+from the expiry. Changed connections, cancelled or replaced operations, other
+owners, and active leases remain protected. Ordinary Apply still rejects an
+expired review. All 33 transaction tests and the full bridge suite pass. In the real V56
+wizard test, the password prompt remained open for about nine minutes before
+approval. Removal then completed successfully. The UI showed **Bridge setup
+removed**, the helper returned no selected resource, and the per-user native
+service, launch definition, and packet socket were absent. The helper remained
+installed and ready for another setup.
+
+Evidence: `/tmp/eink-auth-refresh-v54.log` and
+`/tmp/eink-bridge-regression-v54-native.log`,
+`/tmp/eink-macos-delayed-removal-v56.png`,
+`/tmp/eink-macos-removal-v56.json`, and
+`/tmp/eink-macos-removal-native-v56.txt`.
+
+### Windows expired review and keyboard check (V57/V58)
+
+The installed V54 app passed review expiry at 800 × 600. It displayed the
+instruction to choose **Back** and review again, disabled Apply, and retained
+the selected Ethernet connection. A fresh review completed and enabled Apply.
+Escape closed setup and visibly focused the firmware control; Space reopened
+its card. No network changes were requested. Evidence:
+`/tmp/eink-windows-expired-review-v57.png`,
+`/tmp/eink-windows-fresh-review-v58.png`,
+`/tmp/eink-windows-return-focus-v58.png`,
+`/tmp/eink-windows-reopen-card-v58.png`, and `/tmp/eink-review-v58.json`.
+
+### Windows S3 idle check (V58)
+
+The installed V54 Xtensa executable passed a full minute of S3 firmware idle
+time using the matching X4 Pro image, NAT, and instruction-counted sleep. The
+ordinary-user run finished with zero restarts and an unchanged Home pixel hash
+(`1d68d868607742c4d6c445d1eb03491731ea966dd33523787944cb6d57f654e0`).
+The smoke sequence took 430 seconds of wall time. The matching native macOS QA
+binary also passed the same minute with zero restarts and the same image hash.
+
+The preceding V57 Windows attempt hit the CLI's 605-second wall-clock limit
+for a single 60-second guest wait after reaching about 32 seconds of firmware
+uptime. It showed continuing firmware progress, not a restart. V58 divided the
+wait into 600 bounded 0.1-second guest waits; no product timeout was relaxed.
+This closes that smoke test, not the separate physical-LAN tests recorded above.
+Evidence: `/tmp/eink-s3-final-v58.json`, `/tmp/eink-windows-s3-idle-v58.png`,
+`/tmp/eink-s3-native-idle-v58.log`, and `/tmp/eink-s3-final-v57d.json`.
+
+### Final Ubuntu x64 package (V58)
+
+The Ubuntu 22.04 build includes both final fixes (`bc98329f4d` and
+`a2cfe4befc`). The Debian verifier passed payload architecture, libc baseline,
+permissions, and package lifecycle checks. All 32 Linux transaction tests passed
+as an ordinary user with the fixture's private-directory permissions. Initial
+runs without that restrictive umask were refused by the journal's ownership
+and permission checks, before exercising transactions.
+
+Installation into Ubuntu 24.04 x64 passed package-file verification, helper
+permissions, service startup, and byte-for-byte preservation of the clean
+recovery record. The installed QEMU passed the delayed-wakeup regression as the
+ordinary `ubuntu` user: a one-second host pause did not skip the guest timer.
+The regression used the same assembly fixture, compiled on the host and copied
+into the VM. The updated desktop also launched as the ordinary user and rendered
+in both light and dark themes; the helper was active and the temporary polkit
+rule was absent. Evidence: `/tmp/eink-linux-x64-v22/final-package-v58.log`,
+`/tmp/eink-linux-x64-v22/transactions-private-v58.log`, and
+`/tmp/eink-noble-package-v58.log` (exit 0), `/tmp/eink-desktop-v58.txt`, and
+`/tmp/eink-ui-health-v58.txt`, and `/tmp/eink-linux-desktop-v58.png`.
+
+### Ubuntu x64 UI checks (V53)
+
+The installed 0.9.0 app passed keyboard connection selection and review in
+light theme. Its generated Netplan profile was refused before authorization or
+network mutation, with the supported persistent-profile guidance. Temporarily
+stopping the helper displayed package-repair instructions; restoring it and
+choosing **Check again** returned to the connection chooser. Stopping
+NetworkManager disabled automatic setup with an explanation; restoring it and
+refreshing restored the connected adapter. Escape closed the chooser and
+Return reopened the firmware controls. Both services and the original
+connection profile were restored, and the backup timers were stopped.
+
+Evidence: `/tmp/eink-linux-keyboard-profile-refusal-v53.png`,
+`/tmp/eink-linux-missing-helper-v53.png`,
+`/tmp/eink-linux-helper-restored-v53.png`,
+`/tmp/eink-linux-missing-networkmanager-v53.png`,
+`/tmp/eink-linux-networkmanager-restored-v53.png`, and
+`/tmp/eink-restored-network-v53.txt`.
+
+V55 also disconnected the selected Ethernet adapter while the real polkit
+password prompt was open. After successful authentication, setup refused with
+**Connect this Ethernet adapter before bridge setup.** The journal remained
+awaiting authorization with no resources, rollback, or cleanup pending: no
+bridge mutation had started. Restoring the connection and choosing **Inspect
+again** returned to the connected chooser. Fixture cleanup exited zero and
+restored the original profile and IPv6 settings. This covers disconnection
+during authorization, not a cable loss after native mutations begin.
+Evidence: `/tmp/eink-linux-disconnected-approval-v55.png` and
+`/tmp/eink-noble-ui-cleanup-v55.log`.
+
+### Ubuntu x64 adapter removal during Apply (V57)
+
+The installed 0.9.0 service passed a separate interruption test after two native
+mutations had completed, while the operation was still **Applying**. The test
+briefly paused the helper to capture that exact checkpoint, detached the
+verified disposable VM Ethernet adapter from its driver, and resumed Apply
+with the adapter absent. This simulates adapter removal, not merely a cable
+losing carrier. The helper retained its rollback journal and reported that
+restoration needed repair while the adapter was missing. Ten seconds later the
+fixture reattached it. An explicit retry by the ordinary owning user restored
+the original connection and finished cancelled without an error or pending
+resources, rollback, or cleanup. The temporary polkit rule, profile and IPv6
+fixtures, and recovery timer were removed. Independent checks confirmed the
+original profile UUID, IPv4 address, gateway, and IPv6 mode.
+
+Evidence: `/tmp/eink-linux-at-disconnect-v57.json`,
+`/tmp/eink-linux-v57-result-1`, `/tmp/eink-linux-v57-result-2`,
+`/tmp/eink-noble-disconnect-v57.log`, and `/tmp/eink-noble-final-v57.log`.
 
 ### WebKit crash evidence recovered in V42
 
@@ -794,34 +987,42 @@ the crash. The V43 debugger-backed run described above did not reproduce the cra
 `/tmp/eink-webkit-history-v42.log` and
 `/tmp/eink-linux-webkit-20261022.crash`.
 
+The V55 follow-up attached a debugger to the main WebKit process for 30 minutes
+while C3 emulation and the live heap view ran. No SIGSEGV, SIGBUS, or SIGABRT was
+captured. The separate heap window also rendered more than 870,000 allocation
+events and closed normally; its separate WebKit process was not attached to the
+debugger. This run used the previously installed Ubuntu ARM 0.8.1 package,
+so it is crash-investigation evidence, not validation of the latest package.
+The original crash remains unexplained. Evidence:
+`/tmp/eink-webkit-gdb-v55.log`, `/tmp/eink-webkit-v55.exit` (124 is the planned
+30-minute debugger timeout), and `/tmp/eink-linux-heap-window-v56.png`.
+
 ## Remaining acceptance work
 
-- Build and verify the advertised macOS 12.3 baseline with release-compatible
-  dependencies, Developer ID signing, and notarization. A Developer ID identity
-  is currently unavailable; the user confirmed this on 2026-10-22. Development
-  signing remains available for VM tests. Intel macOS still needs native testing.
-- Linux x64 native lifecycle, normal desktop authorization, interrupted recovery,
-  and fixture cleanup now pass. Windows and Linux x64 C3/S3 physical-LAN
-  connectivity pass; Windows V40 confirmed removal and independent restoration
-  comparison also pass. Retest affected paths if subsequent fixes change them.
-- Retest the latest recovery changes through installed services and the actual
-  wizard, including interrupted setup and reboot. Ubuntu ARM64 desktop-crash recovery
-  during confirmation and cold-boot recovery pass; Ubuntu 24.04 x64 cold-boot
-  recovery also passes after the Netplan timeout fix. Windows desktop-crash recovery
-  during confirmation and V39 fresh interrupted-setup cold-boot recovery also
-  pass. V43 reproduced a membership-read timeout during startup. V44 exposed an
-  IPv6 runtime-reset conflict. Both guards are corrected; V46 installed-service
-  cold-boot recovery and exact restoration pass on the current network baseline.
-  Windows package removal with a retained
-  bridge and subsequent reinstall also pass.
-- Finish the visual and keyboard matrix, dependency-failure, disconnected-adapter,
-  and version-mismatch flows. Windows testing remains at the user's requested
-  800 × 600 resolution. Installed-package validation of the idle recovery lock
-  fix now covers Windows setup, removal, and interrupted recovery, plus Linux
-  setup and cold-boot recovery. The updated macOS helper passed setup; its
-  removal still needs the guest's separate password approval.
-- Investigate the Ubuntu WebKit process SIGSEGV and the Windows C3 firmware
-  interrupt-watchdog reset. A successful retry does not explain either failure.
+- Build and verify the advertised macOS 12.3 baseline. The current QA QEMU
+  executables and bundled libraries require macOS 15.0; changing the Rust
+  deployment target alone cannot close this gap. Intel macOS still needs native
+  testing. Developer ID signing and notarization remain blocked at the user's
+  request because the identity is unavailable; development signing is available
+  for disposable ARM64 VM checks.
+- Investigate the Ubuntu ARM WebKit SIGSEGV. The original core was discarded by
+  Apport, and two 30-minute debugger runs have not reproduced it. The V55 run
+  used 0.8.1. These runs do not establish a fix or validate the final ARM64 package.
+- Complete the native failure-path coverage beyond the recorded passes. There
+  is no recorded native pass for adapter removal during Apply on macOS or
+  Windows, or two simultaneous Windows user sessions. Linux's adapter-removal
+  test passed after an explicit owning-user recovery retry. Shared coordinator
+  and ownership tests do not substitute for those native cases.
+
+The known Windows recovery failures now have passing installed-service
+cold-boot and exact-restoration evidence on the fresh network baseline. The
+original failure record remains archived. Windows C3 idle, six scans, S3 idle,
+review expiry, and keyboard focus checks also pass. Linux setup, normal desktop
+authorization, cold-boot recovery, adapter-removal recovery, package update, and
+fixture cleanup pass. The macOS helper passed setup and delayed-approval
+removal, plus the earlier update, reinstall, lease, and maintenance recovery
+checks. Retest these paths when later product changes affect them; completed
+checks are not themselves outstanding work.
 
 Automated mouse clicks can land at a stale guest pointer position in UTM,
 including Windows Explorer. Short drags at the intended position followed by

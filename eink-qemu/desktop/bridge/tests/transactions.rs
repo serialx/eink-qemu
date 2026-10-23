@@ -80,6 +80,62 @@ fn native_approval_uses_only_the_current_owners_unexpired_review() {
 }
 
 #[test]
+fn slow_native_authorization_refreshes_only_an_identical_review() {
+    let root = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    assert_eq!(owner.apply(&plan.id, 500).unwrap_err().code, "ESTALE");
+    assert_eq!(*host.value.lock().unwrap(), 10);
+    let operation = owner.apply_after_authorization(&plan.id, 500).unwrap();
+    assert_eq!(operation.id, plan.id);
+    assert_eq!(operation.state, OperationState::Verifying);
+    assert_eq!(*host.value.lock().unwrap(), 20);
+    owner.keep(&plan.id, 501).unwrap();
+    let resource = owner.resources().unwrap().remove(0);
+    let removal = owner.plan(PlanRequest::Remove { resource_id: resource.id.clone() }, 502).unwrap();
+    let lease = owner.lease(&resource.id).unwrap();
+    assert_eq!(owner.apply_after_authorization(&removal.id, 900).unwrap_err().code, "EBUSY");
+    drop(lease);
+    assert_eq!(owner.apply_after_authorization(&removal.id, 900).unwrap().state, OperationState::Verifying);
+    owner.keep(&removal.id, 901).unwrap();
+    assert!(owner.resources().unwrap().is_empty());
+    assert_eq!(*host.value.lock().unwrap(), 10);
+}
+
+#[test]
+fn slow_native_authorization_rejects_changed_snapshot_mutations_or_review() {
+    for change in 0..4 {
+        let root = tempfile::tempdir().unwrap(); let mut host = Host::new();
+        let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        let plan = owner.plan(request(), 100).unwrap();
+        match change {
+            0 => *host.value.lock().unwrap() = 11,
+            1 => *host.fingerprint.lock().unwrap() = "different".into(),
+            2 => host.fail = true,
+            _ => host.may_disconnect = false,
+        }
+        let mut fresh = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+        assert_eq!(fresh.apply_after_authorization(&plan.id, 500).unwrap_err().code, "ESTALE");
+        assert_eq!(*host.value.lock().unwrap(), if change == 0 { 11 } else { 10 });
+        assert_eq!(fresh.operation().unwrap().unwrap().state, OperationState::AwaitingAuthorization);
+    }
+}
+
+#[test]
+fn slow_native_authorization_cannot_revive_cancelled_or_replaced_plans() {
+    let root = tempfile::tempdir().unwrap(); let host = Host::new();
+    let mut owner = Coordinator::open(root.path(), "owner", host.clone()).unwrap();
+    let plan = owner.plan(request(), 100).unwrap();
+    let mut stranger = Coordinator::open(root.path(), "other", host.clone()).unwrap();
+    assert_eq!(stranger.apply_after_authorization(&plan.id, 500).unwrap_err().code, "EPERM");
+    owner.cancel(&plan.id).unwrap();
+    assert_eq!(owner.apply_after_authorization(&plan.id, 500).unwrap_err().code, "EBUSY");
+    owner.plan(request(), 501).unwrap();
+    assert_eq!(owner.apply_after_authorization(&plan.id, 502).unwrap_err().code, "ESTALE");
+    assert_eq!(*host.value.lock().unwrap(), 10);
+}
+
+#[test]
 fn polling_is_read_only_and_hides_another_users_operation() {
     let dir = tempfile::tempdir().unwrap(); let host = Host::new();
     let mut owner = Coordinator::open(dir.path(), "user-a", host.clone()).unwrap();
