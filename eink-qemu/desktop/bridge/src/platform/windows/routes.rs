@@ -129,6 +129,7 @@ mod tests{
         assert!(validate(&source,&rows,&dhcp).is_err());
     }
     #[test]
+    #[ignore = "requires a native adapter with only restorable route sources"]
     fn live_physical_routes_have_verified_sources(){
         let adapter=crate::inspect().unwrap().adapters.into_iter().find(|a|a.eligible).unwrap();
         let devices=windows_device::enumerate().unwrap();let device=devices.get(adapter.id.as_str()).unwrap();

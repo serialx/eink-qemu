@@ -180,7 +180,8 @@ comparing two of them still shows what changed.
 
 Wi-Fi uses NAT by default on every native platform, without host setup.
 Open the firmware card to switch **Wi-Fi network mode** between **NAT** and
-**Bridged**. In a package with managed bridge support, select **Set up bridge**, choose an
+**Bridged**. Managed bridge setup is **experimental** in 0.9.0 and is included in
+the Linux and Windows desktop packages. Select **Set up bridge**, choose an
 eligible host connection, review the proposed changes, and approve the system
 authorization prompt. Linux and Windows may temporarily interrupt that host
 connection; choose **Keep connection** after checking it, or let the countdown
@@ -202,11 +203,13 @@ Closing the app or selecting NAT leaves the host setup installed.
 If bridge startup fails, **Open bridge setup** opens recovery, and **Use NAT**
 changes the mode only when you select it. The app does not silently fall back.
 
-Managed setup is still undergoing native acceptance. The current validation
-includes macOS C3/S3 LAN access and Linux ARM64/Windows x64 C3/S3 access on a shared
-VM network. macOS release packaging, the remaining
-firmware/platform tests, and unresolved VM test failures are tracked in the
-[native validation record](../../docs/superpowers/validation/bridge-platform-gates.md).
+Native acceptance is incomplete. C3/S3 physical-LAN connectivity has passed on
+Linux x64 and Windows x64, but an earlier Windows recovery timeout, an Ubuntu
+WebKit crash, and a Windows firmware watchdog reset remain unexplained.
+The macOS release packages do not include the signed managed bridge helper;
+macOS bridge tests used a separate development-signed QA app. See the
+[acceptance record](../../docs/superpowers/validation/bridge-acceptance.md) for
+the verified scope and remaining platform, recovery, and packaging work.
 Removing a bridge through **Manage bridge** does not uninstall the privileged helper.
 Dragging the macOS app to Trash also leaves that helper installed. The new macOS
 **Uninstall bridge support** action requires administrator approval and removes

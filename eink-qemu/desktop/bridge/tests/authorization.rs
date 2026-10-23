@@ -48,6 +48,7 @@ fn windows_approval_messages_have_distinct_strict_shapes() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[ignore = "requires the installed private bridge authorization policy and a fresh authorization session"]
 fn a_real_authorization_reference_without_rights_cannot_authorize_mutation() {
     use eink_bridge::authorization::macos::Authorization;
     let reference = Authorization::empty().unwrap();
@@ -55,6 +56,12 @@ fn a_real_authorization_reference_without_rights_cannot_authorize_mutation() {
     assert_eq!(Authorization::verify(&proof).unwrap_err().code, "EAUTHDENIED");
     drop(reference);
     assert_eq!(Authorization::verify(&proof).unwrap_err().code, "EAUTHDENIED");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn forged_authorization_references_cannot_authorize_mutation() {
+    use eink_bridge::authorization::macos::Authorization;
     let forged = serde_json::from_str(&format!("\"{}\"", "00".repeat(32))).unwrap();
     assert_eq!(Authorization::verify(&forged).unwrap_err().code, "EAUTHDENIED");
 }

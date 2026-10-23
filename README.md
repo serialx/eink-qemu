@@ -67,15 +67,22 @@ or use `?ghosting=0`, when you need clean pixels.
 
 ## Desktop app
 
-The same interface as a macOS and Windows app (one front end serves both,
+The same interface as a Linux, macOS and Windows app (one front end serves all three,
 [eink-qemu/desktop](eink-qemu/desktop/README.md)), running native QEMU, several
 times faster than the browser. Its SD card explorer edits card images of any
-size in place. Download `eink-qemu-desktop-*.dmg` (macOS 12.3+) or
+size in place. Download `eink-qemu-desktop-*.deb` (Ubuntu 22.04+, x86-64/ARM64),
+`eink-qemu-desktop-*.dmg` (macOS 12.3+) or
 `eink-qemu-desktop-*-setup.exe` (Windows 10/11) from
 [Releases](../../releases). The builds are not signed: on macOS run
 `xattr -dr com.apple.quarantine /Applications/eink-qemu.app` once after
 copying the app; on Windows choose *More info*, then *Run anyway*. Building
 it yourself is covered in [eink-qemu/desktop](eink-qemu/desktop/README.md).
+
+Linux and Windows packages include **experimental managed bridge setup** so
+the emulated reader can join your LAN. NAT remains the default. Bridge setup
+changes host networking, and recovery and platform acceptance are incomplete;
+see the [known limits](docs/superpowers/validation/bridge-acceptance.md).
+macOS release packages do not include the signed managed bridge helper.
 
 ![The eink-qemu desktop app running CrossPoint on an Xteink X3, with SD card files, a page of Aesop's Fables, and live heap maps and memory usage](eink-qemu/screenshots/desktop-light.png)
 

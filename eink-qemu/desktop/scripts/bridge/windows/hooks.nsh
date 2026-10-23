@@ -1,6 +1,7 @@
 ; The compiler embeds its verified helper for maintenance before touching an
 ; existing installation. No user-supplied command, destination or driver runs.
-!define EINK_BRIDGE_HOOK_DIR "${__FILEDIR__}"
+; Native Windows NSIS splits File paths on backslashes; POSIX builds convert them.
+!define EINK_BRIDGE_HELPER "${__FILEDIR__}\..\..\..\src-tauri\windows\bridge\eink-bridge-helper.exe"
 Var EinkBridgeInstallerMutex
 
 ; Hold this handle until this installer/uninstaller process exits. The helper's
@@ -22,7 +23,7 @@ Var EinkBridgeInstallerMutex
 !macro EINK_BRIDGE_MAINTAIN ACTION
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
-  File /oname=eink-bridge-maintenance.exe "${EINK_BRIDGE_HOOK_DIR}/../../../src-tauri/windows/bridge/eink-bridge-helper.exe"
+  File /oname=eink-bridge-maintenance.exe "${EINK_BRIDGE_HELPER}"
   StrCpy $0 1
   ClearErrors
   ExecWait '"$PLUGINSDIR\eink-bridge-maintenance.exe" --maintain ${ACTION}' $0

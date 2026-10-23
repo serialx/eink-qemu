@@ -1,9 +1,19 @@
 # Managed bridge acceptance
 
-Status on 2026-10-23: implementation and native acceptance are still in progress.
-The feature is not ready for release. This is the current checklist; the
+Status on 2026-10-23: managed bridge setup ships as **experimental** in 0.9.0
+with the maintainer's approval. Native acceptance is still in progress; this
+release designation does not close the remaining acceptance work below.
+Linux and Windows packages include managed support. macOS release packages
+do not include the signed managed helper. This is the current checklist; the
 [platform gate record](bridge-platform-gates.md) contains the detailed evidence
 and earlier failed attempts.
+
+The live Windows route/profile tests and the macOS real-authorization-reference
+test are opt-in native acceptance checks. They require a prepared network adapter
+or an installed private bridge authorization policy, which generic CI runners
+do not provide. Standard CI still runs the fixture-based route/profile tests and
+forged-authorization rejection checks. A green CI run does not complete native
+acceptance.
 
 ## Verified scope
 

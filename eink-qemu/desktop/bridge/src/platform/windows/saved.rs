@@ -156,6 +156,7 @@ mod tests{
         desired.dns[0].llmnr=0;assert!(before.require_compatible_dns(&desired).is_err());
     }
     #[test]
+    #[ignore = "requires a native adapter with complete Windows network settings"]
     fn native_saved_profile_reopens_without_changing_identity(){
         let device=crate::inspect().unwrap().adapters.into_iter().find(|a|a.eligible).unwrap();
         let devices=windows_device::enumerate().unwrap();let target=devices.get(device.id.as_str()).unwrap();
