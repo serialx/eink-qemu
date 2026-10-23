@@ -16,7 +16,7 @@ fn profile(method: &str) -> Profile {
         ])),
         ("802-3-ethernet".into(), BTreeMap::from([("mtu".into(), 1400u32.into())])),
         ("ipv4".into(), BTreeMap::from([("method".into(), string(method)), ("dns".into(), Value::from(vec![0x01010101u32]).try_into().unwrap())])),
-        ("ipv6".into(), BTreeMap::from([("method".into(), string("auto")), ("route-metric".into(), 77i64.into())])),
+        ("ipv6".into(), BTreeMap::from([("method".into(), string("auto")), ("addr-gen-mode".into(), 0i32.into()), ("route-metric".into(), 77i64.into())])),
     ]).into()
 }
 fn converted(profile: &Profile) -> eink_bridge::linux_profiles::Migration {
@@ -62,6 +62,27 @@ fn unsupported_profiles_are_rejected_before_planning_mutations() {
         let mut value = profile("auto"); value.get_mut("connection").unwrap().insert(key.into(), string("bridge"));
         assert!(migrate(&value, "enp0s1", "ebr1234567890", "fd77321a-8520-4d05-8075-420b465d0846", "29457488-31f2-47e2-a46a-871e32b69271").is_err());
     }
+}
+
+#[test]
+fn interface_dependent_ipv6_identity_is_refused_before_conversion() {
+    for mode in [None, Some(1i32), Some(2i32), Some(3i32)] {
+        let mut original = profile("auto");
+        let ipv6 = original.get_mut("ipv6").unwrap();
+        match mode {
+            Some(mode) => { ipv6.insert("addr-gen-mode".into(), mode.into()); },
+            None => { ipv6.remove("addr-gen-mode"); },
+        }
+        let before = original.clone();
+        let error = migrate(&original, "enp0s1", "ebr1234567890", "fd77321a-8520-4d05-8075-420b465d0846", "29457488-31f2-47e2-a46a-871e32b69271").unwrap_err();
+        assert_eq!(error.code, "EUNSUPPORTED", "mode {mode:?}");
+        assert_eq!(original, before);
+        original.get_mut("ipv6").unwrap().insert("method".into(), string("disabled"));
+        converted(&original); // An unused address generator cannot change addresses.
+    }
+    let mut portable = profile("auto");
+    portable.get_mut("ipv6").unwrap().insert("addr-gen-mode".into(), 0i32.into());
+    converted(&portable);
 }
 #[test]
 fn user_edits_are_conflicts_but_network_manager_timestamp_is_not() {

@@ -47,10 +47,18 @@ function paintBridgeStatus() {
     override.hidden = !override.textContent;
   }
   manage.textContent = selection ? 'Manage bridge' : 'Set up bridge';
+  const readiness = bridgeInspection?.readiness;
+  const guidance = readiness ? {
+    ready: 'Ready. Join PICSimLabWifi in the firmware after Start.',
+    inUse: 'In use; stop its emulator before checking or changing setup.',
+    disconnected: 'Disconnected. Reconnect the selected connection, then check bridge setup.',
+    needsRepair: 'Needs repair. Open Manage bridge to restore the connection.',
+    needsSetup: 'Needs setup. Open Manage bridge to configure the connection.',
+    unsupported: 'Unsupported. Open Manage bridge to choose a supported connection.',
+  }[readiness] : 'Check bridge setup before starting the emulator.';
   status.textContent = bridgeInspection?.externalOverride
     ? `${bridgeInspection.externalOverride} controls networking for this launch.`
-    : selection && bridgeInspection?.readiness === 'inUse' ? `Host connection: ${selection.displayName}. In use; stop its emulator before checking or changing setup.`
-    : selection ? `Host connection: ${selection.displayName}. Join PICSimLabWifi in the firmware after Start.`
+    : selection ? `Host connection: ${selection.displayName}. ${guidance}`
     : 'Choose a host connection, then join PICSimLabWifi in the firmware.';
 }
 let idle = true;
@@ -209,9 +217,10 @@ $('setup-wifi')?.addEventListener('click', (event) => {
   }
 });
 $('setup-bridge-manage')?.addEventListener('click', () => {
-  const trigger = $('setup-bridge-manage');
   open(false);
-  handlers?.manageBridge?.(trigger);
+  // The card's button is hidden while setup is open; focus must return to
+  // its visible opener when the dialog closes.
+  handlers?.manageBridge?.(chip);
 });
 $('setup-recent').addEventListener('click', (event) => {
   const b = (event.target as Element).closest<HTMLButtonElement>('[data-path]');

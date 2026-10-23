@@ -32,7 +32,7 @@ dynamic connectivity verification, and Linux's explicit **In use** state.
 | Package | SHA-256 | Result |
 | --- | --- | --- |
 | Ubuntu ARM64 Debian package | `0fd615ef3d3abb3feecd90bf1fde91137825655a2db17fbfd78293d06013c0de` | Archive checks and update passed; package-repair UI and retry passed; preceding package passed installed-service cold-boot recovery |
-| Windows x64 NSIS installer V23 | `2f5da96919a97540488ce220c0dd94797138c32fc98f790f7fc893b62e0f2391` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; actual cold-boot recovery remains failed |
+| Windows x64 NSIS installer V36 | `9b3e989f418a32612fd31560cea7a32f682aa604c54e876df58bb6ea4adbe8b5` | Update preserved the failed recovery record byte-for-byte; installed payload hashes and automatic service passed; actual cold-boot recovery remains failed |
 | Ubuntu x64 Debian package V30 | `ad0d254cf906e32ed5fb2a9ac556fa18bba14005b3096b4e384074f01d1c8068` | Ubuntu 22.04 build and archive checks passed; update passed payload, service and permission checks and preserved the failed operation byte-for-byte; actual UI restoration and fresh cold-boot recovery passed. Preceding V26 passed configure, lease protection and removal |
 
 The preceding Windows package also completed the **Manage bridge → Bridge ready**
@@ -277,6 +277,63 @@ and runtime were restored. The temporary polkit rule, profile fixtures and
 backup timer/service were removed. The normal login manager was restored, the
 VM was shut down, and UTM was saved back to **Shared Network**. Evidence is recorded in the V33 entries of
 the local execution ledger and `/tmp/eink-noble-lan-cleanup-v33.log`.
+
+## Review fixes and regression checks (V35/V36)
+
+Whole-change review found four issues, now corrected and independently reviewed:
+
+- Linux refuses automatic conversion when IPv6 address generation depends on
+  the connection or interface identity, or its effective mode is unknown. It
+  admits explicit EUI-64/token mode and disabled IPv6. Refusal occurs before
+  network changes; selecting an existing bridge or NAT remains available.
+- Windows recovery waits for the original router-derived IPv6 MTU within its
+  existing readiness deadline. This applies only when router discovery is
+  enabled and the saved profile explicitly has no persistent MTU. It does not
+  accept a different MTU, conceal other settings changes, or waive connectivity.
+- A refused connection to a stale, installer-owned Unix service socket offers
+  bridge-support repair. Endpoint ownership checks and peer authentication are
+  unchanged, and the client does not delete the socket.
+- The firmware card describes disconnected, repair, setup, unsupported, and
+  in-use selections. Closing bridge setup returns keyboard focus to the visible
+  firmware control, rather than a button inside the hidden card.
+
+The Windows MTU regression first failed with `ECONFLICT` on the actual x64 VM,
+then passed after the fix. All 55 normal Windows library tests passed; 12 tests
+requiring separate native fixtures remained ignored. The host workspace passed
+255 tests with four ignored, and all 89 JavaScript tests passed. Linux's admission
+regressions passed in the Ubuntu 22.04 baseline container (84 bridge tests).
+These results do not replace the remaining installed-service lifecycle checks.
+
+The initial full host run exposed a race in the stale-socket test: another
+native-command test could briefly retain the listener during process creation.
+The fixture now waits, with a five-second bound, for the actual closed endpoint
+before asserting its error classification. The complete workspace then passed.
+
+The packaged Windows V35 focus fix also passed at 800 × 600: Escape closed the
+recovery dialog, visibly focused the firmware control, and Space reopened its
+card. Evidence: `/tmp/eink-windows-dialog-return-focus-v35.jpg` and
+`/tmp/eink-windows-dialog-reopen-keyboard-v35.jpg`. Regression logs are
+`/tmp/eink-bridge-workspace-v36c.log`, `/tmp/eink-ui-regressions-v36.log`,
+`/tmp/eink-windows-native-red-v35c.err`, and `/tmp/eink-windows-all-v36.out`.
+
+The V36 Windows installer (`9b3e989f418a32612fd31560cea7a32f682aa604c54e876df58bb6ea4adbe8b5`)
+then updated the disposable VM successfully. The pending recovery journal stayed
+byte-for-byte unchanged, the service remained automatic and running, the installed
+desktop and helper matched the extracted installer payloads, and QEMU was unchanged.
+
+The Ubuntu x64 V36 package
+(`0f26348d17d36c4185e5512ad62e8d014ab8df593a7a6e6c69ccf5aca62b0c25`)
+passed archive checks and installation into the Ubuntu 24.04 VM on Shared Network.
+Installed files, helper ownership/mode, running service, and the unchanged clean
+journal all passed. The development-signed macOS V36 app passed signature/bundle
+checks, launched in VirtualBuddy, and opened the connected Ethernet chooser.
+Its QA dependencies still require macOS 15.0 or later.
+
+The Windows recovery record remains retained. Its original IPv6 global address
+and default route are still unavailable on Shared Network; the host's shared
+interface no longer has the previously observed IPv6 prefix. This observation
+has not established the cause of the original startup timeout. No host network
+settings were changed, and no successful Windows cold-boot recovery is claimed.
 
 ## Remaining acceptance work
 

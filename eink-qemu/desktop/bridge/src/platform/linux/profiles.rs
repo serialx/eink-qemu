@@ -90,6 +90,16 @@ pub fn migrate(original: &Profile, adapter: &str, bridge_name: &str, bridge_uuid
         }
         if !matches!(string(original, section, "method"), None | Some("auto" | "manual" | "disabled" | "ignore" | "link-local" | "dhcp")) { return Err(unsupported()); }
     }
+    // Stable-privacy hashes the interface name as well as connection identity.
+    // A new bridge cannot retain those addresses by cloning the MAC. Default
+    // modes (including an absent value) may select stable-privacy globally.
+    // Until the effective mode can be resolved and migrated, admit only the
+    // explicit MAC/token-based mode, or an unused IPv6 configuration.
+    if string(original, "ipv6", "method") != Some("disabled")
+        && original.get("ipv6").and_then(|s| s.get("addr-gen-mode"))
+            .and_then(|v| i32::try_from(v).ok()) != Some(0) {
+        return Err(BridgeError::new("EUNSUPPORTED", "This connection's IPv6 address generation cannot be preserved on a new bridge. Select an existing bridge or use NAT."));
+    }
     let mut bridge = original.clone();
     bridge.remove("match");
     bridge.remove("802-3-ethernet");

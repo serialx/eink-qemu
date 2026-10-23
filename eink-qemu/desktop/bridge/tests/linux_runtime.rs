@@ -63,7 +63,7 @@ fn dynamic_snapshot(properties: BTreeMap<String, OwnedValue>, ipv6: bool) -> (ei
         else { HostSnapshot { ipv4: family, ipv6: None } };
     (snapshot, Profile(BTreeMap::from([
         ("ipv4".into(), BTreeMap::from([("method".into(), text(if ipv6 { "disabled" } else { "auto" }))])),
-        ("ipv6".into(), BTreeMap::from([("method".into(), text(if ipv6 { "auto" } else { "disabled" }))])),
+        ("ipv6".into(), BTreeMap::from([("method".into(), text(if ipv6 { "auto" } else { "disabled" })), ("addr-gen-mode".into(), 0i32.into())])),
     ])))
 }
 fn dynamic_properties(ipv6: bool, address: &str, gateway: &str, dns: &str) -> BTreeMap<String, OwnedValue> {

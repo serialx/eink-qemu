@@ -98,12 +98,7 @@ impl WindowsPlatform {
         loop {
             Self::physical(snapshot)?;
             let current=Profile::read(device)?;
-            let changes=expected.configuration_changes(&current);
-            if !changes.is_empty(){
-                let mut error=conflict();error.detail=Some(format!("Changed settings: {}.",changes.join(", ")));
-                return Err(error);
-            }
-            let ready=if immediate{expected.runtime_changes(&current)?.is_empty()}else{usable(expected,&current)};
+            let ready=network_ready(expected,&current,immediate)?;
             if ready{return Ok(());}
             if Instant::now()>=deadline{return Err(BridgeError::new("EHOSTNETWORK","Windows has not restored usable host addresses, routes, and DNS."));}
             std::thread::sleep(Duration::from_millis(500));
@@ -161,6 +156,27 @@ impl WindowsPlatform {
         }
         membership::destroy(&bridge,&members)
     }
+}
+fn network_ready(expected:&Profile,current:&Profile,immediate:bool)->Result<bool,BridgeError>{
+    let changes=expected.configuration_changes(current);
+    if !changes.is_empty(){
+        // Router advertisements can restore an active IPv6 MTU after the
+        // saved settings are already back. Wait for that exact value, without
+        // accepting it early or masking a persistent/user configuration edit.
+        if let Some(ipv6)=expected.interfaces.iter().find(|row|row.address_family==23) {
+            let router_mtu=ipv6.router_discovery==1 && expected.persistent_interfaces.as_ref()
+                .and_then(|rows|rows.iter().find(|row|row.address_family==23))
+                .is_some_and(|row|row.nl_mtu.is_none());
+            if router_mtu {
+                let mut settled=current.clone();
+                if let Some(row)=settled.interfaces.iter_mut().find(|row|row.address_family==23){row.nl_mtu=ipv6.nl_mtu;}
+                if expected.configuration_changes(&settled).is_empty(){return Ok(false);}
+            }
+        }
+        let mut error=conflict();error.detail=Some(format!("Changed settings: {}.",changes.join(", ")));
+        return Err(error);
+    }
+    Ok(if immediate{expected.runtime_changes(current)?.is_empty()}else{usable(expected,current)})
 }
 /// Long-lived resources may renew DHCP leases or IPv6 privacy addresses.
 /// Preserve fixed settings; require the original address families and default
@@ -413,6 +429,30 @@ mod tests{
     fn profile()->Profile{
         let mut profile:Profile=serde_json::from_str(include_str!("../../../tests/fixtures/windows-dhcp-profile.json")).unwrap();
         profile.normalize().unwrap();profile
+    }
+    #[test]
+    fn recovery_waits_for_router_mtu_without_waiving_settings_or_connectivity(){
+        let mut expected=profile();
+        expected.persistent_interfaces=Some(expected.interfaces.iter().map(crate::windows_profile::Interface::sparse).collect());
+        expected.persistent_interfaces.as_mut().unwrap()[1].nl_mtu=None;
+        expected.interfaces[1].router_discovery=1;
+        expected.interfaces[1].nl_mtu=1280;
+        let mut pending=expected.clone();pending.interfaces[1].nl_mtu=1500;
+        assert_eq!(network_ready(&expected,&pending,false).unwrap(),false);
+        assert_eq!(network_ready(&expected,&expected,false).unwrap(),true);
+        pending=expected.clone();pending.active_routes.retain(|r|r.destination_prefix!="::/0");
+        assert_eq!(network_ready(&expected,&pending,false).unwrap(),false);
+        for (family,saved,discovery) in [(0,false,1),(1,true,1),(1,false,0)] {
+            let mut before=expected.clone();before.interfaces[family].router_discovery=discovery;
+            if saved{before.persistent_interfaces.as_mut().unwrap()[family].nl_mtu=Some(1280);}
+            let mut changed=before.clone();changed.interfaces[family].nl_mtu=1400;
+            assert_eq!(network_ready(&before,&changed,false).unwrap_err().code,"ECONFLICT");
+        }
+        pending=expected.clone();pending.interfaces[1].nl_mtu=1500;pending.interfaces[1].forwarding=1;
+        assert_eq!(network_ready(&expected,&pending,false).unwrap_err().code,"ECONFLICT");
+        expected.persistent_interfaces=None;
+        pending=expected.clone();pending.interfaces[1].nl_mtu=1500;
+        assert_eq!(network_ready(&expected,&pending,false).unwrap_err().code,"ECONFLICT");
     }
     #[test]
     fn committed_readiness_allows_lease_rotation_but_requires_global_connectivity(){

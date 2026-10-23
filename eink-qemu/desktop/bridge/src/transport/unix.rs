@@ -176,6 +176,14 @@ pub(crate) fn receive_descriptor(stream: &UnixStream, expected_marker: u8) -> Re
     Ok(file)
 }
 
+fn connect_endpoint(path: &Path) -> Result<UnixStream, BridgeError> {
+    UnixStream::connect(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::ConnectionRefused {
+            BridgeError::new("ENEEDSSETUP", "Bridge support is not running. Repair or reinstall bridge support.")
+        } else { BridgeError::new("EIPC", e.to_string()) }
+    })
+}
+
 /// App-side connection to the fixed, installer-owned service endpoint.
 pub fn connect() -> Result<UnixStream, BridgeError> {
     #[cfg(target_os = "macos")]
@@ -187,7 +195,7 @@ pub fn connect() -> Result<UnixStream, BridgeError> {
     // Canonical system aliases such as macOS /var are allowed. Every actual
     // ancestor must remain installer-controlled.
     validate_system_directory(path.parent().ok_or_else(permission)?)?;
-    let stream = UnixStream::connect(path).map_err(|e| BridgeError::new("EIPC", e.to_string()))?;
+    let stream = connect_endpoint(path)?;
     verify_peer(&stream, 0)?;
     stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| BridgeError::new("EIPC", e.to_string()))?;
     stream.set_write_timeout(Some(Duration::from_secs(30))).map_err(|e| BridgeError::new("EIPC", e.to_string()))?;
@@ -197,6 +205,29 @@ pub fn connect() -> Result<UnixStream, BridgeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stale_helper_endpoint_offers_support_repair_without_deleting_the_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("helper.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(listener);
+        // A concurrently spawned native command can briefly inherit the
+        // listener before exec. Wait for the real endpoint to become stale;
+        // accepting a live connection is not a transport classification bug.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            match connect_endpoint(&path) {
+                Err(error) => break error,
+                Ok(stream) => {
+                    drop(stream);
+                    assert!(std::time::Instant::now() < deadline, "listener remained active after close");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        assert_eq!(error.code, "ENEEDSSETUP");
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_socket());
+    }
     #[test]
     fn system_runtime_exception_cannot_extend_to_other_directories_or_groups() {
         assert!(!trusted_directory(Path::new("/private/var/run/app"), 0, 1, 0o775));
