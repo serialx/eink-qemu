@@ -39,6 +39,8 @@ const ESP32C3IntMapping int_mapping[] = {
     { .specific = R_DMA_INT_RAW_OUT_DONE_MASK,      .generic = R_GDMA_INTERRUPT_OUT_DONE_MASK      },
 };
 
+/* Five RX sources followed by four TX sources, not equal halves. */
+#define ESP32C3_IN_INT_MAPPING_COUNT 5
 
 /**
  * @brief Extract and generate a generic interrupt bitmap for IN and OUT channels out of an ESP32-C3 interrupt bitmap.
@@ -51,7 +53,7 @@ static void esp32c3_to_int_bitmask(uint32_t value, uint32_t *in_value, uint32_t 
     int i = 0;
 
     /* IN bitmasks are first in the mapping */
-    for (i = 0; i < DIM(int_mapping) / 2; i++) {
+    for (i = 0; i < ESP32C3_IN_INT_MAPPING_COUNT; i++) {
         if (value & int_mapping[i].specific) {
             *in_value |= int_mapping[i].generic;
         }
@@ -75,7 +77,7 @@ static uint32_t esp32c3_from_int_bitmask(uint32_t in_value, uint32_t out_value)
     int i = 0;
     uint32_t r = 0;
 
-    for (i = 0; i < DIM(int_mapping) / 2; i++) {
+    for (i = 0; i < ESP32C3_IN_INT_MAPPING_COUNT; i++) {
         if (in_value & int_mapping[i].generic) {
             r |= int_mapping[i].specific;
         }
@@ -145,8 +147,8 @@ static DmaRegister esp32c3_generic_reg(uint32_t reg)
 static uint32_t esp32c3_read_int_register(ESP32C3GdmaState *s, hwaddr addr)
 {
     /* Check which channel and which direction is being written to */
-    const uint32_t chan = addr / DMA_DIR_REGS_SIZE;
-    const uint32_t reg  = addr % DMA_DIR_REGS_SIZE;
+    const uint32_t chan = addr / DMA_INT_CHAN_REGS_SIZE;
+    const uint32_t reg  = addr % DMA_INT_CHAN_REGS_SIZE;
     const uint32_t generic_reg = esp32c3_generic_int_reg(reg);
 
     uint32_t in_value  = esp_gdma_read_chan_register(&s->parent, ESP_GDMA_IN_IDX, chan, generic_reg);
@@ -205,8 +207,8 @@ static uint64_t esp32c3_gdma_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32c3_write_int_register(ESP32C3GdmaState *s, hwaddr addr, uint32_t value)
 {
     /* Check which channel and which direction is being written to */
-    const uint32_t chan = addr / DMA_DIR_REGS_SIZE;
-    const uint32_t reg  = addr % DMA_DIR_REGS_SIZE;
+    const uint32_t chan = addr / DMA_INT_CHAN_REGS_SIZE;
+    const uint32_t reg  = addr % DMA_INT_CHAN_REGS_SIZE;
     uint32_t in_value = 0;
     uint32_t out_value = 0;
 

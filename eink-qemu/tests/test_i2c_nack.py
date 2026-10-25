@@ -38,6 +38,7 @@ class I2CNack(unittest.TestCase):
                                  nack | complete)
                 self.assertEqual(self.read(base + 0x2c), nack | complete)
                 self.assertEqual(self.read(base + 8) & (1 << 4), 0)
+                self.assertEqual(self.read(base + 8) & 1, int(expected_nack))
                 # Auto-STOP terminates the failed WRITE before the programmed
                 # STOP command executes, while still raising STOP detection.
                 self.assertEqual(self.read(base + 0x60) & (1 << 31), 0)
@@ -50,3 +51,10 @@ class I2CNack(unittest.TestCase):
         start(0x51)
         self.assertEqual(self.read(base + 0x2c), complete)
         self.assertNotEqual(self.read(base + 0x60) & (1 << 31), 0)
+        # esp-hal checks RESP_REC as well as the NACK interrupt after STOP.
+        self.assertEqual(self.read(base + 8) & 1, 1)
+        self.write(base + 4, 1 << 10)  # FSM reset clears response history.
+        self.assertEqual(self.read(base + 8) & 1, 0)
+        start(0x51)
+        self.qmp('system_reset')
+        self.assertEqual(self.read(base + 8) & 1, 0)

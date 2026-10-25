@@ -130,6 +130,12 @@ static uint64_t esp32c3_intmatrix_read(void* opaque, hwaddr addr, unsigned int s
 
     if (index < ESP32C3_INT_MATRIX_INPUTS) {
         r = s->irq_map[index];
+    } else if (index == ESP32C3_INTMATRIX_IO_STATUS0_REG) {
+        /* Peripheral levels, before CPU routing, enables and thresholds.
+         * Shared interrupt dispatchers use these to identify the source. */
+        r = s->irq_levels;
+    } else if (index == ESP32C3_INTMATRIX_IO_STATUS1_REG) {
+        r = s->irq_levels >> 32;
     } else if (index >= ESP32C3_INTMATRIX_IO_PRIO_START && index < ESP32C3_INTMATRIX_IO_PRIO_END) {
         /* Interrupts start at 1, omit the first entry */
         const uint32_t line = index - ESP32C3_INTMATRIX_IO_PRIO_START + 1;

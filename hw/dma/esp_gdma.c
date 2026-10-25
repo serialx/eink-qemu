@@ -258,6 +258,32 @@ static void esp_gdma_get_restart_buffer(ESPGdmaState *s, uint32_t chan, uint32_t
     *out = guest_addr;
 }
 
+/* The peripheral consumes whole transfers in this model. Expose the initial
+ * descriptor's data availability before that transfer: software may wait for
+ * the TX FIFO to fill before it starts the peripheral clock. */
+static void esp_gdma_prepare_out_fifo(ESPGdmaState *s, uint32_t chan)
+{
+    DmaConfigState *state = &s->ch_conf[ESP_GDMA_OUT_IDX][chan];
+    GdmaLinkedList desc;
+    uint32_t addr;
+
+    esp_gdma_reset_fifo(state);
+    if (state->link & R_GDMA_OUT_LINK_START_MASK) {
+        addr = (ESP_GDMA_RAM_ADDR & ~R_GDMA_OUT_LINK_ADDR_MASK) |
+               FIELD_EX32(state->link, GDMA_OUT_LINK, ADDR);
+    } else {
+        esp_gdma_get_restart_buffer(s, chan, ESP_GDMA_OUT_IDX, &addr);
+    }
+    if (!esp_gdma_read_descr(s, addr, &desc) ||
+        (FIELD_EX32(state->conf1, GDMA_OUT_CONF1, CHECK_OWNER) &&
+         !desc.config.owner)) {
+        esp_gdma_set_status(&state->int_state,
+                            R_GDMA_INTERRUPT_OUT_DSCR_ERR_MASK);
+    } else if (desc.config.length) {
+        state->status &= ~R_GDMA_INFIFO_STATUS_FIFO_EMPTY_MASK;
+    }
+}
+
 
 /**
  * Check the header file for more info about this function
@@ -301,6 +327,7 @@ bool esp_gdma_read_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uint
     DmaConfigState* state = &s->ch_conf[ESP_GDMA_OUT_IDX][chan];
 
     state->link &= R_GDMA_OUT_LINK_ADDR_MASK;
+    esp_gdma_reset_fifo(state);
 
     /* Same goes for the status */
     esp_gdma_clear_status(&state->int_state, R_GDMA_INTERRUPT_OUT_DONE_MASK |
@@ -524,8 +551,11 @@ bool esp_gdma_write_channel(ESPGdmaState *s, uint32_t chan, uint8_t* buffer, uin
          * This can be used in the ISR to know which buffer has just been processed. */
         state->suc_eof_desc_addr = in_addr;
 
-        /* Set the transfer as completed for both the IN and OUT link */
-        esp_gdma_set_status(&state->int_state, R_GDMA_INTERRUPT_IN_DONE_MASK);
+        /* The peripheral ended this receive transaction, even if its last
+         * descriptor had room left. EOF is produced by hardware on RX. */
+        esp_gdma_set_status(&state->int_state,
+                            R_GDMA_INTERRUPT_IN_DONE_MASK |
+                            R_GDMA_INTERRUPT_IN_SUC_EOF_MASK);
     }
 
     return !error;
@@ -557,6 +587,7 @@ static void esp_gdma_check_and_start_mem_transfer(ESPGdmaState *s, uint32_t chan
         /* Clear the (RE)START fields, i.e., only keep the link address */
         state_out->link &= R_GDMA_OUT_LINK_ADDR_MASK;
         state_in->link  &= R_GDMA_IN_LINK_ADDR_MASK;
+        esp_gdma_reset_fifo(state_out);
         /* Same goes for the status */
         esp_gdma_clear_status(&state_in->int_state,
                               R_GDMA_INTERRUPT_IN_DONE_MASK  |
@@ -807,6 +838,12 @@ static void esp_gdma_write_chan_conf(ESPGdmaState *state, uint32_t dir, uint32_t
 
         case GDMA_LINK_REG:
             s->link = value;
+            if (dir == ESP_GDMA_OUT_IDX &&
+                (value & R_GDMA_OUT_LINK_STOP_MASK)) {
+                s->link &= R_GDMA_OUT_LINK_ADDR_MASK;
+                esp_gdma_reset_fifo(s);
+                break;
+            }
             /* For IN and OUT, the START bit is not at the same offset, so we need to test both separately */
             start_mask   = (dir == ESP_GDMA_IN_IDX) ? R_GDMA_IN_LINK_START_MASK   : R_GDMA_OUT_LINK_START_MASK;
             restart_mask = (dir == ESP_GDMA_IN_IDX) ? R_GDMA_IN_LINK_RESTART_MASK : R_GDMA_OUT_LINK_RESTART_MASK;
@@ -814,6 +851,9 @@ static void esp_gdma_write_chan_conf(ESPGdmaState *state, uint32_t dir, uint32_t
             /* Check if any of the previous two bits has just been enabled */
             if ((value & start_mask) || (value & restart_mask))
             {
+                if (dir == ESP_GDMA_OUT_IDX) {
+                    esp_gdma_prepare_out_fifo(state, chan);
+                }
                 esp_gdma_check_and_start_mem_transfer(state, chan);
             }
             break;

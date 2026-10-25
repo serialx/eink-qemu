@@ -32,8 +32,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(X3KeysState, X3_KEYS)
 enum { KEY_BACK, KEY_CONFIRM, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_POWER, KEY_COUNT };
 
 #define ADC_IDLE 4095
-/* raw counts measured on the device (freeink-sdk InputManager) */
-static const uint32_t key_raw[KEY_COUNT] = { 3512, 2694, 1493, 5, 2242, 5, 0 };
+/* Counts from freeink-sdk InputManager's device measurements. Use its measured
+ * Back sample 3597 rather than the across-device average 3512: with the virtual
+ * C3's default eFuse calibration these give 2419 and 2366 mV respectively.
+ * Only the former is within Back's calibrated 2.4--2.7 V band as well as its
+ * raw-count band. Other keys keep the measured averages. */
+static const uint32_t key_raw[KEY_COUNT] = { 3597, 2694, 1493, 5, 2242, 5, 0 };
 
 struct X3KeysState {
     SysBusDevice parent_obj;

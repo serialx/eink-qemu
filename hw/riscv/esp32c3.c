@@ -549,6 +549,8 @@ static void esp32c3_machine_init(MachineState *machine)
     /* eink-qemu: GPSPI2, I2C0 and the SAR ADC (the S3 models fit the C3's register maps) */
     {
         ms->spi2 = qdev_new("ssi.esp32s3.gpspi");
+        object_property_set_link(OBJECT(ms->spi2), "gdma", OBJECT(&ms->gdma),
+                                 &error_fatal);
         if (object_dynamic_cast(OBJECT(machine), TYPE_X3_MACHINE)) {
             Object *spi = OBJECT(ms->spi2);
 

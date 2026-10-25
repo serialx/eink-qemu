@@ -36,6 +36,7 @@ REG32(CTR, 0x04)
     FIELD(CTR, FSM_RST, 10, 1)
     FIELD(CTR, CONF_UPGATE, 11, 1)
 REG32(SR, 0x08)
+    FIELD(SR, RESP_REC, 0, 1)
     FIELD(SR, BUS_BUSY, 4, 1)
     FIELD(SR, RXFIFO_CNT, 8, 6)
     FIELD(SR, TXFIFO_CNT, 18, 6)
@@ -80,6 +81,7 @@ struct ESP32S3I2CState {
     Fifo8 rx_fifo;
     bool bus_held;      /* START sent, no STOP yet */
     bool addr_next;     /* next WRITE byte is an address byte */
+    bool resp_rec;      /* response received from the slave */
     uint8_t addr;       /* 7-bit address of the current transfer */
     uint32_t regs[ESP32S3_I2C_NREGS];
 };
@@ -142,6 +144,7 @@ static void esp32s3_i2c_run(ESP32S3I2CState *s)
                 } else {
                     ack = s->bus_held && i2c_send(s->bus, byte) == 0;
                 }
+                s->resp_rec = ack;
                 /* ACK_EXP is the expected SDA level: 0 = ACK, 1 = NACK */
                 nacked = ack_check && !ack != ack_exp;
             }
@@ -190,6 +193,7 @@ static uint64_t esp32s3_i2c_read(void *opaque, hwaddr addr, unsigned int size)
     switch (addr) {
     case A_SR: {
         uint32_t sr = 0;
+        sr = FIELD_DP32(sr, SR, RESP_REC, s->resp_rec);
         sr = FIELD_DP32(sr, SR, BUS_BUSY, s->bus_held);
         sr = FIELD_DP32(sr, SR, RXFIFO_CNT, fifo8_num_used(&s->rx_fifo));
         sr = FIELD_DP32(sr, SR, TXFIFO_CNT, fifo8_num_used(&s->tx_fifo));
@@ -219,6 +223,7 @@ static void esp32s3_i2c_write(void *opaque, hwaddr addr, uint64_t value, unsigne
         if (FIELD_EX32(value, CTR, FSM_RST)) {
             esp32s3_i2c_release(s);
             s->addr_next = false;
+            s->resp_rec = false;
         }
         s->regs[R_CTR] = value & ~(R_CTR_TRANS_START_MASK | R_CTR_FSM_RST_MASK |
                                    R_CTR_CONF_UPGATE_MASK);
@@ -281,6 +286,7 @@ static void esp32s3_i2c_reset_hold(Object *obj, ResetType type)
 
     esp32s3_i2c_release(s);
     s->addr_next = false;
+    s->resp_rec = false;
     fifo8_reset(&s->tx_fifo);
     fifo8_reset(&s->rx_fifo);
     memset(s->regs, 0, sizeof(s->regs));

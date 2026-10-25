@@ -46,13 +46,16 @@
  */
 #define ESP32C3_INTMATRIX_IO_PRIO_START (0x118 / sizeof(uint32_t))
 
-#define ESP32C3_INTMATRIX_IO_PRIO_END   (0x190 / sizeof(uint32_t))
+#define ESP32C3_INTMATRIX_IO_PRIO_END   (0x194 / sizeof(uint32_t))
 
 /**
  * The following registers are not part of any "register table", contrarily
  * to the priorities or mapping.
  */
 #define ESP32C3_INTMATRIX_IO_ENABLE_REG (0x104 / sizeof(uint32_t))
+
+#define ESP32C3_INTMATRIX_IO_STATUS0_REG (0xf8 / sizeof(uint32_t))
+#define ESP32C3_INTMATRIX_IO_STATUS1_REG (0xfc / sizeof(uint32_t))
 
 #define ESP32C3_INTMATRIX_IO_TYPE_REG   (0x108 / sizeof(uint32_t))
 

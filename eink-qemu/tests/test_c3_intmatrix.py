@@ -149,13 +149,11 @@ static void exhaustive_thresholds(void)
             esp32c3_intmatrix_reset_hold(&s, 0);
             for (unsigned line = 1; line < 32; line++) {
                 write_reg((line - 1) * 4, line);
-                if (line < 31) {
-                    write_reg(0x118 + 4 * (line - 1), (line * 7 + seed) & 15);
-                }
+                write_reg(0x118 + 4 * (line - 1), (line * 7 + seed) & 15);
                 esp32c3_intmatrix_irq_handler(&s, line - 1,
                                               seed < 2 || (line & 1));
             }
-            /* Line 31 retains its reset priority zero and has a shared input. */
+            /* Also exercise two peripheral sources sharing line 31. */
             write_reg(61 * 4, 31);
             esp32c3_intmatrix_irq_handler(&s, 61, 1);
             write_reg(0x104, masks[mask]);
@@ -163,6 +161,44 @@ static void exhaustive_thresholds(void)
         }
     }
     esp32c3_intmatrix_reset_hold(&s, 0);
+}
+
+static void check_peripheral_status(void)
+{
+    /* Status reports raw sources even while unmapped, disabled or masked. */
+    esp32c3_intmatrix_reset_hold(&s, 0);
+    esp32c3_intmatrix_irq_handler(&s, 0, 1);
+    esp32c3_intmatrix_irq_handler(&s, 31, 1);
+    esp32c3_intmatrix_irq_handler(&s, 32, 1);
+    esp32c3_intmatrix_irq_handler(&s, 61, 1);
+    assert(esp32c3_intmatrix_read(&s, 0xf8, 4) == 0x80000001u);
+    assert(esp32c3_intmatrix_read(&s, 0xfc, 4) == 0x20000001u);
+    write_reg(0xf8, 0);
+    write_reg(0xfc, 0xffffffffu);
+    assert(esp32c3_intmatrix_read(&s, 0xf8, 4) == 0x80000001u);
+    assert(esp32c3_intmatrix_read(&s, 0xfc, 4) == 0x20000001u);
+
+    /* esp-hal routes GDMA to CPU interrupt 31 at priority 15. */
+    write_reg(61 * 4, 31);
+    write_reg(0x190, 0xff);
+    assert(esp32c3_intmatrix_read(&s, 0x190, 4) == 15);
+    write_reg(0x104, BIT(31));
+    write_reg(0x194, 15);
+    assert(lines[31].level);
+    write_reg(0x190, 14);
+    assert(!lines[31].level);
+    assert(esp32c3_intmatrix_read(&s, 0xfc, 4) == 0x20000001u);
+    write_reg(0x190, 15);
+    assert(lines[31].level);
+    esp32c3_intmatrix_irq_handler(&s, 61, 0);
+    assert(!lines[31].level);
+    assert(esp32c3_intmatrix_read(&s, 0xfc, 4) == 1);
+    esp32c3_intmatrix_irq_handler(&s, 31, 0);
+    assert(esp32c3_intmatrix_read(&s, 0xf8, 4) == 1);
+    esp32c3_intmatrix_reset_hold(&s, 0);
+    assert(esp32c3_intmatrix_read(&s, 0xf8, 4) == 0);
+    assert(esp32c3_intmatrix_read(&s, 0xfc, 4) == 0);
+    assert(esp32c3_intmatrix_read(&s, 0x190, 4) == 0);
 }
 
 int main(void)
@@ -202,6 +238,7 @@ int main(void)
     check_outputs();
 
     exhaustive_thresholds();
+    check_peripheral_status();
 
     for (unsigned i = 0; i < 50000; i++) {
         uint32_t value = random_value();
@@ -213,7 +250,7 @@ int main(void)
             write_reg(4 * (value % 62), value >> 8);
             break;
         case 2:
-            write_reg(0x118 + 4 * (value % 30), value >> 8);
+            write_reg(0x118 + 4 * (value % 31), value >> 8);
             break;
         case 3:
             write_reg(0x194, value);
