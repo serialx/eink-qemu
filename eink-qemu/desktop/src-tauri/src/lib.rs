@@ -181,6 +181,16 @@ fn check_firmware(path: &Path) -> Result<FileInfo, AppError> {
     file_info(path).ok_or_else(|| AppError::new("EINVAL", "Unreadable firmware path."))
 }
 
+/// CLI inputs can be build directories or files without a GUI-supported
+/// extension. Keep their prepared image selected so Stop → Start can boot
+/// again, with the build's bootloader and partition table intact.
+fn automation_firmware(source: &Path, flash: &Path) -> Result<PathBuf, AppError> {
+    let path = if check_firmware(source).is_ok() { source } else { flash };
+    check_firmware(path)?;
+    // Preserve a symlink's supported filename extension.
+    std::path::absolute(path).map_err(Into::into)
+}
+
 /// Native dialogs, run from Rust so the WebView never names host paths.
 enum Pick<'a> {
     Open { title: &'a str, filter: Option<(&'a str, &'a [&'a str])> },
@@ -1032,7 +1042,7 @@ pub fn run() {
             };
             let card = match &automation {
                 Some(spec) => {
-                    settings.firmware = Some(spec.firmware.clone());
+                    settings.firmware = Some(automation_firmware(&spec.firmware, &spec.flash).map_err(|e| e.message)?);
                     settings.device = spec.machine.clone();
                     settings.elf = spec.elf.clone();
                     settings.turbo = spec.options.turbo;
@@ -1177,6 +1187,97 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod automation_tests {
+    use super::*;
+    use eink_core::flash;
+
+    fn test_app(payload: u8) -> Vec<u8> {
+        // One 16-byte ESP32-C3 segment, followed by its checksum.
+        let mut image = vec![0u8; 64];
+        image[0] = 0xe9;
+        image[1] = 1;
+        image[12] = 5;
+        image[24..28].copy_from_slice(&0x3fc8_0000u32.to_le_bytes());
+        image[28..32].copy_from_slice(&16u32.to_le_bytes());
+        image[32..48].fill(payload);
+        image[63] = 0xef;
+        flash::validate_app(&image).unwrap();
+        image
+    }
+
+    #[tokio::test]
+    async fn cli_build_and_extensionless_inputs_keep_a_readable_firmware_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let build = dir.path().join("build");
+        std::fs::create_dir(&build).unwrap();
+        let app = build.join("firmware.bin");
+        let image = test_app(1);
+        std::fs::write(&app, &image).unwrap();
+        std::fs::write(build.join("bootloader.bin"), include_bytes!("../../../boot/bootloader-esp32c3.bin")).unwrap();
+        let table = flash::partition_table("factory,app,factory,0x20000,1M\n").unwrap();
+        let partitions = build.join("partitions.bin");
+        std::fs::write(&partitions, &table).unwrap();
+        let extensionless = dir.path().join("firmware");
+        std::fs::write(&extensionless, &image).unwrap();
+        let flash = dir.path().join("flash.bin");
+        let settings_path = dir.path().join("settings.json");
+
+        for source in [&build, &extensionless] {
+            let prepared = flash::make_flash_with(source, Some("x3"), Some(&partitions)).unwrap();
+            std::fs::write(&flash, &prepared.image).unwrap();
+            let settings = Settings {
+                firmware: Some(automation_firmware(source, &flash).unwrap()),
+                ..Settings::default()
+            };
+            settings.save(&settings_path).unwrap();
+            let loaded = Settings::load(&settings_path, &mut Vec::new());
+            let selected = loaded.firmware.unwrap();
+            // Both attach/setup and Start must be able to use this selection.
+            assert!(check_firmware(&selected).is_ok());
+            let restarted = read_image(&selected).await.unwrap();
+            assert_eq!(restarted.len(), FLASH_SIZE);
+            assert_eq!(&restarted[0x8000..0x8000 + table.len()], &table);
+            assert_eq!(&restarted[0x20000..0x20000 + image.len()], &image);
+            assert_eq!(restarted, prepared.image);
+            assert_eq!(firmware::describe(&selected, &restarted).chip, Some(firmware::Chip::C3));
+        }
+    }
+
+    #[tokio::test]
+    async fn cli_file_selection_keeps_the_original_for_rebuilds() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("firmware.bin");
+        let flash = dir.path().join("flash.bin");
+        std::fs::write(&source, test_app(1)).unwrap();
+        std::fs::write(&flash, flash::make_flash(&source, None).unwrap().image).unwrap();
+        let selected = automation_firmware(&source, &flash).unwrap();
+        assert_eq!(selected, std::path::absolute(&source).unwrap());
+        let rebuilt = test_app(2);
+        std::fs::write(&source, &rebuilt).unwrap();
+        assert_eq!(read_image(&selected).await.unwrap(), rebuilt);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_symlink_keeps_its_supported_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("firmware");
+        let source = dir.path().join("firmware.bin");
+        std::fs::write(&target, test_app(1)).unwrap();
+        std::os::unix::fs::symlink(&target, &source).unwrap();
+        let selected = automation_firmware(&source, &dir.path().join("unused.bin")).unwrap();
+        assert_eq!(selected.extension().unwrap(), "bin");
+        assert_eq!(read_image(&selected).await.unwrap(), test_app(1));
+    }
+
+    #[test]
+    fn cli_fallback_requires_an_available_prepared_image() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(automation_firmware(dir.path(), &dir.path().join("missing.bin")).is_err());
+    }
 }
 
 #[cfg(test)]
