@@ -9,6 +9,7 @@ import { selectedDevice } from './devices';
 import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
 import { Readiness } from './readiness';
 import { keyboardKey, keyboardHint, keyHint, keyTitle } from './keyboard';
+import { panelPoint, parseRotation, rotatedPanel, type Rotation } from './screen-rotation';
 import { attachSetup, closeSetup, hasGhosting, paintSetup, paintBridgeInspection } from './setup';
 import { openBridgeDialog } from './bridge-dialog';
 import { AppError, type CardInfo, type FileInfo, type SdEntry, type SessionInfo, type Settings, type Setup } from './types';
@@ -78,7 +79,7 @@ function paintControls() {
   button('reset').disabled = !running;
   button('sd').disabled = pending || sd.busy || (!idle && !running);
   const live = running || session.state === 'starting';
-  for (const id of ['zoom-in', 'zoom-out', 'zoom-level', 'screenshot']) ($(id) as HTMLButtonElement).disabled = !live || !screen;
+  for (const id of ['zoom-in', 'zoom-out', 'zoom-level', 'rotate-screen', 'screenshot']) ($(id) as HTMLButtonElement).disabled = !live || !screen;
   if (live && screen) resizeScreen();
   $('machine').textContent = session.machine ? machineNames[session.machine] : 'No device running';
   sdPaint();
@@ -198,9 +199,13 @@ async function start() {
 /* Screen ----------------------------------------------------------------- */
 
 function createScreen(machine: Machine) {
+  releaseTouch?.();
   screen?.dispose();
   screen = api.createScreen(machine, resizeScreen);
-  $('screen').replaceChildren(screen.el);
+  const orientation = document.createElement('div');
+  orientation.className = 'screen-orientation';
+  orientation.append(screen.el);
+  $('screen').replaceChildren(orientation);
   if (!screen.ownPointer) attachTouch(screen.el, machine);
   resizeScreen();
 }
@@ -219,6 +224,8 @@ function removeScreen(message: string) {
    whole-pixel size up to 100% that fits the width) or a CSS scale in whole
    physical pixels. */
 let zoomMode: 'fit' | 'auto' | number = 'fit';
+let rotation: Rotation = 0;
+try { rotation = parseRotation(localStorage.getItem('eink-qemu-rotation')); } catch {}
 try {
   const saved = localStorage.getItem('eink-qemu-zoom');
   zoomMode = saved === 'auto' ? 'auto' : Number(saved) || 'fit';
@@ -226,7 +233,7 @@ try {
 
 function screenLayout() {
   const dpr = window.devicePixelRatio || 1;
-  const width = screen!.width, height = screen!.height;
+  const { width, height } = rotatedPanel(screen!.width, screen!.height, rotation);
   const padding = (element: Element, axis: 'x' | 'y') => {
     const style = getComputedStyle(element);
     return axis === 'x' ? parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
@@ -272,9 +279,23 @@ function resizeScreen() {
   const pixels = scale * layout.dpr, exact = Math.abs(pixels - Math.round(pixels)) < 1e-6;
   // Whole pixels stay sharp; a fractional Fit scale reads better smoothed.
   screen.resize(scale, exact);
+  const orientation = screen.el.parentElement!;
+  orientation.style.width = `${screen.width * scale}px`;
+  orientation.style.height = `${screen.height * scale}px`;
+  orientation.style.transform = `matrix(${rotatedPanel(screen.width * scale, screen.height * scale, rotation).matrix.join(',')})`;
+  const rotateLabel = `Rotate screen clockwise (currently ${rotation}°)`;
+  button('rotate-screen').title = rotateLabel;
+  button('rotate-screen').setAttribute('aria-label', rotateLabel);
   zoomOptions(layout, scale);
   button('zoom-out').disabled = pixels <= 1 + 1e-6;
   button('zoom-in').disabled = pixels >= layout.max - 1e-6;
+}
+function rotateScreen() {
+  if (!screen) return;
+  releaseTouch?.();
+  rotation = parseRotation((rotation + 90) % 360);
+  try { localStorage.setItem('eink-qemu-rotation', String(rotation)); } catch {}
+  resizeScreen();
 }
 function setZoom(mode: typeof zoomMode) {
   zoomMode = mode;
@@ -303,7 +324,17 @@ async function screenshot() {
   const canvas = screen?.canvas();
   if (!canvas || !session.machine) return;
   const machine = session.machine;
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  let output = canvas;
+  if (rotation !== 0) {
+    const panel = rotatedPanel(canvas.width, canvas.height, rotation);
+    output = document.createElement('canvas');
+    output.width = panel.width;
+    output.height = panel.height;
+    const context = output.getContext('2d')!;
+    context.setTransform(...panel.matrix);
+    context.drawImage(canvas, 0, 0);
+  }
+  const blob = await new Promise<Blob | null>((resolve) => output.toBlob(resolve, 'image/png'));
   if (!blob) return;
   try {
     const path = await api.saveScreenshot(new Uint8Array(await blob.arrayBuffer()), `${machine}-screen.png`);
@@ -392,7 +423,7 @@ function attachTouch(target: HTMLElement, machine: Machine) {
   };
   const point = (event: PointerEvent): [number, number] => {
     const rect = target.getBoundingClientRect();
-    return [(event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height];
+    return panelPoint((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height, rotation);
   };
   target.style.touchAction = 'none';
   target.addEventListener('pointerdown', (event) => {
@@ -1019,6 +1050,7 @@ export async function boot(backend: Backend) {
     setZoom(value === 'fit' || value === 'auto' ? value : Number(value));
   });
   button('screenshot').addEventListener('click', () => void screenshot());
+  button('rotate-screen').addEventListener('click', rotateScreen);
   for (const selector of ['.app', '.stage']) new ResizeObserver(resizeScreen).observe(document.querySelector(selector)!);
   window.addEventListener('resize', resizeScreen);
   watchPixelRatio();

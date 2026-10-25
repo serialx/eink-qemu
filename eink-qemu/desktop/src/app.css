@@ -37,6 +37,9 @@ button.file-chip:hover:enabled { background: var(--surface-2); }
 /* The device screen: a canvas fed by QEMU's eink display backend, or the
    runtime iframe scaled as a whole (style.css). */
 #screen canvas { display: block; image-rendering: pixelated; filter: var(--screen-filter); }
+#screen:has(.screen-orientation) { position: relative; display: block; padding: 0; aspect-ratio: auto; }
+.screen-orientation { position: absolute; top: 0; left: 0; transform-origin: top left; }
+.bezel:has(.screen-orientation) { flex-shrink: 0; }
 .bezel:not(:has(canvas, iframe)) { width: min(400px, 100%); min-width: 0; flex-shrink: 0; }
 #screen:not(:has(canvas, iframe)) { width: 100%; aspect-ratio: 528 / 792; display: flex; align-items: center; justify-content: center; padding: 28px; text-align: center; font-size: 14px; overflow-wrap: anywhere; }
 /* Text taller than the panel (a narrow phone) grows it rather than being cut:
