@@ -63,11 +63,101 @@ pub const CRASH_PATTERNS: &[&str] = &[
 pub struct GuestClock {
     session: Arc<Session>,
     pub enabled: bool,
+    /// Whether the clock takes "pause-at-ns" (QEMU older than eink-qemu
+    /// 0.9.3 does not); None until input first tries it.
+    can_pause: Mutex<Option<bool>>,
+}
+
+/// One group of input commands (QMP command, arguments), sent together.
+type Input = Vec<(&'static str, Value)>;
+
+async fn send(session: &Session, group: &Input) -> Result<(), AppError> {
+    for (command, arguments) in group {
+        session.qmp(command, Some(arguments.clone())).await?;
+    }
+    Ok(())
+}
+
+/// How a timed input went with the guest paused between its groups.
+enum Paced {
+    /// Done; a failed wait between groups (the last group was still sent).
+    Done(Result<(), Failure>),
+    /// Not this way: the guest is not plainly running (deep sleep) or this
+    /// QEMU has no "pause-at-ns". Nothing was sent.
+    Unavailable,
 }
 
 impl GuestClock {
     pub fn new(session: Arc<Session>, enabled: bool) -> Self {
-        GuestClock { session, enabled }
+        GuestClock { session, enabled, can_pause: Mutex::new(None) }
+    }
+
+    async fn qom(&self, property: &str, value: Option<i64>) -> Result<Value, AppError> {
+        let path = format!("/objects/{GUEST_CLOCK_ID}");
+        match value {
+            Some(value) => self.session.qmp("qom-set", Some(json!({"path": path, "property": property, "value": value}))).await,
+            None => self.session.qmp("qom-get", Some(json!({"path": path, "property": property}))).await,
+        }
+    }
+
+    /// Send `groups` with the guest stopped while each goes in, running it
+    /// exactly `gap_ns` of guest time between them ("pause-at-ns" stops it
+    /// on time, however long the host takes to notice). Called with the
+    /// guest stopped by `Session::with_guest_stopped`, which resumes it.
+    async fn paced(&self, gap_ns: i64, host_limit: Duration, groups: &[Input]) -> Result<Paced, AppError> {
+        let paused = |status: &Value| status["status"].as_str() == Some("paused");
+        if !paused(&self.session.qmp("query-status", None).await?) {
+            return Ok(Paced::Unavailable);
+        }
+        let can_pause = *self.can_pause.lock().unwrap();
+        if can_pause != Some(true) {
+            let works = self.qom("pause-at-ns", Some(-1)).await.is_ok();
+            *self.can_pause.lock().unwrap() = Some(works);
+            if !works {
+                return Ok(Paced::Unavailable);
+            }
+        }
+        let (last, rest) = groups.split_last().expect("timed input without groups");
+        let mut waited = Ok(());
+        for group in rest {
+            send(&self.session, group).await?;
+            waited = self.wait_paused(gap_ns, host_limit).await?;
+            if waited.is_err() {
+                break;
+            }
+        }
+        send(&self.session, last).await?;
+        Ok(Paced::Done(waited))
+    }
+
+    /// Run the stopped guest `gap_ns` of guest time and wait until it stops
+    /// again. A guest that goes into deep sleep meanwhile stays there; the
+    /// wait then ends on the device's time (see `now_ns`), like `guest_sleep`.
+    async fn wait_paused(&self, gap_ns: i64, host_limit: Duration) -> Result<Result<(), Failure>, AppError> {
+        let raw = self.qom("ns", None).await?.as_i64().ok_or_else(|| AppError::new("EQMP", "the guest clock gave no time"))?;
+        let device_target = raw.saturating_add(self.session.asleep_for().as_nanos() as i64).saturating_add(gap_ns);
+        self.qom("pause-at-ns", Some(raw.saturating_add(gap_ns))).await?;
+        self.session.qmp("cont", None).await?;
+        let started = Instant::now();
+        loop {
+            let status = self.session.qmp("query-status", None).await?;
+            match status["status"].as_str() {
+                Some("paused") => return Ok(Ok(())),
+                Some("suspended") if self.now_ns().await.is_some_and(|now| now >= device_target) => {
+                    self.qom("pause-at-ns", Some(-1)).await?;
+                    return Ok(Ok(()));
+                }
+                _ => {}
+            }
+            if started.elapsed() > host_limit {
+                // Stop it here, so the rest goes in with the guest stopped.
+                self.qom("pause-at-ns", Some(-1)).await?;
+                self.session.qmp("stop", None).await?;
+                let ms = gap_ns as f64 / 1e6;
+                return Ok(Err(Failure::new(format!("the guest clock did not advance {ms} ms within {:.0} s", host_limit.as_secs_f64()))));
+            }
+            tokio::time::sleep(POLL).await;
+        }
     }
 
     /// The device's time: the guest's virtual clock, plus the time it spent
@@ -946,11 +1036,49 @@ impl Runner {
         self.boot_line = self.readiness_pos;
     }
 
+    /// Send input `groups` (a press, then its release) `gap_ms` of guest
+    /// time apart. The guest is stopped while each group goes in and runs
+    /// exactly the gap between them, so a 150 ms press is 150 ms for the
+    /// firmware. On a QEMU without "pause-at-ns", without a guest clock or
+    /// in deep sleep, the gaps are `guest_sleep` waits instead, which run
+    /// over by however far the guest gets before the next group lands. The
+    /// last group is sent even when a wait fails.
+    async fn timed_input(&mut self, gap_ms: f64, groups: Vec<Input>) -> Result<(), Failure> {
+        let gap_ms = gap_ms.clamp(0.0, steps::MAX_SECONDS * 1000.0);
+        let host_limit = Self::host_limit(gap_ms);
+        let paced = *self.clock.can_pause.lock().unwrap() != Some(false)
+            && self.clock.enabled
+            && self.session.qmp("query-status", None).await?["running"].as_bool() == Some(true);
+        if paced {
+            let (session, clock) = (self.session.clone(), self.clock.clone());
+            let gap_ns = (gap_ms * 1_000_000.0) as i64;
+            match session.with_guest_stopped(|| clock.paced(gap_ns, host_limit, &groups)).await? {
+                Paced::Done(waited) => return waited,
+                Paced::Unavailable => {}
+            }
+        }
+        let (last, rest) = groups.split_last().expect("timed input without groups");
+        let mut waited = Ok(());
+        for group in rest {
+            send(&self.session, group).await?;
+            waited = self.guest_sleep(gap_ms).await;
+            if waited.is_err() {
+                break;
+            }
+        }
+        send(&self.session, last).await?;
+        waited
+    }
+
+    fn host_limit(ms: f64) -> Duration {
+        Duration::from_secs_f64(ms / 1000.0 * 10.0 + 5.0)
+    }
+
     /// Let the guest run for `ms` of its own time (host time without the
     /// guest clock), at most ten times as long plus five seconds of host time.
     async fn guest_sleep(&mut self, ms: f64) -> Result<(), Failure> {
         let ms = ms.clamp(0.0, steps::MAX_SECONDS * 1000.0);
-        let host_limit = Duration::from_secs_f64(ms / 1000.0 * 10.0 + 5.0);
+        let host_limit = Self::host_limit(ms);
         let started = Instant::now();
         match self.clock.now_ns().await {
             Some(start) => {
@@ -1221,10 +1349,8 @@ impl Runner {
                     return Ok(f);
                 }
                 self.action().await;
-                self.session.qmp("qom-set", Some(json!({"path": path, "property": property, "value": true}))).await?;
-                let held = self.guest_sleep(f64::from(*ms)).await;
-                self.session.qmp("qom-set", Some(json!({"path": path, "property": property, "value": false}))).await?;
-                held?;
+                let set = |down: bool| vec![("qom-set", json!({"path": path, "property": property, "value": down}))];
+                self.timed_input(f64::from(*ms), vec![set(true), set(false)]).await?;
                 f.insert("key".into(), json!(key));
                 f.insert("hold_ms".into(), json!(ms));
             }
@@ -1236,10 +1362,8 @@ impl Runner {
                     return Ok(f);
                 }
                 self.action().await;
-                self.pointer(px, py, w, h, Some(true)).await?;
-                let held = self.guest_sleep(f64::from(*ms)).await;
-                self.pointer(px, py, w, h, Some(false)).await?;
-                held?;
+                let groups = vec![vec![pointer(px, py, w, h, Some(true))], vec![pointer(px, py, w, h, Some(false))]];
+                self.timed_input(f64::from(*ms), groups).await?;
                 f.insert("x".into(), json!(px.round()));
                 f.insert("y".into(), json!(py.round()));
             }
@@ -1251,19 +1375,15 @@ impl Runner {
                     return Ok(f);
                 }
                 self.action().await;
-                self.pointer(x0, y0, w, h, Some(true)).await?;
                 let moves = 12;
-                let mut result = Ok(());
+                let mut groups = vec![vec![pointer(x0, y0, w, h, Some(true))]];
                 for i in 1..=moves {
                     let k = f64::from(i) / f64::from(moves);
-                    result = self.guest_sleep(f64::from(*ms) / f64::from(moves)).await;
-                    if result.is_err() {
-                        break;
-                    }
-                    self.pointer(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, w, h, None).await?;
+                    groups.push(vec![pointer(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, w, h, None)]);
                 }
-                self.pointer(x1, y1, w, h, Some(false)).await?;
-                result?;
+                // The lift goes in with the last move.
+                groups.last_mut().unwrap().push(pointer(x1, y1, w, h, Some(false)));
+                self.timed_input(f64::from(*ms) / f64::from(moves), groups).await?;
                 f.insert("from".into(), json!([x0.round(), y0.round()]));
                 f.insert("to".into(), json!([x1.round(), y1.round()]));
             }
@@ -1455,20 +1575,6 @@ impl Runner {
         }
         let fb = self.session.screen().ok_or_else(|| Failure::new("no screen yet; put ready before touching"))?;
         Ok((fb.width, fb.height))
-    }
-
-    /// Move the pointer (panel pixels) and press or release it.
-    async fn pointer(&mut self, x: f64, y: f64, w: u32, h: u32, down: Option<bool>) -> Result<(), Failure> {
-        let axis = |v: f64, size: u32| ((v / f64::from(size.saturating_sub(1).max(1))).clamp(0.0, 1.0) * 32767.0).round() as i64;
-        let mut events = vec![
-            json!({"type": "abs", "data": {"axis": "x", "value": axis(x, w)}}),
-            json!({"type": "abs", "data": {"axis": "y", "value": axis(y, h)}}),
-        ];
-        if let Some(down) = down {
-            events.push(json!({"type": "btn", "data": {"down": down, "button": "left"}}));
-        }
-        self.session.qmp("input-send-event", Some(json!({"events": events}))).await?;
-        Ok(())
     }
 
     async fn trace_boundary(&mut self) -> Result<TraceBoundary, Failure> {
@@ -1705,4 +1811,18 @@ mod tests {
         assert_eq!(f["live_sites"][0]["fn"], "makeBook");
         assert_eq!(f["live_sites"][0]["bytes"], 20);
     }
+}
+
+/// A touch-panel event at (x, y) on a w×h panel: a move, or a touch
+/// (`down`) or lift.
+fn pointer(x: f64, y: f64, w: u32, h: u32, down: Option<bool>) -> (&'static str, Value) {
+    let axis = |v: f64, size: u32| ((v / f64::from(size.saturating_sub(1).max(1))).clamp(0.0, 1.0) * 32767.0).round() as i64;
+    let mut events = vec![
+        json!({"type": "abs", "data": {"axis": "x", "value": axis(x, w)}}),
+        json!({"type": "abs", "data": {"axis": "y", "value": axis(y, h)}}),
+    ];
+    if let Some(down) = down {
+        events.push(json!({"type": "btn", "data": {"down": down, "button": "left"}}));
+    }
+    ("input-send-event", json!({"events": events}))
 }
