@@ -8,6 +8,13 @@ struct Monitor {
     guest_ns: i64,
     commands: Vec<String>,
     fail: Option<&'static str>,
+    /// The guest clock takes "pause-at-ns", and the time it holds.
+    pauses: bool,
+    pause_at: Option<i64>,
+    /// Reading the clock while running advances it this much (ns).
+    tick: i64,
+    /// Other qom-sets: property, value, guest ns, running.
+    sets: Vec<(String, Value, i64, bool)>,
 }
 
 struct Fixture {
@@ -34,7 +41,9 @@ impl Fixture {
         std::fs::write(&log, b"HTRC\x02\0\0\0").unwrap();
         let events = Arc::new(RunEvents::new(dir.path(), false).unwrap());
         let session = Session::new(events.clone(), QemuPaths { bin: ".".into(), plugins: ".".into(), share: None }, None);
-        let monitor = Arc::new(StdMutex::new(Monitor { running, guest_ns: 0, commands: Vec::new(), fail }));
+        let monitor = Arc::new(StdMutex::new(Monitor {
+            running, guest_ns: 0, commands: Vec::new(), fail, pauses: false, pause_at: None, tick: 0, sets: Vec::new(),
+        }));
         let state = monitor.clone();
         let output = log.clone();
         let (exit, exited) = watch::channel(None);
@@ -46,6 +55,7 @@ impl Fixture {
             while let Some(line) = lines.next_line().await.unwrap() {
                 let command: Value = serde_json::from_str(&line).unwrap();
                 let name = command["execute"].as_str().unwrap();
+                let mut return_error = false;
                 let reply = {
                     let mut state = state.lock().unwrap();
                     state.commands.push(name.to_string());
@@ -53,8 +63,28 @@ impl Fixture {
                         json!({"id": command["id"], "error": {"desc": "injected failure"}})
                     } else {
                         let value = match name {
-                            "query-status" => json!({"running": state.running}),
+                            "query-status" => json!({"running": state.running, "status": if state.running { "running" } else { "paused" }}),
                             "stop" => { state.running = false; json!({}) }
+                            "cont" if state.pause_at.is_some() => {
+                                // The guest runs up to the pause time and stops there.
+                                let at = state.pause_at.take().unwrap();
+                                state.guest_ns = state.guest_ns.max(at);
+                                json!({})
+                            }
+                            "qom-set" if command["arguments"]["property"] == "pause-at-ns" => {
+                                if !state.pauses {
+                                    return_error = true;
+                                }
+                                let at = command["arguments"]["value"].as_i64().unwrap();
+                                state.pause_at = (at >= 0).then_some(at);
+                                json!({})
+                            }
+                            "qom-set" => {
+                                let (guest_ns, running) = (state.guest_ns, state.running);
+                                let arguments = &command["arguments"];
+                                state.sets.push((arguments["property"].as_str().unwrap().into(), arguments["value"].clone(), guest_ns, running));
+                                json!({})
+                            }
                             "cont" => {
                                 state.running = true;
                                 // The guest executes before the cont reply reaches the runner.
@@ -62,7 +92,13 @@ impl Fixture {
                                 alloc(&output, 16);
                                 json!({})
                             }
-                            "qom-get" => json!(state.guest_ns),
+                            "qom-get" if command["arguments"]["property"] == "pause-at-ns" => json!(state.pause_at.unwrap_or(-1)),
+                            "qom-get" => {
+                                if state.running {
+                                    state.guest_ns += state.tick;
+                                }
+                                json!(state.guest_ns)
+                            }
                             "human-monitor-command" => {
                                 assert!(state.running);
                                 state.guest_ns += 1_500_000_000;
@@ -71,7 +107,11 @@ impl Fixture {
                             }
                             _ => json!({}),
                         };
-                        json!({"id": command["id"], "return": value})
+                        if return_error {
+                            json!({"id": command["id"], "error": {"desc": "no such property"}})
+                        } else {
+                            json!({"id": command["id"], "return": value})
+                        }
                     }
                 };
                 if writer.write_all(format!("{reply}\n").as_bytes()).await.is_err() { break; }
@@ -159,5 +199,42 @@ async fn measurement_stop_or_resume_failure_ends_the_session() {
         let result = f.session.with_guest_stopped(|| async { Ok(()) }).await;
         assert_eq!(result.unwrap_err().code, "EQMP");
         assert_eq!(f.session.info().state, "idle");
+    }
+}
+
+/// A press holds its key exactly its time of guest time: the guest is
+/// stopped at the press and release, and runs the hold in between, so
+/// however late the host notices, the firmware sees 150 ms. A QEMU without
+/// "pause-at-ns" gets the polled hold, still released.
+#[tokio::test]
+async fn presses_hold_their_keys_exactly_in_guest_time() {
+    for pauses in [true, false] {
+        let f = Fixture::new(true, None).await;
+        {
+            let mut monitor = f.monitor.lock().unwrap();
+            monitor.pauses = pauses;
+            // A running guest gets 40 ms ahead at every look at its clock.
+            monitor.tick = 40_000_000;
+        }
+        let mut opts = RunOptions::new(f.dir.path().into());
+        opts.input_quiet = Duration::ZERO;
+        let mut runner = Runner::new(f.session.clone(), f.events.clone(), true, opts, Box::new(|_| {})).unwrap();
+        let script = steps::parse(&["press:down", "press:down:500"].map(str::to_string)).unwrap();
+        assert!(runner.run(&script).await, "{:?}", runner.failed);
+        runner.frames.stop();
+        let monitor = f.monitor.lock().unwrap();
+        let keys: Vec<_> = monitor.sets.iter().filter(|s| s.0 == "down").collect();
+        assert_eq!(keys.iter().map(|s| s.1.as_bool().unwrap()).collect::<Vec<_>>(), [true, false, true, false]);
+        for (pair, ms) in keys.chunks(2).zip([150, 500]) {
+            let held = pair[1].2 - pair[0].2;
+            if pauses {
+                assert_eq!(held, ms * 1_000_000);
+                assert!(!pair[0].3 && !pair[1].3, "input goes in with the guest stopped");
+            } else {
+                assert!(held >= ms * 1_000_000, "{held}");
+            }
+        }
+        assert!(monitor.running);
+        assert_eq!(monitor.pause_at, None);
     }
 }

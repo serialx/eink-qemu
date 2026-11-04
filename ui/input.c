@@ -159,6 +159,7 @@ void qmp_input_send_event(const char *device,
     InputEventList *e;
     QemuConsole *con;
     Error *err = NULL;
+    bool paused;
 
     con = NULL;
     if (device) {
@@ -172,7 +173,14 @@ void qmp_input_send_event(const char *device,
         }
     }
 
-    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
+    /*
+     * eink-qemu: also while paused (QMP "stop"), so a driver can put input
+     * in at an exact guest time (see guest-clock's "pause-at-ns"). Only this
+     * command: input from the host's own window is still dropped then.
+     */
+    paused = runstate_check(RUN_STATE_PAUSED);
+    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED) &&
+        !paused) {
         error_setg(errp, "VM not running");
         return;
     }
@@ -220,10 +228,20 @@ void qmp_input_send_event(const char *device,
             g_assert_not_reached();
         }
 
-        qemu_input_event_send(con, &evt);
+        if (paused) {
+            if (evt.type != INPUT_EVENT_KIND_KEY || evt.key.key) {
+                replay_input_event(con, &evt);
+            }
+        } else {
+            qemu_input_event_send(con, &evt);
+        }
     }
 
-    qemu_input_event_sync();
+    if (paused) {
+        replay_input_sync_event();
+    } else {
+        qemu_input_event_sync();
+    }
 }
 
 static void qemu_input_event_trace(QemuConsole *src, QemuInputEvent *evt)

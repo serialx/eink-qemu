@@ -329,6 +329,15 @@ firmware lives in; heap reads stop it, so they never disturb a measurement.
 `wait`, `wait-quiet`, key holds and the input wait count guest time. Time
 limits count host time.
 
+Input timing is exact: a press, touch or swipe goes in with the guest
+stopped, and QEMU stops it again when the hold is over (the guest clock's
+`pause-at-ns`), so `press:down` holds Down for 150 ms of guest time however
+slowly the host polls, even under `--sleep off`, where an idle guest's clock
+races ahead. A QEMU older than 0.9.3 (no `pause-at-ns`), a run without a
+guest clock, or input to a guest in deep sleep falls back to waiting for the
+guest clock from the host, and the hold can then run hundreds of guest ms
+over (long enough for a long press).
+
 The CLI defaults to `--sleep off`: when the guest CPU is idle, QEMU jumps
 to the next virtual timer instead of waiting on the host. This preserves
 the CPU and peripheral timing model; `--turbo` changes peripheral delays.
