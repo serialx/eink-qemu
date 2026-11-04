@@ -32,12 +32,13 @@ and Kohei Tokunaga's WebAssembly JIT. Where each piece came from is in
 | Board | SoC | Machine | Emulator binary | Fidelity |
 | --- | --- | --- | --- | --- |
 | Xteink X4 Pro | ESP32-S3 | `x4pro` | `qemu-system-xtensa` | Full board; CPU, PSRAM, SD, SPI and UC8279 timing [calibrated on a real X4 Pro](eink-qemu/x4cal/README.md) |
+| Xteink X4 Classic | ESP32-S3 | `x4classic` | `qemu-system-xtensa` | Separate profile and 16 MiB flash partition table; currently reuses the X4 Pro board model |
 | Xteink X3 | ESP32-C3 | `x3` | `qemu-system-riscv32` | Full board, SD, panel and CPU timing calibrated on a real X3 |
 | Xteink X4 | ESP32-C3 | `x4` | `qemu-system-riscv32` | Runs firmware; panel refresh timing simplified, no ghosting |
 | BOOX Picco | ESP32-S3 | `picco` | `qemu-system-xtensa` | Runs firmware; panel waveforms and charging simplified |
 
-The board defaults to X4 Pro for ESP32-S3 firmware and X3 for ESP32-C3.
-The desktop app, browser and Rust CLI also recognize X4 and Picco filename
+The board defaults to X4 Pro for ESP32-S3 firmware and X3 for ESP32-C3. Select `x4classic` explicitly for X4 Classic firmware.
+The desktop app, browser and Rust CLI also recognize X4, X4 Classic and Picco filename
 hints, as described below. Select the board explicitly when the default or
 filename hint does not match the device.
 
@@ -93,7 +94,7 @@ macOS release packages do not include the signed managed bridge helper.
 Download an archive from [Releases](../../releases), or from the latest
 [Actions](../../actions) run (artifacts `dist-qemu-*`). Builds cover Linux
 (x86_64, arm64), macOS (Intel, Apple silicon) and Windows. Each archive holds
-one emulator: `xtensa-softmmu` for the X4 Pro and Picco, `riscv32-softmmu` for
+one emulator: `xtensa-softmmu` for X4 Pro, X4 Classic and Picco, `riscv32-softmmu` for
 the X3 and X4. Linux and macOS need glib, pixman, SDL2, libslirp, libgcrypt and
 libpng installed; the Windows archives bundle them.
 

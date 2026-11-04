@@ -171,7 +171,7 @@ enum Command {
     Flash {
         firmware: PathBuf,
         output: PathBuf,
-        #[arg(long, value_parser = ["x3", "x4", "x4pro", "picco"])]
+        #[arg(long, value_parser = ["x3", "x4", "x4pro", "x4classic", "picco"])]
         machine: Option<String>,
         /// Partition table for an app .bin or a build directory (CSV or binary; default: Arduino-ESP32's 16 MB table).
         #[arg(long, value_name = "CSV|BIN")]
@@ -205,14 +205,14 @@ pub struct RunArgs {
     /// Copy a host file or folder onto the card before boot: HOST or HOST=/CARD/DIR (default /). Repeatable.
     #[arg(long, value_name = "HOST[=DIR]")]
     pub put: Vec<String>,
-    /// Board: x3, x4, x4pro or picco. Default: filename hint, else the chip's default (ESP32-C3 = x3, ESP32-S3 = x4pro).
-    #[arg(long, value_parser = ["x3", "x4", "x4pro", "picco"])]
+    /// Board: x3, x4, x4pro, x4classic or picco. Default: filename hint, else the chip's default (ESP32-C3 = x3, ESP32-S3 = x4pro).
+    #[arg(long, value_parser = ["x3", "x4", "x4pro", "x4classic", "picco"])]
     pub machine: Option<String>,
     /// X4 Pro display panel: uc8279-68 or uc8179.
     #[arg(long, default_value = "uc8279-68", value_parser = ["uc8279-68", "uc8179"])]
     pub panel: String,
     /// Partition table for an app .bin or a build directory: the firmware's partitions.csv or its binary table.
-    /// Default for an app: Arduino-ESP32's 16 MB table (the Picco's stock layout on --machine picco).
+    /// Default for an app: Arduino-ESP32's 16 MB table (the X4 Pro/X4 Classic board table or the Picco stock layout).
     #[arg(long, value_name = "CSV|BIN")]
     pub partitions: Option<PathBuf>,
     /// Hold Power pressed this long at a cold boot, in guest ms (board default 1500). Firmware that turns itself

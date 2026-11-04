@@ -63,12 +63,12 @@ const keyCodes = {ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
 // Home is a capacitive key on the GT911, separate from the GPIO buttons.
 // Handle both forwarded page controls and keys typed with the canvas focused.
 function homeKey(down) {
-    if (machineType !== 'x4pro' || !window.Module?.FS || homeHeld === down) return;
+    if ((machineType !== 'x4pro' && machineType !== 'x4classic') || !window.Module?.FS || homeHeld === down) return;
     homeHeld = down;
     command(`qom-set /machine/gt911 home ${down}`);
 }
 for (const type of ['keydown', 'keyup']) document.addEventListener(type, event => {
-    if (machineType !== 'x4pro' || event.code !== 'Home' ||
+    if ((machineType !== 'x4pro' && machineType !== 'x4classic') || event.code !== 'Home' ||
         event.ctrlKey || event.metaKey || event.altKey) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -79,14 +79,14 @@ window.addEventListener('blur', () => homeKey(false));
 function turboProperties(machine) {
     const properties = [
         // The X4 Pro and Picco cards sit on the S3's SDMMC host, not on SPI.
-        ...(machine === 'x4pro' || machine === 'picco' ? [] : ['read-access-us', 'read-seq-access-us', 'read-repeat-us', 'read-next-us',
+        ...(machine === 'x4pro' || machine === 'x4classic' || machine === 'picco' ? [] : ['read-access-us', 'read-seq-access-us', 'read-repeat-us', 'read-next-us',
             'write-busy-us', 'write-random-busy-us', 'write-repeat-busy-us',
             'write-block-busy-us', 'write-stop-busy-us', 'write-stop-decrement-us',
             'write-stop-random-extra-us'].map(name => `ssi-sd.${name}=0`)),
         ...['transaction-overhead-us', 'transaction-overhead-ns', 'buffer-overhead-ns']
             .map(name => `driver=ssi.esp32s3.gpspi,property=${name},value=0`),
         'driver=ssi.esp32s3.gpspi,property=zero-wire-time,value=on',
-        ...(['x4pro', 'picco'].includes(machine) ? ['dwc_sdmmc.timing=off'] : []),
+        ...(['x4pro', 'x4classic', 'picco'].includes(machine) ? ['dwc_sdmmc.timing=off'] : []),
         'esp32_wifi.rx-frame-us=500',
         ...(machine === 'x3' ?
             [...['frame-us', 'refresh-overhead-us'].map(name => `uc8279.${name}=0`),
@@ -232,7 +232,7 @@ window.addEventListener('message', async ({source, origin, data}) => {
         window.Module = {
             browserNetwork,
             canvas,
-            arguments: ['-L', '/', '-machine', machine === 'x4pro' ? `${machine},panel=${panel}` : machine,
+            arguments: ['-L', '/', '-machine', machine === 'x4pro' || machine === 'x4classic' ? `${machine},panel=${panel}` : machine,
                 '-accel', 'tcg,tb-size=64',
                 '-icount', `shift=${machine === 'picco' ? 2 : 0},sleep=${sleep}`,
                 ...(turbo ? turboProperties(machine) : []),

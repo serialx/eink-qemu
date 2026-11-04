@@ -25,7 +25,7 @@ chip=$(od -An -tu1 -j12 -N1 "$flash" | tr -d ' ')
 machine=${X4MACHINE:-$([ "$chip" = 5 ] && echo x3 || echo x4pro)}
 case "$machine" in
     x3|x4) arch=riscv32; shift_bits=0; accel=tcg,tb-size=64 ;;
-    x4pro) arch=xtensa; shift_bits=0; accel=tcg,tb-size=64 ;;
+    x4pro|x4classic) arch=xtensa; shift_bits=0; accel=tcg,tb-size=64 ;;
     picco) arch=xtensa; shift_bits=2; accel=tcg,tb-size=64 ;;
     *) echo "unsupported machine: $machine" >&2; exit 2 ;;
 esac
@@ -48,7 +48,7 @@ if [ "${TURBO:-0}" = 1 ]; then
     done < <(sh "$ROOT/eink-qemu/turbo-args.sh" "$machine")
 fi
 machine_args=$machine
-if [ "$machine" = x4pro ] && [ -n "${X4PANEL:-}" ]; then
+if { [ "$machine" = x4pro ] || [ "$machine" = x4classic ]; } && [ -n "${X4PANEL:-}" ]; then
     machine_args="$machine,panel=$X4PANEL"
 fi
 exec "${NODE:-node}" "${WASM_BUILD_DIR:-$build}/qemu-system-$arch.js" \

@@ -44,6 +44,7 @@ test('rejects overlapping and out-of-range partitions', () => {
 
 test('device selection defaults C3 to X3 and validates the chip', () => {
     assert.equal(FlashImage.selectMachine(9, 'auto'), 'x4pro');
+    assert.equal(FlashImage.selectMachine(9, 'x4classic'), 'x4classic');
     assert.equal(FlashImage.selectMachine(5, 'x3'), 'x3');
     assert.equal(FlashImage.selectMachine(5, 'x4'), 'x4');
     assert.equal(FlashImage.selectMachine(5, 'auto'), 'x3');
@@ -59,13 +60,14 @@ function app(chip = 9, length = 64) {
     new DataView(bytes.buffer).setUint16(12, chip, true);
     return bytes;
 }
-function table(picco = false) {
+function table(picco = false, s3 = false) {
     const bytes = new Uint8Array(0xc00).fill(0xff), view = new DataView(bytes.buffer);
     const entries = picco ? [
         [1, 2, 0x9000, 0xc000], [1, 0, 0x15000, 0x2000],
         [0, 0, 0x20000, 0xc0000], [0, 0x10, 0xe0000, 0xe70000],
         [1, 0x82, 0xf50000, 0xb0000]
-    ] : [[1, 2, 0x9000, 0x5000], [1, 0, 0xe000, 0x2000], [0, 0x10, 0x10000, 0x640000]];
+    ] : s3 ? [[1, 2, 0x9000, 0x5000], [1, 0, 0xe000, 0x2000], [0, 0x10, 0x10000, 0x7e0000], [0, 0x11, 0x7f0000, 0x7e0000], [1, 0x82, 0xfd0000, 0x14000], [1, 3, 0xfe4000, 0x1c000]]
+      : [[1, 2, 0x9000, 0x5000], [1, 0, 0xe000, 0x2000], [0, 0x10, 0x10000, 0x640000]];
     entries.forEach(([type, subtype, offset, size], i) => {
         const pos = i * 32;
         view.setUint16(pos, 0x50aa, true); bytes[pos + 2] = type; bytes[pos + 3] = subtype;
@@ -83,6 +85,9 @@ test('Picco is an explicit S3 board with its own composition assets', () => {
     });
     assert.equal(FlashImage.appLayout('x3').partitionTable, 'the Arduino-ESP32 16 MB partition table');
     assert.equal(FlashImage.appLayout('x4pro').appOffset, 0x10000);
+    assert.equal(FlashImage.appLayout('x4pro').appSize, 0x7e0000);
+    assert.equal(FlashImage.appLayout('x4classic').appSize, 0x7e0000);
+    assert.equal(FlashImage.appLayout('x4classic').partitionAsset, 'partitions-x4classic.bin');
     assert.throws(() => FlashImage.appLayout('unknown'), /Unknown device/);
 });
 test('Picco composition selects valid ota_0 and keeps app and recovery bytes intact', () => {
@@ -109,12 +114,14 @@ test('composition validates app capacity and bundled assets', () => {
     assert.throws(() => FlashImage.composeApp(app(), {...options, partitions: table()}), /partition/);
 });
 test('app composition retains existing offsets and boot selection', () => {
-    const bytes = app(), options = {machine: 'x4pro', boot: app(), partitions: table()};
+    const bytes = app(), options = {machine: 'x4pro', boot: app(), partitions: table(false, true)};
     const flash = FlashImage.composeApp(bytes, options);
     assert.deepEqual(flash.subarray(0x10000, 0x10000 + bytes.length), bytes);
     assert.ok(flash.subarray(0xe000, 0x10000).every(byte => byte === 255));
     const xota = FlashImage.composeApp(bytes, {...options, selectOta: true});
     assert.equal(new DataView(xota.buffer).getUint32(0xe018, true), 2);
+    const classic = FlashImage.composeApp(bytes, {machine: 'x4classic', boot: app(), partitions: table(false, true)});
+    assert.deepEqual(classic.subarray(0x10000, 0x10000 + bytes.length), bytes);
     const nvs = new Uint8Array(0x5000).fill(0x37);
     const x3 = FlashImage.composeApp(app(5), {machine: 'x3', boot: app(5), partitions: table(), nvs});
     assert.deepEqual(x3.subarray(0x9000, 0xe000), nvs);

@@ -61,7 +61,7 @@ archives from the same release. CLI platforms are `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`,
 `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. QEMU uses
 `x86_64-w64-mingw32` for Windows and drops `unknown-` on Linux.
-Take `xtensa-softmmu` for X4 Pro/Picco, `riscv32-softmmu` for X3/X4, or both.
+Take `xtensa-softmmu` for X4 Pro/X4 Classic/Picco, `riscv32-softmmu` for X3/X4, or both.
 Extract all the archives into the same directory; they share this layout:
 
 ```text
@@ -186,7 +186,7 @@ why, and the same command, `--out` included, can be run again (for
 
 ### The X4 Pro
 
-The X4 Pro has a touchscreen and three keys. Coordinates are pixels of its
+The X4 Pro has a touchscreen and three GPIO keys. X4 Classic is exposed as a separate machine/profile, currently reusing the X4 Pro hardware model; its front end displays eight controls, but additional Classic GPIO key wiring is not modelled yet. Coordinates are pixels of its
 screenshots (480 wide, 800 tall, origin top left), or percentages; look at a
 shot to find a menu entry, then tap it:
 
@@ -230,8 +230,8 @@ quoting is needed and `#` starts a comment.
 | `hmp:COMMAND` | A QEMU monitor command; the output is in the record |
 
 Keys: `back confirm left right up down power` on the X3 and X4; `up down
-power home` on the X4 Pro; `up down power` on the Picco. Touch and swipe
-work on the X4 Pro and the Picco. Steps are checked against the board
+power home` on X4 Pro and the current X4 Classic profile; `up down power` on the Picco. Touch and swipe
+work on X4 Pro, the current X4 Classic profile and the Picco. Steps are checked against the board
 before the emulator starts, so a wrong key fails at once with exit code 2.
 
 Names (shots, heaps, traces, marks) take letters, digits, `.`, `_` and `-`.
@@ -668,7 +668,7 @@ than calling it dead.
 | --- | --- |
 | `--sd IMG` | Start from this card; the run uses a copy unless `--sd-in-place` |
 | `--put HOST[=/DIR]` | Copy a file or folder onto the card before boot (repeatable) |
-| `--machine x3\|x4\|x4pro\|picco` | The board, when the chip does not decide it |
+| `--machine x3\|x4\|x4pro\|x4classic\|picco` | The board, when the chip does not decide it |
 | `--panel uc8279-68\|uc8179` | X4 Pro display panel (default `uc8279-68`) |
 | `--partitions CSV\|BIN` | The firmware's partition table, for an app `.bin` or a build directory |
 | `--power-hold MS` | Hold Power this long at a cold boot (default 1500; stock Xteink firmware: 3000) |

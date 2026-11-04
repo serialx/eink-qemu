@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { forwardKeyboard, keyboardKey, keyboardHint, keyHint, keyTitle } from '../desktop/src/keyboard.ts';
 
-test('X4 Pro accepts Esc, H and Home as its capacitive Home key', () => {
-  for (const code of ['Escape', 'KeyH', 'Home']) assert.equal(keyboardKey('x4pro', code), 'Home');
+test('X4 Pro and X4 Classic accept Esc, H and Home as their capacitive Home key', () => {
+  for (const machine of ['x4pro', 'x4classic']) {
+    for (const code of ['Escape', 'KeyH', 'Home']) assert.equal(keyboardKey(machine, code), 'Home');
+  }
   assert.equal(keyboardKey('x4pro', 'Backspace'), 'Back');
 });
 
@@ -24,7 +26,7 @@ test('Picco keeps its existing bindings without the new Home aliases', () => {
 });
 
 test('all devices keep arrows, Enter and Power, and ignore unrelated keys', () => {
-  for (const machine of ['x3', 'x4', 'x4pro', 'picco']) {
+  for (const machine of ['x3', 'x4', 'x4pro', 'x4classic', 'picco']) {
     for (const [code, name] of Object.entries({ ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Enter: 'Confirm', NumpadEnter: 'Confirm', KeyP: 'Power' })) {
       assert.equal(keyboardKey(machine, code), name);
     }
@@ -37,7 +39,7 @@ test('shared hints expose Home aliases and firmware-neutral Power hold semantics
   assert.match(keyboardHint('x4pro'), /Esc \/ H \/ Home/);
   assert.match(keyTitle('x4pro', 'Home'), /Esc \/ H \/ Home/);
   assert.equal(keyHint('x3', 'Back'), 'Esc / Backspace');
-  for (const machine of ['x3', 'x4', 'x4pro', 'picco']) {
+  for (const machine of ['x3', 'x4', 'x4pro', 'x4classic', 'picco']) {
     assert.match(keyboardHint(machine), /hold P for a long press/);
     assert.match(keyTitle(machine, 'Power'), /while the key is down.*long press.*sleep or power off/);
     assert.doesNotMatch(keyTitle(machine, 'Power'), /CrossPoint/);

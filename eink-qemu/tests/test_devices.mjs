@@ -2,9 +2,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { deviceOf, devicesOf, selectedDevice } from '../desktop/src/devices.ts';
+import { deviceOf, devicesOf, keysOf, selectedDevice } from '../desktop/src/devices.ts';
 
-test('shared Rust/TypeScript matrix: 1056 filename, folder and remembered-choice cases', () => {
+test('shared Rust/TypeScript filename, folder and remembered-choice matrix', () => {
   const cases = JSON.parse(readFileSync(new URL('./device-cases.json', import.meta.url)));
   for (const [index, chip] of ['ESP32-C3', 'ESP32-S3'].entries()) {
     for (const [name, ...defaults] of cases.names) {
@@ -42,6 +42,7 @@ test('filename hints and saved choices match core/src/firmware.rs', () => {
     ['ESP32-C3', '/build/x3/firmware-x4.bin', undefined, 'x4'],
     ['ESP32-C3', 'picco.bin', undefined, 'x3'],
     ['ESP32-S3', 'firmware.bin', undefined, 'x4pro'],
+    ['ESP32-S3', 'firmware-x4classic.bin', undefined, 'x4classic'],
     ['ESP32-S3', 'firmware-PICCO.bin', undefined, 'picco'],
     ['ESP32-S3', '/build/picco/firmware.bin', undefined, 'x4pro'],
     ['ESP32-S3', 'firmware-x3-x4.bin', undefined, 'x4pro'],
@@ -53,9 +54,14 @@ test('filename hints and saved choices match core/src/firmware.rs', () => {
   ]) assert.equal(deviceOf(chip, path, remembered), expected, `${chip} ${path} ${remembered}`);
 });
 
+test('X4 Classic exposes eight on-screen controls', () => {
+  assert.deepEqual(keysOf('x4classic'), ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Home', 'Power']);
+  assert.equal(keysOf('x4classic').length, 8);
+});
+
 test('only boards for the chip are offered, default first', () => {
   assert.deepEqual(devicesOf('ESP32-C3'), ['x3', 'x4']);
-  assert.deepEqual(devicesOf('ESP32-S3'), ['x4pro', 'picco']);
+  assert.deepEqual(devicesOf('ESP32-S3'), ['x4pro', 'x4classic', 'picco']);
   assert.deepEqual(devicesOf(null), []);
   assert.equal(deviceOf(null, 'x4.bin'), null);
 });

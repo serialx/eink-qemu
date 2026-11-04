@@ -65,20 +65,20 @@ or the `eink-qemu-<version>-wasm` Actions artifact unpacked anywhere).
 The top bar's firmware chip names the firmware, its device and whether its
 ELF is loaded; it opens the firmware card. The card shows the file (chip,
 app version, size, date), offers only the devices that take its chip (X3 and
-X4 for ESP32-C3, X4 Pro and Picco for ESP32-S3), holds the ELF for the Heap
-tab, the X4 Pro's display panel, and recent firmware. New firmware defaults
-to X3 for ESP32-C3 and X4 Pro for ESP32-S3. Filename tokens of ASCII letters
+X4 for ESP32-C3, X4 Pro, X4 Classic and Picco for ESP32-S3), holds the ELF for the Heap
+tab, the X4 Pro/X4 Classic display panel, and recent firmware. New firmware defaults
+to X3 for ESP32-C3 and X4 Pro for ESP32-S3 (X4 Classic is an explicit choice). Filename tokens of ASCII letters
 and digits ignore case and can select X4 (`x4` without
 `x3`), X3 (`x3` without `x4`), or Picco (`picco` on S3). Both `x3` and `x4`,
 or neither, use the C3 default; `x4pro` is a separate token. Folder names
 and hints for another chip are ignored. Each firmware keeps the
 device and ELF it last used, so `.pio/build/default` comes back as an X3 and
-`.pio/build/x4pro` as an X4 Pro. When a firmware is chosen, an ELF beside it
+`.pio/build/x4pro` as an X4 Pro; select X4 Classic explicitly when using its firmware. When a firmware is chosen, an ELF beside it
 (the same name with `.elf`, or `firmware.elf`, as PlatformIO and ESP-IDF
 write) is taken up when its app descriptor shows it built that firmware; one
 from another build is left out and the card says so. Wi-Fi, Ghosting and Turbo
 are the icon toggles beside Start; their tips say what each does. Ghosting
-appears only for X3 and X4 Pro; its saved preference is kept when using X4
+appears only for X3 and the X4 Pro-compatible X4 Classic profile; its saved preference is kept when using X4
 or Picco.
 
 These persist in `settings.json`, with the SD card, in the app's config
@@ -289,7 +289,7 @@ QEMU resources:
 src-tauri/qemu/
   COPYING                       QEMU's licence (GPL-2.0)
   bin/qemu-system-riscv32       X3, X4 (ESP32-C3)
-  bin/qemu-system-xtensa        X4 Pro, Picco (ESP32-S3)
+  bin/qemu-system-xtensa        X4 Pro, X4 Classic, Picco (ESP32-S3)
   plugins/libheaptrace.dylib    heap allocation tracer (.dll on Windows)
   lib/*.dylib                   every non-system library, recursively
   share/esp32c3-rom.bin         mask ROMs found through qemu_find_file()

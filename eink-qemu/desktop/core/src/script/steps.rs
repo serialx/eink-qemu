@@ -27,8 +27,8 @@ Input (each is an action: later waits look only at what follows it; each
 first waits up to 3 s for the firmware's log to go quiet, see --input-quiet)
   press:KEY[:MS]             press and release a key (hold 150 ms of guest time)
                              X3, X4: back confirm left right up down power
-                             X4 Pro: up down power home    Picco: up down power
-  touch:X,Y[:MS]             tap the touchscreen (X4 Pro, Picco) at pixels of the
+                             X4 Pro/X4 Classic: up down power home    Picco: up down power
+  touch:X,Y[:MS]             tap the touchscreen (X4 Pro, current X4 Classic profile, Picco) at pixels of the
                              screenshot (origin top left), or percentages: touch:50%,90%
   swipe:DIR[:MS]             swipe left, right, up or down across the middle
   swipe:X1,Y1,X2,Y2[:MS]     swipe between two points (default 300 ms)

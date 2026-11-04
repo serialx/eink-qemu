@@ -2,8 +2,9 @@
 """Compose emulator flash from a release app, merged image, build dir, or dump.
 
 A release app gets the bundled bootloader and a partition table: Arduino-ESP32's
-16 MB default (boot/partitions.csv), the Picco's stock layout with --machine
-picco, or the firmware's own with --partitions (CSV or binary, read and checked
+16 MB default (boot/partitions.csv), the X4 Pro or X4 Classic board layout with
+--machine, the Picco's stock layout with --machine picco, or the firmware's own
+with --partitions (CSV or binary, read and checked
 as ESP-IDF's gen_esp32part.py does). The app goes to ESP-IDF's boot-default
 slot: the factory partition, else the lowest OTA slot. The only
 firmware-specific step is CrossPoint's (profiles/crosspoint.json): its X3 build
@@ -41,7 +42,7 @@ def detect_chip(data, machine=None):
     chip = struct.unpack_from("<H", data, 12)[0]
     if chip not in CHIPS:
         raise ValueError(f"unsupported ESP chip ID {chip}; expected 5 (C3) or 9 (S3)")
-    if machine and {"x3": 5, "x4": 5, "x4pro": 9, "picco": 9}.get(machine) != chip:
+    if machine and {"x3": 5, "x4": 5, "x4pro": 9, "x4classic": 9, "picco": 9}.get(machine) != chip:
         raise ValueError(f"--machine {machine} conflicts with {CHIPS[chip][1]} image")
     return chip
 
@@ -302,7 +303,13 @@ def make_flash(source, machine=None, partitions=None):
         return data.ljust(FLASH_SIZE, b'\xff')
     boot = (BOOT_DIR / f"bootloader-{CHIPS[chip][1]}.bin").read_bytes()
     if table is None:
-        table = partition_table(BOOT_DIR / ("partitions-picco.csv" if machine == "picco" else "partitions.csv"))
+        default_machine = machine or CHIPS[chip][0]
+        table_name = {
+            "x4pro": "partitions-x4pro.csv",
+            "x4classic": "partitions-x4classic.csv",
+            "picco": "partitions-picco.csv",
+        }.get(default_machine, "partitions.csv")
+        table = partition_table(BOOT_DIR / table_name)
     return compose(data, boot, table, machine)
 
 
@@ -310,11 +317,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="app or merged .bin, build directory, or 16 MiB image")
     parser.add_argument("output", type=Path)
-    parser.add_argument("--machine", choices=("x3", "x4", "x4pro", "picco"),
+    parser.add_argument("--machine", choices=("x3", "x4", "x4pro", "x4classic", "picco"),
                         help="select the board's app layout and check the detected chip")
     parser.add_argument("--partitions", type=Path, metavar="CSV|BIN",
                         help="partition table for an app or build directory (default: "
-                             "Arduino-ESP32's 16 MB table; the Picco's stock layout for picco)")
+                             "Arduino-ESP32's 16 MB table; the board-specific X4 Pro/X4 Classic layout, or the Picco stock layout)")
     args = parser.parse_args()
     try:
         image = make_flash(args.source, args.machine, args.partitions)

@@ -77,7 +77,7 @@ and digits ignore case and select X4 with x4 but no x3,
 X3 with x3 but no x4, or Picco with picco on S3. Both x3 and x4, or neither,
 use the C3 default; x4pro is a separate token. Folder names and hints for the
 other chip are ignored. A remembered device wins over the filename hint.
-The firmware card offers only the devices that take the firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro or ?device=picco to
+The firmware card offers only the devices that take the firmware's chip. Use ?device=x3, ?device=x4, ?device=x4pro, ?device=x4classic or ?device=picco to
 select a board in a link; a device/chip mismatch is rejected before boot.
 Wi-Fi, Ghosting and Turbo are remembered too; ?wifi=off, ?ghosting=0 and
 ?turbo=0 override them for one visit.
@@ -116,7 +116,7 @@ is disabled because Emscripten SDL has one canvas. Browser Wi-Fi networking is
 enabled by default; see the Wi-Fi section below for downloads and limitations.
 
 The canvas and runtime iframe retain the native panel resolution: 528x792 for
-X3 and 480x800 for X4/X4 Pro/Picco. The page scales the iframe in whole physical-pixel
+X3 and 480x800 for X4/X4 Pro/X4 Classic/Picco. The page scales the iframe in whole physical-pixel
 multiples, adapting to browser zoom, monitor pixel density, and available width.
 On a 2x Retina display at 100% zoom, each panel pixel occupies a 2x2 block.
 If a narrow window cannot fit even one physical pixel per panel pixel, the
@@ -124,7 +124,7 @@ device section scrolls horizontally. Avoid percentage sizing on the canvas:
 SDL adopts that size and resamples the framebuffer, producing moire in dithering.
 
 Use the on-screen controls or arrows, Enter, Backspace/Esc for Back on X3/X4,
-and P for Power. X4 Pro has a Home control (keyboard: Esc, H or Home) and
+and P for Power. X4 Pro and X4 Classic expose Home (keyboard: Esc, H or Home); the Classic profile displays eight on-screen controls. The additional Classic GPIO key mapping is not modelled yet. The X4 Pro has
 accepts pointer/touch input on its canvas. Picco has no Home key. P holds Power
 while the key is down: hold it for a long press, which many firmwares use to
 sleep or power off. The action and required hold time depend on the firmware.

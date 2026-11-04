@@ -75,7 +75,7 @@ and panel initialization without a seed.
 Build directories supply their own bootloader and table. The app goes to
 ESP-IDF's boot-default slot (the factory partition, else the lowest OTA slot);
 its table entry bounds the app size.
-`--machine x3|x4pro` checks the detected chip and rejects a mismatch. A file of
+`--machine x3|x4|x4pro|x4classic|picco` checks the detected chip and rejects a mismatch. A file of
 exactly 16 MiB passes through unchanged; with `--machine`, its boot header is
 also checked. These helpers target emulator images, not encrypted/secure-boot
 provisioning.
@@ -97,3 +97,12 @@ The firmware mounts LittleFS using the label `spiffs`. The composer provisions
 the remaining `0xB0000` bytes at `0xF50000` for it. This is a simulator choice;
 the original filesystem partition bounds are not present in the supplied app.
 Picco NVS is initially erased, and the bundled ESP32-S3 bootloader is reused.
+
+
+## X4 Pro and X4 Classic partition tables
+
+`partitions-x4pro.csv` and `partitions-x4classic.csv` are the board-specific
+16 MiB layouts supplied for the two ESP32-S3 reader profiles. Their entries
+are currently identical: two `0x7E0000` OTA app slots at `0x10000` and
+`0x7F0000`, plus the NVS, OTA metadata, SPIFFS and coredump partitions. The
+separate files are intentional so either board's layout can evolve independently.
