@@ -53,7 +53,7 @@ rebooting it.
 The browser smoke test accepts `PICKER_FLASH=<app.bin>` or
 `RELEASE_APP=<local-app.bin>` for a URL input, verifies composition status,
 and compares SHA256 against `mkflash.py` output before checking Home and controls. Set
-`WEB_MACHINE=x4pro` for X4 Pro firmware and its Library touch check. See [web/README.txt](web/README.txt) for complete commands.
+`WEB_MACHINE=x4pro` for X4 Pro firmware; `WEB_MACHINE=x4classic` selects X4 Classic and its Library touch check. See [web/README.txt](web/README.txt) for complete commands.
 
 `WASM_SYSROOT=/absolute/path/to/sysroot-wasm64` lets both build scripts reuse
 compatible dependencies. `WASM_JIT_STATS=1` enables Node JIT module counts;

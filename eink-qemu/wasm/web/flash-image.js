@@ -1,12 +1,12 @@
 /* Compose board-specific app images and preserve merged ESP flash images.
    App images go into a bundled partition table: Arduino-ESP32's 16 MB
-   default (boot/partitions.csv) or the stock BOOX Picco layout. An NVS image
+   default, the X4 Pro/X4 Classic board layout, or the stock BOOX Picco layout. An NVS image
    is written only when the caller passes one (CrossPoint's, firmware.ts). */
 'use strict';
 globalThis.FlashImage = (() => {
     function selectMachine(chip, selected = 'auto') {
         if (chip !== 5 && chip !== 9) throw new Error(`Unsupported ESP chip ID ${chip}.`);
-        const chips = {x3: 5, x4: 5, x4pro: 9, picco: 9};
+        const chips = {x3: 5, x4: 5, x4pro: 9, x4classic: 9, picco: 9};
         if (selected === 'auto') {
             return chip === 5 ? 'x3' : 'x4pro';
         }
@@ -15,17 +15,18 @@ globalThis.FlashImage = (() => {
         return selected;
     }
     function appLayout(machine) {
-        if (!['x3', 'x4', 'x4pro', 'picco'].includes(machine)) {
+        if (!['x3', 'x4', 'x4pro', 'x4classic', 'picco'].includes(machine)) {
             throw new Error(`Unknown device: ${machine}.`);
         }
         const picco = machine === 'picco', c3 = machine === 'x3' || machine === 'x4';
+        const s3 = machine === 'x4pro' || machine === 'x4classic';
         return Object.freeze({
             appOffset: picco ? 0xe0000 : 0x10000,
-            appSize: picco ? 0xe70000 : 0x640000,
+            appSize: picco ? 0xe70000 : s3 ? 0x7e0000 : 0x640000,
             otaOffset: picco ? 0x15000 : 0xe000,
             bootAsset: `bootloader-${c3 ? 'esp32c3' : 'esp32s3'}.bin`,
-            partitionAsset: picco ? 'partitions-picco.bin' : 'partitions.bin',
-            partitionTable: picco ? 'the stock BOOX Picco partition table' : 'the Arduino-ESP32 16 MB partition table'
+            partitionAsset: picco ? 'partitions-picco.bin' : machine === 'x4pro' ? 'partitions-x4pro.bin' : machine === 'x4classic' ? 'partitions-x4classic.bin' : 'partitions.bin',
+            partitionTable: picco ? 'the stock BOOX Picco partition table' : s3 ? `the ${machine === 'x4pro' ? 'X4 Pro' : 'X4 Classic'} partition table` : 'the Arduino-ESP32 16 MB partition table'
         });
     }
     function readPartitions(bytes, offset = 0) {

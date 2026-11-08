@@ -2,7 +2,7 @@
 // Globals installed by the browser page's dependency-free modules
 // (../wasm/web): imported as modules here, or loaded as classic scripts by
 // the web build's index.html (vite.config.ts).
-type Machine = 'x3' | 'x4' | 'x4pro' | 'picco';
+type Machine = 'x3' | 'x4' | 'x4pro' | 'x4classic' | 'picco';
 declare const FlashImage: {
   selectMachine(chip: number, selected?: string): Machine;
   appLayout(machine: Machine): { bootAsset: string; partitionAsset: string; partitionTable: string };

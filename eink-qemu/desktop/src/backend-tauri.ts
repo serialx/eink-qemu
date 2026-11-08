@@ -46,7 +46,7 @@ class CanvasScreen implements Screen {
     this.el = document.createElement('canvas');
     this.el.width = this.width;
     this.el.height = this.height;
-    this.el.setAttribute('aria-label', `${{ x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' }[machine]} display`);
+    this.el.setAttribute('aria-label', `${{ x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', x4classic: 'X4 Classic', picco: 'BOOX Picco' }[machine]} display`);
     this.context = this.el.getContext('2d')!;
     this.context.fillStyle = '#f5f4ef';
     this.context.fillRect(0, 0, this.width, this.height);

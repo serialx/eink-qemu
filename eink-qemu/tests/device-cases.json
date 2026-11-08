@@ -1,8 +1,9 @@
 {
   "prefixes": ["", "/build/x4/", "/build/x3/", "/build/picco/"],
-  "remembered": [null, "auto", "x3", "x4", "x4pro", "picco"],
+  "remembered": [null, "auto", "x3", "x4", "x4pro", "x4classic", "picco"],
   "names": [
     ["firmware", "x3", "x4pro"],
+    ["x4classic", "x3", "x4classic"],
     ["x3", "x3", "x4pro"],
     ["x4", "x4", "x4pro"],
     ["x3-x4", "x3", "x4pro"],

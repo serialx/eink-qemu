@@ -275,8 +275,8 @@ a.icon-button:hover { background: var(--surface-2); color: var(--text); }
   padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
 }
 #keys button:active, #keys button.held { background: var(--brand-tint); border-color: var(--meter); }
-#keys:is([data-machine="x3"], [data-machine="x4"]) button:is(:nth-child(3), :nth-child(5), :nth-child(7)),
-#keys[data-machine="x4pro"] button:is(:nth-child(2), :nth-child(4)) { margin-left: 12px; }
+#keys:is([data-machine="x3"], [data-machine="x4"], [data-machine="x4classic"]) button:is(:nth-child(3), :nth-child(5), :nth-child(7)),
+#keys:is([data-machine="x4pro"], [data-machine="x4classic"]) button:is(:nth-child(2), :nth-child(4)) { margin-left: 12px; }
 
 /* Console */
 .output { grid-area: output; min-height: 0; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); }
@@ -342,6 +342,7 @@ a.icon-button:hover { background: var(--surface-2); color: var(--text); }
   #keys button { min-height: 48px; border-radius: 10px; margin-left: 0 !important; }
   #keys button::after { display: none; }
   #keys:is([data-machine="x3"], [data-machine="x4"]) button:nth-child(7) { grid-column: span 2; }
+  #keys[data-machine="x4classic"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (hover: none) {
   .col-ops { width: 124px; }

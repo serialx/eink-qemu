@@ -1,6 +1,7 @@
 //! 16 MiB flash images for the emulator, as eink-qemu/mkflash.py composes
 //! them: a release app gets the bundled bootloader and a partition table
-//! (Arduino-ESP32's 16 MB default, the Picco's stock layout, or the one
+//! (Arduino-ESP32's 16 MB default, the X4 Pro/X4 Classic layout, the Picco's
+//! stock layout, or the one
 //! given with --partitions); a PlatformIO or ESP-IDF build directory is
 //! merged from its own bootloader, table and app; a merged image keeps its
 //! own layout; a 16 MiB dump passes through. App bytes are never modified.
@@ -21,6 +22,8 @@ const ENTRY_SIZE: usize = 32;
 const BOOT_C3: &[u8] = include_bytes!("../../../boot/bootloader-esp32c3.bin");
 const BOOT_S3: &[u8] = include_bytes!("../../../boot/bootloader-esp32s3.bin");
 const PARTITIONS: &str = include_str!("../../../boot/partitions.csv");
+const PARTITIONS_X4PRO: &str = include_str!("../../../boot/partitions-x4pro.csv");
+const PARTITIONS_X4CLASSIC: &str = include_str!("../../../boot/partitions-x4classic.csv");
 const PARTITIONS_PICCO: &str = include_str!("../../../boot/partitions-picco.csv");
 
 /// A composed image and what it is for.
@@ -554,6 +557,8 @@ pub fn make_flash_with(source: &Path, machine: Option<&str>, partitions: Option<
     let (table, partitions) = match given {
         Some(table) => (table, given_name()),
         None if machine == Some("picco") => (partition_table(PARTITIONS_PICCO)?, "the Picco's stock layout (bundled)".into()),
+        None if machine == Some("x4pro") => (partition_table(PARTITIONS_X4PRO)?, "the X4 Pro partition layout (bundled)".into()),
+        None if machine == Some("x4classic") => (partition_table(PARTITIONS_X4CLASSIC)?, "the X4 Classic partition layout (bundled)".into()),
         None => (partition_table(PARTITIONS)?, "Arduino-ESP32's 16 MB default (bundled)".into()),
     };
     let (image, chip, nvs_seed) = compose(&data, boot, &table, machine)?;
@@ -677,7 +682,7 @@ mod tests {
 
     #[test]
     fn bundled_tables_parse() {
-        for csv in [PARTITIONS, PARTITIONS_PICCO] {
+        for csv in [PARTITIONS, PARTITIONS_X4PRO, PARTITIONS_X4CLASSIC, PARTITIONS_PICCO] {
             let table = partition_table(csv).unwrap();
             assert_eq!(table.len(), TABLE_SIZE);
             assert!(!read_partitions(&table).unwrap().is_empty());
@@ -716,6 +721,27 @@ mod tests {
         app.resize(63, 0);
         app.push(checksum);
         app
+    }
+
+    #[test]
+    fn x4pro_and_x4classic_use_their_own_full_size_partition_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("firmware-x4classic.bin");
+        let app = test_app(9);
+        std::fs::write(&path, &app).unwrap();
+
+        let classic = make_flash(&path, Some("x4classic")).unwrap();
+        assert_eq!(classic.machine, "x4classic");
+        assert_eq!(classic.partitions, "the X4 Classic partition layout (bundled)");
+        assert_eq!(&classic.image[0x10000..0x10000 + app.len()], &app);
+        let entries = read_partitions(&classic.image[TABLE_OFFSET..TABLE_OFFSET + TABLE_SIZE]).unwrap();
+        assert!(entries.contains(&(0, 0x10, 0x10000, 0x7E0000)));
+        assert!(entries.contains(&(0, 0x11, 0x7F0000, 0x7E0000)));
+
+        let pro = make_flash(&path, Some("x4pro")).unwrap();
+        assert_eq!(pro.machine, "x4pro");
+        assert_eq!(&pro.image[TABLE_OFFSET..TABLE_OFFSET + TABLE_SIZE],
+                   &classic.image[TABLE_OFFSET..TABLE_OFFSET + TABLE_SIZE]);
     }
 
     #[test]

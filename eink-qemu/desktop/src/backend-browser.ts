@@ -17,10 +17,10 @@ import {
 } from './types';
 
 const params = new URLSearchParams(location.search);
-const MACHINES: Machine[] = ['x3', 'x4', 'x4pro', 'picco'];
+const MACHINES: Machine[] = ['x3', 'x4', 'x4pro', 'x4classic', 'picco'];
 const deviceOverride = MACHINES.find((device) => device === params.get('device'));
 const PANELS: Settings['panel'][] = ['uc8279-68', 'uc8179'];
-const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' };
+const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', x4classic: 'X4 Classic', picco: 'BOOX Picco' };
 const MiB = 1024 ** 2;
 const notSupported = (what: string) => Promise.reject(new AppError('ENOTSUP', `${what} is not available in the browser.`));
 const errorMessage = (error: unknown) => (error as Error)?.message ?? String(error);

@@ -67,13 +67,24 @@ class MkflashTest(unittest.TestCase):
         self.assertEqual(self.table[208:224], hashlib.md5(self.table[:192]).digest())
 
     def test_chip_detection(self):
-        for chip, machine in ((5, 'x3'), (5, 'x4'), (9, 'x4pro')):
+        for chip, machine in ((5, 'x3'), (5, 'x4'), (9, 'x4pro'), (9, 'x4classic')):
             self.assertEqual(mkflash.detect_chip(self.app(chip), machine), chip)
         for data in (b'', b'\xe9', b'X' * 24, self.app(0), self.app(261)):
             with self.assertRaises(ValueError):
                 mkflash.detect_chip(data)
         with self.assertRaisesRegex(ValueError, 'conflicts'):
             mkflash.detect_chip(self.app(), 'x4pro')
+
+    def test_x4pro_and_x4classic_use_separate_full_size_tables(self):
+        app = self.app(9)
+        pro = mkflash.make_flash(self.write('x4pro.bin', app), 'x4pro')
+        classic = mkflash.make_flash(self.write('x4classic.bin', app), 'x4classic')
+        self.assertEqual(pro[0x8000:0x8c00], classic[0x8000:0x8c00])
+        entries = mkflash.read_partitions(pro[0x8000:0x8c00])
+        self.assertIn((0, 0x10, 0x10000, 0x7e0000), entries)
+        self.assertIn((0, 0x11, 0x7f0000, 0x7e0000), entries)
+        self.assertEqual(pro[0x10000:0x10000 + len(app)], app)
+        self.assertEqual(classic[0x10000:0x10000 + len(app)], app)
 
     def test_release_composition(self):
         for chip, suffix in ((5, 'esp32c3'), (9, 'esp32s3')):
@@ -83,7 +94,9 @@ class MkflashTest(unittest.TestCase):
             self.assertEqual(len(flash), mkflash.FLASH_SIZE)
             self.assertEqual(flash[:len(boot)], boot)
             self.assertEqual(flash[len(boot):0x8000], b'\xff' * (0x8000 - len(boot)))
-            self.assertEqual(flash[0x8000:0x8C00], self.table)
+            expected_table = (mkflash.partition_table(mkflash.BOOT_DIR / 'partitions-x4pro.csv')
+                              if chip == 9 else self.table)
+            self.assertEqual(flash[0x8000:0x8C00], expected_table)
             # Not CrossPoint: NVS stays erased on both chips.
             self.assertEqual(flash[0x9000:0xE000], b'\xff' * 0x5000)
             self.assertEqual(flash[0xE000:0x10000], b'\xff' * 0x2000)
@@ -214,7 +227,7 @@ class MkflashTest(unittest.TestCase):
         flash = mkflash.make_flash(self.write('app.bin', app), partitions=csv)
         self.assertEqual(flash[0x10000:0x10000 + len(app)], app)
         self.assertEqual(flash[0xd000:0xf000], b'\xff' * 0x2000)
-        big = self.app(9) + bytes(0x700000)
+        big = self.app(9) + bytes(0x7f0000)
         with self.assertRaisesRegex(ValueError, '--partitions'):
             mkflash.make_flash(self.write('big.bin', big))
         roomy = self.write('roomy.bin', mkflash.partition_table(text='nvs,data,nvs,0x9000,0x5000\napp0,app,ota_0,0x10000,0x800000\n'))

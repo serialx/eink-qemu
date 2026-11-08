@@ -5,7 +5,7 @@ import type { Backend, DropHandlers, FileRef, Screen } from './backend';
 import { appendLines, clearConsole } from './console';
 import { choose, confirm, dialogOpen, prompt } from './dialog';
 import { prepareFlash } from './firmware';
-import { selectedDevice } from './devices';
+import { keysOf, selectedDevice } from './devices';
 import { attachHeap, heapSession, setElf, setHeapAvailable, showPane, useElf } from './heap';
 import { Readiness } from './readiness';
 import { keyboardKey, keyboardHint, keyHint, keyTitle } from './keyboard';
@@ -19,11 +19,11 @@ const button = (id: string) => $<HTMLButtonElement>(id);
 const appEl = document.querySelector<HTMLElement>('.app')!;
 
 const machineNames: Record<Machine, string> = {
-  x3: 'Xteink X3 · 528 × 792', x4: 'Xteink X4 · 480 × 800', x4pro: 'Xteink X4 Pro · 480 × 800', picco: 'BOOX Picco · 480 × 800',
+  x3: 'Xteink X3 · 528 × 792', x4: 'Xteink X4 · 480 × 800', x4pro: 'Xteink X4 Pro · 480 × 800', x4classic: 'Xteink X4 Classic · 480 × 800', picco: 'BOOX Picco · 480 × 800',
 };
-const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' };
+const shortNames: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', x4classic: 'X4 Classic', picco: 'BOOX Picco' };
 const bootNames: Record<Machine, string> = {
-  x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)', picco: 'BOOX Picco (ESP32-S3)',
+  x3: 'X3 (ESP32-C3)', x4: 'X4 (ESP32-C3)', x4pro: 'X4 Pro (ESP32-S3)', x4classic: 'X4 Classic (ESP32-S3)', picco: 'BOOX Picco (ESP32-S3)',
 };
 
 let api: Backend;
@@ -377,8 +377,7 @@ function buttons(machine: Machine) {
   keys.replaceChildren();
   keys.dataset.machine = machine;
   $('key-hint').textContent = keyboardHint(machine);
-  const names = machine === 'x3' || machine === 'x4' ? ['Back', 'Confirm', 'Up', 'Down', 'Left', 'Right', 'Power']
-    : machine === 'picco' ? ['Up', 'Down', 'Power'] : ['Home', 'Up', 'Down', 'Power'];
+  const names = keysOf(machine);
   for (const name of names) {
     const element = document.createElement('button');
     element.type = 'button';
@@ -412,7 +411,7 @@ let releaseTouch: (() => void) | null = null;
 function attachTouch(target: HTMLElement, machine: Machine) {
   releaseTouch?.();
   releaseTouch = null;
-  if (machine !== 'x4pro' && machine !== 'picco') return;
+  if (machine !== 'x4pro' && machine !== 'x4classic' && machine !== 'picco') return;
   let active: number | null = null, frame = 0, last: [number, number] = [0, 0];
   releaseTouch = () => {
     if (frame) cancelAnimationFrame(frame);

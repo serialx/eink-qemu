@@ -484,7 +484,7 @@ async fn start(window: tauri::WebviewWindow, app: State<'_, App>, request: Reque
         .and_then(|value| value.to_str().ok())
         .and_then(|text| serde_json::from_str(text).ok())
         .ok_or_else(|| AppError::new("EINVAL", "Missing start options."))?;
-    if !["x3", "x4", "x4pro", "picco"].contains(&options.machine.as_str()) {
+    if !["x3", "x4", "x4pro", "x4classic", "picco"].contains(&options.machine.as_str()) {
         return Err(AppError::new("EINVAL", format!("Unknown device: {}.", options.machine)));
     }
     if !settings::PANELS.contains(&options.panel.as_str()) {

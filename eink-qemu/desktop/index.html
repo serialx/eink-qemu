@@ -49,7 +49,7 @@
           <h1 class="brand"><button id="about-button" class="brand-button" type="button" aria-expanded="false" aria-controls="about"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">eink-<span>qemu</span></span></button></h1>
           <div id="about" class="tip about-tip" aria-label="About eink-qemu">
             <strong>eink-qemu</strong>
-            <p>An emulator for ESP32 e-ink readers: the Xteink X4 Pro, X3 and X4, and the BOOX Picco.
+            <p>An emulator for ESP32 e-ink readers: the Xteink X4 Pro, X4 Classic, X3 and X4, and the BOOX Picco.
               It runs their unmodified firmware, stock or any fork, with the screen, SD card, keys
               and Wi-Fi behaving like the real board. <span data-only="tauri">This app runs native QEMU.</span><span data-only="browser">Everything runs here in your browser.</span></p>
             <p class="fine">Built on QEMU. Started as a fork of
@@ -153,7 +153,7 @@
             <button id="ghosting" class="toggle" type="button" aria-pressed="true" aria-label="Ghosting" aria-describedby="ghosting-help"><svg class="icon"><use href="#i-ghost"/></svg></button>
             <div id="ghosting-help" class="tip" role="tooltip">
               <strong>E-ink ghosting <span class="tip-state"></span></strong>
-              <p>Available on X3 and X4 Pro. X4 and Picco show completed frames without ghosting.</p>
+              <p>Available on X3, X4 Pro and the current X4 Classic profile. X4 and Picco show completed frames without ghosting.</p>
               <p>Simulates faint traces of previous images and gradual fading, like a real e-ink panel.
                 Turn it off for clean, stable pixels when comparing screenshots.</p>
               <p class="fine">Applies when the emulator starts. <span data-only="browser"><code>?ghosting=0</code> opens the page with it off.</span></p>

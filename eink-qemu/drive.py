@@ -4,7 +4,7 @@
 usage: drive.py flash.bin sd.img log.txt STEP...
 steps:  wait:SECONDS     press:KEY[:MS]     shot:FILE.png
         hmp:COMMAND      (any monitor command, output printed)
-KEY: up|down|power on the X4 Pro; back|confirm|left|right|up|down|power on the X3/X4.
+KEY: up|down|power on X4 Pro/X4 Classic; back|confirm|left|right|up|down|power on the X3/X4.
 The machine follows the image's chip (X4MACHINE=x3|x4|x4pro|picco overrides).
 X4 Pro defaults to measured UC8279 revision 0x68; X4PANEL=uc8179 selects the legacy panel.
 The firmware log (USB-CDC) goes to log.txt.
@@ -26,9 +26,9 @@ if not os.path.exists(sd):
     subprocess.run([sys.executable, os.path.join(here, "mksd.py"), sd], check=True)
 subprocess.run(["cp", img, img + ".run"], check=True)
 # X3 regional instruction costs are nanoseconds; Xtensa keeps 4 ns ticks.
-icount_shift = 0 if machine in ("x3", "x4", "x4pro") else 2
+icount_shift = 0 if machine in ("x3", "x4", "x4pro", "x4classic") else 2
 machine_args = machine
-if machine == "x4pro" and os.environ.get("X4PANEL"):
+if machine in ("x4pro", "x4classic") and os.environ.get("X4PANEL"):
     machine_args += ",panel=" + os.environ["X4PANEL"]
 p = subprocess.Popen([qemu, "-machine", machine_args,
                       "-icount", f"shift={icount_shift},sleep=on",

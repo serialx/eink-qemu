@@ -21,13 +21,13 @@ export interface SetupHandlers {
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const names: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', picco: 'BOOX Picco' };
+const names: Record<Machine, string> = { x3: 'X3', x4: 'X4', x4pro: 'X4 Pro', x4classic: 'X4 Classic', picco: 'BOOX Picco' };
 const otherChip: Record<string, string> = {
-  'ESP32-C3': 'X4 Pro and Picco take ESP32-S3 firmware', 'ESP32-S3': 'X3 and X4 take ESP32-C3 firmware',
+  'ESP32-C3': 'X3 and X4 take ESP32-C3 firmware', 'ESP32-S3': 'X4 Pro, X4 Classic and Picco take ESP32-S3 firmware',
 };
 const panels: Record<Settings['panel'], string> = { 'uc8279-68': 'UC8279 (0x68, default)', uc8179: 'UC8179' };
 const options: RunOption[] = ['wifi', 'ghosting', 'turbo'];
-export const hasGhosting = (device: Machine | null) => device === 'x3' || device === 'x4pro';
+export const hasGhosting = (device: Machine | null) => device === 'x3' || device === 'x4pro' || device === 'x4classic';
 
 const chip = $<HTMLButtonElement>('flash');
 const card = $('setup-card');
@@ -103,8 +103,8 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
   choose.classList.toggle('primary', !firmware);
   choose.disabled = !idle;
 
-  // The device: those that take the firmware's chip, all four before one is chosen.
-  const offered = firmware?.chip ? devicesOf(firmware.chip) : (['x3', 'x4', 'x4pro', 'picco'] as Machine[]);
+  // The device: those that take the firmware's chip, all supported boards before one is chosen.
+  const offered = firmware?.chip ? devicesOf(firmware.chip) : (['x3', 'x4', 'x4pro', 'x4classic', 'picco'] as Machine[]);
   $('setup-devices').innerHTML = offered.map((d) =>
     `<button type="button" role="radio" data-device="${d}" aria-checked="${d === device}"${idle ? '' : ' disabled'}>${names[d]}</button>`).join('');
   $('setup-device-note').textContent = firmware?.chip ? otherChip[firmware.chip] : '';
@@ -130,9 +130,9 @@ export function paintSetup(next: Setup | null, nextIdle: boolean) {
     : !elf ? 'The Heap tab names heaps and allocation sites from it. A firmware.elf beside the firmware is picked up by itself.' : '';
   note.hidden = !note.textContent;
 
-  // The display panel, for the X4 Pro only.
+  // The display panel, shared by the X4 Pro and current X4 Classic profile.
   const panel = $<HTMLDetailsElement>('setup-panel');
-  panel.hidden = device !== 'x4pro';
+  panel.hidden = device !== 'x4pro' && device !== 'x4classic';
   if (next) {
     $('setup-panel-value').textContent = panels[next.settings.panel];
     for (const b of panel.querySelectorAll<HTMLButtonElement>('[data-panel]')) {

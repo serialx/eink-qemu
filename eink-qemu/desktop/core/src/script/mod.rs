@@ -1570,7 +1570,7 @@ impl Runner {
 
     fn touch_panel(&self) -> Result<(u32, u32), Failure> {
         let machine = self.machine();
-        if machine != "x4pro" && machine != "picco" {
+        if machine != "x4pro" && machine != "x4classic" && machine != "picco" {
             return Err(Failure::new(format!("the {machine} has no touchscreen; use press")));
         }
         let fb = self.session.screen().ok_or_else(|| Failure::new("no screen yet; put ready before touching"))?;
@@ -1650,8 +1650,8 @@ pub fn validate(steps: &[Step], machine: &str, traced: bool) -> Result<(), Strin
                 Kind::Press { key, .. } => {
                     key_path(machine, key).map_err(|e| format!("`{}`: {e}", step.text))?;
                 }
-                Kind::Touch { .. } | Kind::Swipe { .. } if machine != "x4pro" && machine != "picco" => {
-                    return Err(format!("`{}`: the {machine} has no touchscreen (the X4 Pro and the Picco do); use press", step.text));
+                Kind::Touch { .. } | Kind::Swipe { .. } if machine != "x4pro" && machine != "x4classic" && machine != "picco" => {
+                    return Err(format!("`{}`: the {machine} has no touchscreen (the X4 Pro, current X4 Classic profile and the Picco do); use press", step.text));
                 }
                 Kind::TraceStart { .. } | Kind::TraceStop { .. } if !traced => {
                     return Err(format!("`{}`: allocation traces need --trace (and the firmware's ELF)", step.text));
@@ -1673,7 +1673,7 @@ pub fn validate(steps: &[Step], machine: &str, traced: bool) -> Result<(), Strin
 pub fn key_path(machine: &str, key: &str) -> Result<(String, String), String> {
     let (object, keys): (&str, &[&str]) = match machine {
         "x3" | "x4" => ("x3-keys", &["back", "confirm", "left", "right", "up", "down", "power"]),
-        "x4pro" => ("x4pro-keys", &["up", "down", "power", "home"]),
+        "x4pro" | "x4classic" => ("x4pro-keys", &["up", "down", "power", "home"]),
         "picco" => ("picco-keys", &["up", "down", "power"]),
         other => return Err(format!("unknown board {other:?}")),
     };
@@ -1779,6 +1779,7 @@ mod tests {
     fn keys_by_board() {
         assert_eq!(key_path("x3", "confirm").unwrap(), ("/machine/x3-keys".into(), "confirm".into()));
         assert_eq!(key_path("x4pro", "home").unwrap().0, "/machine/gt911");
+        assert_eq!(key_path("x4classic", "home").unwrap().0, "/machine/gt911");
         assert!(key_path("x4pro", "back").unwrap_err().contains("up, down, power, home"));
     }
 

@@ -628,7 +628,7 @@ impl Session {
         self.current().map(|run| run.command.clone())
     }
 
-    /// The running board ("x3", "x4", "x4pro", "picco").
+    /// The running board ("x3", "x4", "x4pro", "x4classic", "picco").
     pub fn machine(&self) -> Option<String> {
         self.current().map(|run| run.machine.clone())
     }
@@ -773,7 +773,7 @@ impl Session {
         }
         args.extend([
             "-machine".into(),
-            if machine == "x4pro" { format!("x4pro,panel={}", options.panel) } else { machine.to_string() },
+            if machine == "x4pro" || machine == "x4classic" { format!("{machine},panel={}", options.panel) } else { machine.to_string() },
             "-icount".into(),
             // Idle time defaults to real time (sleep=on): with native
             // speed, sleep=off would run a resting device through minutes of
@@ -1053,7 +1053,7 @@ impl Session {
                     };
                     let result = match input {
                         Input::Key(key, down) if key == "Home" => {
-                            if machine != "x4pro" || home == down {
+                            if (machine != "x4pro" && machine != "x4classic") || home == down {
                                 continue;
                             }
                             home = down;
@@ -1192,7 +1192,7 @@ impl Session {
     }
 
     async fn reset_device(&self, run: &Run) -> Result<(), String> {
-        if run.machine == "x4pro" {
+        if run.machine == "x4pro" || run.machine == "x4classic" {
             let _ = run.input.send(Input::Key("Home".into(), false));
         }
         run.qmp().execute("system_reset", None).await.map(|_| ())
@@ -1550,7 +1550,7 @@ mod wifi_tests {
         let mut options = old_options();
         options.wifi = false;
         let target = crate::network::NetworkTarget::WindowsTap { name: "managed-bridge".into() };
-        for machine in ["x3", "x4", "x4pro"] {
+        for machine in ["x3", "x4", "x4pro", "x4classic"] {
             options.machine = machine.into();
             for mode in [WifiMode::Nat, WifiMode::Bridge] {
                 options.wifi_mode = mode;
@@ -1573,7 +1573,7 @@ mod wifi_tests {
         let target = crate::network::NetworkTarget::WindowsTap { name: "managed-bridge".into() };
         let mut options = old_options();
         options.wifi_mode = WifiMode::Bridge;
-        for machine in ["x3", "x4", "x4pro"] {
+        for machine in ["x3", "x4", "x4pro", "x4classic"] {
             options.machine = machine.into();
             let args = session.args(&options, Path::new("flash"), Path::new("sd"), "port=1", "localhost:2", Some(&target)).unwrap();
             assert_eq!(args.iter().filter(|v| *v == "-nic").count(), 1);

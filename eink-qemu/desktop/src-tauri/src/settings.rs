@@ -72,7 +72,7 @@ pub struct SettingsPatch {
     pub turbo: Option<bool>,
 }
 
-pub const DEVICES: [&str; 5] = ["auto", "x3", "x4", "x4pro", "picco"];
+pub const DEVICES: [&str; 6] = ["auto", "x3", "x4", "x4pro", "x4classic", "picco"];
 pub const PANELS: [&str; 2] = ["uc8279-68", "uc8179"];
 
 impl Settings {

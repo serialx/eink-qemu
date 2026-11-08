@@ -362,6 +362,7 @@ struct Esp32s3MachineState {
 };
 #define TYPE_ESP32S3_MACHINE MACHINE_TYPE_NAME("esp32s3")
 #define TYPE_X4PRO_MACHINE MACHINE_TYPE_NAME("x4pro")
+#define TYPE_X4CLASSIC_MACHINE MACHINE_TYPE_NAME("x4classic")
 #define TYPE_PICCO_MACHINE MACHINE_TYPE_NAME("picco")
 
 static void esp32s3_init_openeth(Esp32s3SocState *ms)
@@ -1372,6 +1373,20 @@ static const TypeInfo x4pro_info = {
     .instance_init = x4pro_machine_instance_init,
 };
 
+/* X4 Classic currently shares the X4 Pro ESP32-S3 board model. Its distinct
+ * identity is used by the front ends and its own flash partition profile. */
+static void x4classic_machine_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    mc->desc = "Xteink X4 Classic (ESP32-S3, X4 Pro-compatible hardware model)";
+}
+
+static const TypeInfo x4classic_info = {
+    .name = TYPE_X4CLASSIC_MACHINE,
+    .parent = TYPE_X4PRO_MACHINE,
+    .class_init = x4classic_machine_class_init,
+};
+
 /* Initialize machine type */
 static void esp32s3_machine_class_init(ObjectClass *oc, const void *data)
 {
@@ -1394,6 +1409,7 @@ static void esp32s3_machine_type_init(void)
 {
     type_register_static(&esp32s3_info);
     type_register_static(&x4pro_info);
+    type_register_static(&x4classic_info);
     type_register_static(&picco_info);
 }
 

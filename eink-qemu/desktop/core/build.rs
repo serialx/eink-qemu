@@ -9,7 +9,7 @@ fn main() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../turbo-args.sh");
     println!("cargo:rerun-if-changed={}", script.display());
     let mut machines = Vec::new();
-    for machine in ["x3", "x4", "x4pro", "picco"] {
+    for machine in ["x3", "x4", "x4pro", "x4classic", "picco"] {
         // Windows hosts have Git's sh or bash on PATH in CI.
         let output = Command::new("sh")
             .arg(&script)

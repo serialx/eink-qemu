@@ -350,7 +350,7 @@ class QemuHooks(unittest.TestCase):
         self.assertGreaterEqual(busy, 0)
 
     def test_panel_counters(self):
-        for binary, machine in [(RISCV, 'x3'), (RISCV, 'x4'), (XTENSA, 'x4pro'), (XTENSA, 'picco')]:
+        for binary, machine in [(RISCV, 'x3'), (RISCV, 'x4'), (XTENSA, 'x4pro'), (XTENSA, 'x4classic'), (XTENSA, 'picco')]:
             if not binary.exists():
                 continue
             with self.subTest(machine=machine):
